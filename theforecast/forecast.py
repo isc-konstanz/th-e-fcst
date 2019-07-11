@@ -5,15 +5,14 @@
     
     
 """
+from collections import OrderedDict
+from configparser import ConfigParser
 import logging
-logger = logging.getLogger(__name__)
-
 import os
 
-from configparser import ConfigParser
-from collections import OrderedDict
-
 from .database import CsvDatabase
+
+logger = logging.getLogger(__name__)
 
 
 class Forecast:
@@ -25,8 +24,7 @@ class Forecast:
         settings = ConfigParser()
         settings.read(settingsfile)
         
-        self.interval = settings.getint('General','interval')*60
-
+        self.interval = settings.getint('General', 'interval') * 60
 
     def __init_databases__(self, configs):
         # Read the systems database settings
@@ -34,22 +32,20 @@ class Forecast:
         settings = ConfigParser()
         settings.read(settingsfile)
         
-        timezone = settings.get('General','timezone')
+        timezone = settings.get('General', 'timezone')
         
         enabled = OrderedDict()
-        for database in settings.get('General','enabled').split(','):
+        for database in settings.get('General', 'enabled').split(','):
             if database.lower() == 'csv':
                 enabled[database] = CsvDatabase(configs, timezone)
         
         return enabled
 
-
     def execute(self):
-        #TODO: Do the forecast
+        # TODO: Do the forecast
         logger.info("Starting th-e-forecast")
         
         return
-
 
     def persist(self, result):
         for database in reversed(self.databases.values()):

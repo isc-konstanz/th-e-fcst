@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 """
-    th-e-optimization
+    th-e-forecast
     ~~~~~
     
     
@@ -32,7 +32,7 @@ def main(rundir, args=None):
     system = Forecast(configs)
     
     try:
-        result = system.predict()
+        result = system.execute()
     
     except (ForecastException) as e:
         logger.error('Fatal forecast error: %s', str(e))
@@ -53,9 +53,9 @@ if __name__ == '__main__':
     logger = logging.getLogger('th-e-forecast')
     
     parser = ArgumentParser(description=__doc__)
-    parser.add_argument('-c','--configs', 
-                        dest='configs', 
-                        help='Directory of system configuration files', 
+    parser.add_argument('-c', '--configs',
+                        dest='configs',
+                        help='Directory of system configuration files',
                         metavar='DIR')
     
     main(rundir, args=parser.parse_args())
