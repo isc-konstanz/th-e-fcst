@@ -49,15 +49,14 @@ class Forecast:
         if NeuralNetwork == None:
             NeuralNetwork = neuralnetwork(configs)
             myModel = NeuralNetwork.get()
-            
-        # 1. get input data in reshaped form
-        inputData = []
-        # 2. retrain model 
-        NeuralNetwork.train(myModel, inputData)
-        # 3. predict recursive
-        PredictionResult = NeuralNetwork.predict(myModel, inputData)
+        
+        inputData = []  # 1. get input data in reshaped form
+        
+        NeuralNetwork.train(myModel, inputData)  # 2. retrain model 
+        
+        result = NeuralNetwork.predict(myModel, inputData)  # 3. predict recursive
 
-        return PredictionResult
+        return result
 
     def persist(self, result):
         for database in reversed(self.databases.values()):
