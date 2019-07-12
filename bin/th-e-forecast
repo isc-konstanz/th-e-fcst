@@ -33,13 +33,13 @@ def main(rundir, args=None):
     
     try:
         result = system.execute()
-    
+        
     except (ForecastException) as e:
         logger.error('Fatal forecast error: %s', str(e))
-        sys.exit(1)
+        sys.exit(1)  # abnormal termination
     
     system.persist(result)
-    sys.exit(0)
+    sys.exit(0)  # successful termination
 
 
 if __name__ == '__main__':

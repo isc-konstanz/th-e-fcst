@@ -41,10 +41,19 @@ class Forecast:
         
         return enabled
 
-    def execute(self):
-        # TODO: Do the forecast
+    def execute(self, NeuralNetwork = None):
         logger.info("Starting th-e-forecast")
         
+        if NeuralNetwork == None:
+            # load trained neural network
+            
+        # TODO: Do the forecast
+        
+        # 1. get input data in reshaped form
+        # 2. retrain model 
+        # 3. predict recursive
+        
+
         return
 
     def persist(self, result):
