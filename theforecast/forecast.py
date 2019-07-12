@@ -9,6 +9,7 @@ from collections import OrderedDict
 from configparser import ConfigParser
 import logging
 import os
+from theforecast import neuralnetwork
 
 from .database import CsvDatabase
 
@@ -41,20 +42,22 @@ class Forecast:
         
         return enabled
 
-    def execute(self, NeuralNetwork = None):
+    def execute(self, NeuralNetwork=None, configs):
         logger.info("Starting th-e-forecast")
         
+        # load trained neural network
         if NeuralNetwork == None:
-            # load trained neural network
+            NeuralNetwork = neuralnetwork(configs)
+            myModel = NeuralNetwork.get()
             
-        # TODO: Do the forecast
-        
         # 1. get input data in reshaped form
+        inputData = []
         # 2. retrain model 
+        NeuralNetwork.train(myModel, inputData)
         # 3. predict recursive
-        
+        PredictionResult = NeuralNetwork.predict(myModel, inputData)
 
-        return
+        return PredictionResult
 
     def persist(self, result):
         for database in reversed(self.databases.values()):

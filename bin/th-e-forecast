@@ -32,7 +32,7 @@ def main(rundir, args=None):
     system = Forecast(configs)
     
     try:
-        result = system.execute()
+        result = system.execute(configs)
         
     except (ForecastException) as e:
         logger.error('Fatal forecast error: %s', str(e))
