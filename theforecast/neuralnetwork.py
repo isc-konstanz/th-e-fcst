@@ -6,6 +6,11 @@ Created on 12.07.2019
 import os
 from configparser import ConfigParser
 import keras
+import logging
+import sys
+import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class NeuralNetwork:
@@ -16,18 +21,27 @@ class NeuralNetwork:
         neuralnetworkfile = os.path.join(configs, 'neuralnetwork.cfg')
         settings = ConfigParser()
         settings.read(neuralnetworkfile)
+        self.dropout = settings.getint('General', 'dropout')
+        self.nLayers = settings.getint('General', 'layers')
+        self.nNeurons = settings.getint('General', 'neurons')
+        self.lookBack = settings.getint('General', 'lookBack')
+        self.dimension = settings.getint('General', 'dimension')
+        
+    def load(self, path):
+        try:
+            model = keras.models.load_model(path + '\\NNModel')
+        except (OSError) as e:
+            logger.error('Fatal forecast error: %s', str(e))
+            sys.exit(1)  # abnormal termination
+        return model
     
-    def get(self, configs):
-        # TODO: load the trained neural network
-        return
-    
-    def set(self, model, configs):
-        # TODO: safe the neural network
-        # model.save()
-        return 
+    def save(self, model, path):
+        # safe the neural network
+        model.save(path + '\\NNModel')
     
     def train(self, model, inputData):
-        return
+        
+        return model
     
     def predict(self, model, inputData):
         return 

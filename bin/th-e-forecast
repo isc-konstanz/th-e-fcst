@@ -4,12 +4,13 @@
     th-e-forecast
     ~~~~~
     
-    
 """
 import logging.config
 
 import sys
 import os
+from boto import config
+from pygments.lexers import configs
 sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
 
 from argparse import ArgumentParser
@@ -21,6 +22,7 @@ import inspect
 
 def main(rundir, args=None):
     from theforecast import Forecast, ForecastException
+    from theforecast.neuralnetwork import NeuralNetwork
     
     if args.configs != None:
         configs = args.configs
@@ -28,17 +30,22 @@ def main(rundir, args=None):
     else:
         configs = os.path.join(rundir, 'conf')
     
-    # Read the energy forecast, the parameters of each system components and the specific costs
+    # load neural netwok    
     system = Forecast(configs)
+    network = NeuralNetwork(configs)
+    pathNN = os.path.join(rundir, 'theforecast')
+    theNeuralNetwork = network.load(pathNN)
     
-    try:
-        result = system.execute(configs)
-        
-    except (ForecastException) as e:
-        logger.error('Fatal forecast error: %s', str(e))
-        sys.exit(1)  # abnormal termination
+    while True:           
+        try:
+            result = system.execute(configs, network, theNeuralNetwork)
+            # time.sleep(60)
+        except (ForecastException) as e:
+            logger.error('Fatal forecast error: %s', str(e))
+            sys.exit(1)  # abnormal termination
     
-    system.persist(result)
+            system.persist(result)
+            
     sys.exit(0)  # successful termination
 
 

@@ -42,7 +42,7 @@ class Forecast:
         
         return enabled
 
-    def execute(self, NeuralNetwork=None, configs):
+    def execute(self, configs, NNModel, NeuralNetwork=None):
         logger.info("Starting th-e-forecast")
         
         # load trained neural network
@@ -52,7 +52,7 @@ class Forecast:
         
         inputData = []  # 1. get input data in reshaped form
         
-        NeuralNetwork.train(myModel, inputData)  # 2. retrain model 
+        NeuralNetwork = NNModel.train(myModel, inputData)  # 2. retrain model 
         
         result = NeuralNetwork.predict(myModel, inputData)  # 3. predict recursive
 
