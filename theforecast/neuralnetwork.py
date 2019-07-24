@@ -17,7 +17,6 @@ class NeuralNetwork:
     
     def __init__(self, configs):
         # get CNN configurations:
-        # TODO: define CNN config-file
         neuralnetworkfile = os.path.join(configs, 'neuralnetwork.cfg')
         settings = ConfigParser()
         settings.read(neuralnetworkfile)

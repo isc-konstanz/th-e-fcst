@@ -30,11 +30,15 @@ def main(rundir, args=None):
     else:
         configs = os.path.join(rundir, 'conf')
     
-    # load neural netwok    
+    # load prediction class  
     system = Forecast(configs)
+    
+    # load neural network  
     network = NeuralNetwork(configs)
     pathNN = os.path.join(rundir, 'theforecast')
     theNeuralNetwork = network.load(pathNN)
+    
+    # load data
     
     while True:           
         try:
