@@ -11,19 +11,20 @@ import logging
 import os
 
 import datetime as dt
+import numpy as np
+import math
 import pandas as pd
 import pytz as tz
+from astropy.units import Bi, dT
+from dask.dataframe.tests.test_rolling import dts
 
 logger = logging.getLogger(__name__)
-
-
 
 
 class Database(ABC):
 
     def __init__(self, timezone='UTC'):
         self.timezone = tz.timezone(timezone)
-
 
     @abstractmethod
     def get(self, keys, start, end, interval):
@@ -59,12 +60,11 @@ class Database(ABC):
         """
         pass
 
-
     @abstractmethod
     def last(self, keys, interval):
         """
         Retrieve the last recorded values for a specified set of data feeds
-        
+
         :param keys: 
             the keys for which the values will be looked up for.
         :type keys: 
@@ -76,7 +76,6 @@ class Database(ABC):
             int
         """
         pass
-
 
     @abstractmethod
     def persist(self, data):
@@ -100,21 +99,34 @@ class CsvDatabase(Database):
         settings = ConfigParser()
         settings.read(settingsfile)
         
-        self.output = settings.get('CSV','output')
+        self.output = settings.get('CSV', 'output')
+        self.decimal = settings.get('CSV', 'decimal')
+        self.separator = settings.get('CSV', 'separator')
+        self.summarize = settings.getboolean('CSV', 'summarize')
         
-        self.decimal = settings.get('CSV','decimal')
-        self.separator = settings.get('CSV','separator')
-        self.summarize = settings.getboolean('CSV','summarize')
-        
-        datafile = os.path.join(settings.get('CSV','input'), 'household.csv')
+        filename = 'BI_jul_aug.csv'
+        datafile = os.path.join(settings.get('CSV', 'input'), filename)
         if os.path.isfile(datafile):
             self.data = self.read_file(datafile)
-
-
+            
+#             dataframe = pd.read_csv(datafile)
+#             dataBi = dataframe.loc[:]['y']
+#             dataBi = dataBi.values.astype('float32')
+#             dataDayTime = dataframe.loc[:]['datetime']
+#              
+#             dataSeason = np.zeros([len(dataDayTime)])
+#              
+#             for i in range (len(dataDayTime)):   
+#                 hourOfYear = dataDayTime[int((i + 0.5) * 15)].timetuple().tm_yday * 24
+#                 hourOfYear = hourOfYear + int(dataDayTime[i] / 3600)
+#                 dataSeason[i] = -0.5 * math.cos(hourOfYear / 365 / 24 * 2 * math.pi - 360 / 365 / 24 * 2 * math.pi) + 0.5
+#              
+#             hourOfY = dataDayTime.timetuple().tm_yday * 24
+                
     def get(self, keys, start, end, interval):
         if interval > 900:
             offset = (start - start.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() % interval
-            data = self.data[keys].resample(str(int(interval))+'s', base=offset).sum()
+            data = self.data[keys].resample(str(int(interval)) + 's', base=offset).sum()
         else:
             data = self.data[keys]
         
@@ -131,14 +143,12 @@ class CsvDatabase(Database):
         else:
             return data.truncate(before=start).head(1)
 
-
     def last(self, keys, interval):
         date = dt.datetime.now(tz.utc).replace(second=0, microsecond=0)
-        if date.minute % (interval/60) != 0:
-            date = date - dt.timedelta(minutes=date.minute % (interval/60))
+        if date.minute % (interval / 60) != 0:
+            date = date - dt.timedelta(minutes=date.minute % (interval / 60))
         
         return self.get(keys, date, date, interval)
-
 
     def persist(self, data):
         if data is not None:
@@ -155,7 +165,6 @@ class CsvDatabase(Database):
                 
             else:
                 self.write_file(path, data)
-
 
     def read_file(self, path, index_column='unixtimestamp', unix=True):
         """
@@ -190,9 +199,9 @@ class CsvDatabase(Database):
         :rtype: 
             :class:`pandas.DataFrame`
         """
-        csv = pd.read_csv(path, sep=',', decimal='.', 
+        csv = pd.read_csv(path, sep=self.separator, decimal=self.decimal,
                           index_col=index_column, parse_dates=[index_column])
-        
+
         if not csv.empty:
             if unix:
                 csv.index = pd.to_datetime(csv.index, unit='ms')
@@ -202,7 +211,6 @@ class CsvDatabase(Database):
         csv.index.name = 'time'
         
         return csv
-
 
     def read_nearest_file(self, date, path, index_column='time'):
         """
@@ -262,14 +270,12 @@ class CsvDatabase(Database):
         
         return csv
 
-
     def write_file(self, path, data):
         filename = data.index[0].astimezone(self.timezone).strftime('%Y%m%d_%H%M%S') + '_sim.csv';
         filepath = os.path.join(path, filename)
         
         data.index.name = 'time'
         data.tz_convert(self.timezone).astype(float).round(3).to_csv(filepath, sep=self.separator, decimal=self.decimal, encoding='utf-8')
-
 
     def concat_file(self, path, data):
         filename = data.index[0].astimezone(self.timezone).strftime('%Y') + '_sim.csv';

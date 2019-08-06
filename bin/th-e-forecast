@@ -11,6 +11,7 @@ import sys
 import os
 from boto import config
 from pygments.lexers import configs
+from theforecast.database import CsvDatabase
 sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
 
 from argparse import ArgumentParser
@@ -34,11 +35,11 @@ def main(rundir, args=None):
     system = Forecast(configs)
     
     # load neural network  
-    network = NeuralNetwork(configs)
-    pathNN = os.path.join(rundir, 'theforecast')
-    theNeuralNetwork = network.load(pathNN)
+    neuralNetwork = NeuralNetwork(configs)
+    theNeuralNetwork = neuralNetwork.create()
     
-    # load data
+    # get training data:
+    dBase = CsvDatabase() 
     
     while True:           
         try:

@@ -16,16 +16,35 @@ logger = logging.getLogger(__name__)
 class NeuralNetwork:
     
     def __init__(self, configs):
-        # get CNN configurations:
+        # get NN configurations:
         neuralnetworkfile = os.path.join(configs, 'neuralnetwork.cfg')
         settings = ConfigParser()
         settings.read(neuralnetworkfile)
-        self.dropout = settings.getint('General', 'dropout')
+        self.dropout = settings.getfloat('General', 'dropout')
         self.nLayers = settings.getint('General', 'layers')
         self.nNeurons = settings.getint('General', 'neurons')
         self.lookBack = settings.getint('General', 'lookBack')
+        self.lookAhead = settings.getint('General', 'lookAhead')
         self.dimension = settings.getint('General', 'dimension')
-        
+    
+    def create(self):    
+        model = keras.Sequential()
+        model.add(keras.layers.LSTM(self.nNeurons, input_shape=(3, self.lookBack), return_sequences=True))
+        model.add(keras.layers.Dropout(self.dropout))
+        for z in range(self.nLayers - 1):
+            model.add(keras.layers.Dense(self.nNeurons, activation='sigmoid')) 
+            model.add(keras.layers.Dropout(self.dropout))
+        model.add(keras.layers.Dense(self.lookAhead, activation='sigmoid'))
+        model.compile(loss='mean_squared_error', optimizer='adam')
+        return model
+    
+    def train(self, model, trainingData):
+        try: 
+            model.fit(trainingData)
+        except(ImportError) as e:
+            logger.error('Trainig error : %s', str(e))
+        return model  
+    
     def load(self, path):
         try:
             model = keras.models.load_model(path + '\\NNModel')
@@ -37,10 +56,6 @@ class NeuralNetwork:
     def save(self, model, path):
         # safe the neural network
         model.save(path + '\\NNModel')
-    
-    def train(self, model, inputData):
-        
-        return model
     
     def predict(self, model, inputData):
         return 
