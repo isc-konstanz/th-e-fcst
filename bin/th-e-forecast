@@ -33,13 +33,12 @@ def main(rundir, args=None):
     
     # load prediction class  
     system = Forecast(configs)
+    dataTraining = system.databases['CSV'].data
     
-    # load neural network  
-    neuralNetwork = NeuralNetwork(configs)
-    theNeuralNetwork = neuralNetwork.create()
-    
-    # get training data:
-    dBase = CsvDatabase() 
+    # initialize neural network  
+    NNClass = NeuralNetwork(configs)
+    theNeuralNetwork = NNClass.create()
+    theNeuralNetwork = NNClass.train(theNeuralNetwork, dataTraining)
     
     while True:           
         try:

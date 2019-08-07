@@ -63,3 +63,9 @@ class NeuralNetwork:
     def predictRecursive(self):
         return
     
+    def getInputVector(self):
+        return 
+
+    def getInputVectorTraining(self):
+        return
+    

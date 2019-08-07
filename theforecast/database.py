@@ -12,11 +12,8 @@ import os
 
 import datetime as dt
 import numpy as np
-import math
 import pandas as pd
 import pytz as tz
-from astropy.units import Bi, dT
-from dask.dataframe.tests.test_rolling import dts
 
 logger = logging.getLogger(__name__)
 
@@ -109,20 +106,22 @@ class CsvDatabase(Database):
         if os.path.isfile(datafile):
             self.data = self.read_file(datafile)
             
-#             dataframe = pd.read_csv(datafile)
-#             dataBi = dataframe.loc[:]['y']
-#             dataBi = dataBi.values.astype('float32')
-#             dataDayTime = dataframe.loc[:]['datetime']
-#              
-#             dataSeason = np.zeros([len(dataDayTime)])
-#              
-#             for i in range (len(dataDayTime)):   
-#                 hourOfYear = dataDayTime[int((i + 0.5) * 15)].timetuple().tm_yday * 24
-#                 hourOfYear = hourOfYear + int(dataDayTime[i] / 3600)
-#                 dataSeason[i] = -0.5 * math.cos(hourOfYear / 365 / 24 * 2 * math.pi - 360 / 365 / 24 * 2 * math.pi) + 0.5
-#              
-#             hourOfY = dataDayTime.timetuple().tm_yday * 24
-                
+   #     self.data = np.concatenate([dataBi.reshape(1,len(dataBi)),dataDayTime.reshape(1,len(dataBi)),dataSeason.reshape(1,len(dataBi))], axis = 1) 
+
+    def get_seconds(self, data):
+        l = len(data)
+        seconds = np.zeros([l, 1])
+    
+        for z in range(0, l):
+            data_temp = data[int((z + 0.5))].strftime('%Y %m %w %H %M %S')
+            data_temp = data_temp.split()
+    
+            hh = int(data_temp[3]) * 3600
+            mm = int(data_temp[4]) * 60
+            ss = int(data_temp[5])
+            seconds[z, :] = hh + mm + ss 
+        return seconds            
+    
     def get(self, keys, start, end, interval):
         if interval > 900:
             offset = (start - start.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() % interval
@@ -199,18 +198,31 @@ class CsvDatabase(Database):
         :rtype: 
             :class:`pandas.DataFrame`
         """
-        csv = pd.read_csv(path, sep=self.separator, decimal=self.decimal,
-                          index_col=index_column, parse_dates=[index_column])
+        
+        csv = pd.read_csv(path, sep=self.separator, decimal=self.decimal, parse_dates=[0])
+                    
+        dataBi = csv.loc[:]['y']
+        dataBi = dataBi.values.astype('float32')
+        dataDatetime = csv.loc[:]['unixtimestamp']
+        
+        hourOfYear = np.zeros([len(dataDatetime)])
+        for i in range (len(dataDatetime)): 
+            hourOfYear[i] = dataDatetime[i].timetuple().tm_yday * 24 + int(dataDatetime[i].minute / 60)
+               
+        dataSeason = -0.5 * np.cos((hourOfYear - 360) / 365 / 24 * 2 * np.pi) + 0.5
 
-        if not csv.empty:
-            if unix:
-                csv.index = pd.to_datetime(csv.index, unit='ms')
-                
-            csv.index = csv.index.tz_localize(tz.timezone('UTC')).tz_convert(self.timezone)
+#         csv = pd.read_csv(path, sep=self.separator, decimal=self.decimal,
+#                           index_col=index_column, parse_dates=[index_column])
+# 
+#         if not csv.empty:
+#             if unix:
+#                 csv.index = pd.to_datetime(csv.index, unit='ms')
+#                 
+#             csv.index = csv.index.tz_localize(tz.timezone('UTC')).tz_convert(self.timezone)
+#         
+#         csv.index.name = 'time'
         
-        csv.index.name = 'time'
-        
-        return csv
+        return [dataBi, dataDatetime, dataSeason]
 
     def read_nearest_file(self, date, path, index_column='time'):
         """
