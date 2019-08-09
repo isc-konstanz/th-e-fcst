@@ -100,27 +100,11 @@ class CsvDatabase(Database):
         self.decimal = settings.get('CSV', 'decimal')
         self.separator = settings.get('CSV', 'separator')
         self.summarize = settings.getboolean('CSV', 'summarize')
+        self.file = settings.get('CSV', 'file')
         
-        filename = 'BI_jul_aug.csv'
-        datafile = os.path.join(settings.get('CSV', 'input'), filename)
+        datafile = os.path.join(settings.get('CSV', 'input'), self.file)
         if os.path.isfile(datafile):
             self.data = self.read_file(datafile)
-            
-   #     self.data = np.concatenate([dataBi.reshape(1,len(dataBi)),dataDayTime.reshape(1,len(dataBi)),dataSeason.reshape(1,len(dataBi))], axis = 1) 
-
-    def get_seconds(self, data):
-        l = len(data)
-        seconds = np.zeros([l, 1])
-    
-        for z in range(0, l):
-            data_temp = data[int((z + 0.5))].strftime('%Y %m %w %H %M %S')
-            data_temp = data_temp.split()
-    
-            hh = int(data_temp[3]) * 3600
-            mm = int(data_temp[4]) * 60
-            ss = int(data_temp[5])
-            seconds[z, :] = hh + mm + ss 
-        return seconds            
     
     def get(self, keys, start, end, interval):
         if interval > 900:

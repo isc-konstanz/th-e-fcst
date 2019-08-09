@@ -25,6 +25,10 @@ def main(rundir, args=None):
     from theforecast import Forecast, ForecastException
     from theforecast.neuralnetwork import NeuralNetwork
     
+    # Parameter:
+    nTrainingDays = 30
+    nInputDays = 7
+    
     if args.configs != None:
         configs = args.configs
         logger.debug('System configurations will be read in from "%s"', configs)
@@ -33,22 +37,30 @@ def main(rundir, args=None):
     
     # load prediction class  
     system = Forecast(configs)
-    dataTraining = system.databases['CSV'].data
+    data = system.databases['CSV'].data
+
+    iStart = -nTrainingDays * 1440 - nInputDays * 1440
+    dataTraining = [data[0][iStart:],
+                    data[1][iStart:],
+                    data[2][iStart:]]
     
-    # initialize neural network  
-    NNClass = NeuralNetwork(configs)
-    theNeuralNetwork = NNClass.create()
-    theNeuralNetwork = NNClass.train(theNeuralNetwork, dataTraining)
-    
+    X, Y = system.neuralnetwork.getInputVector(dataTraining,
+                                               system.neuralnetwork.lookBack,
+                                               system.neuralnetwork.lookAhead,
+                                               system.neuralnetwork.fMin,
+                                               training=True)
+     
+    system.neuralnetwork.model.fit(X, Y, epochs=1, batch_size=64, verbose=2)
+    # TODO: safe model under the config path
     while True:           
         try:
-            result = system.execute(configs, network, theNeuralNetwork)
+            input, result = system.execute()
             # time.sleep(60)
         except (ForecastException) as e:
             logger.error('Fatal forecast error: %s', str(e))
             sys.exit(1)  # abnormal termination
-    
-            system.persist(result)
+        
+        system.persist(result)
             
     sys.exit(0)  # successful termination
 
