@@ -14,7 +14,6 @@ from theforecast.neuralnetwork import NeuralNetwork
 from .database import CsvDatabase
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy import signal
 
 logger = logging.getLogger(__name__)
 
@@ -49,33 +48,45 @@ class Forecast:
     def __init_neuralnetwork__(self, configs):
         return NeuralNetwork(configs)
         
-    def execute(self):
+    def execute(self, pred_start, k):
         logger.info("Starting th-e-forecast")
+        # get new data from CSV-file
+        # data = self.databases['CSV'].read_file('C:\\Users\\sf\\Software\\eclipse\\PyWorkspace\\th-e-forecast\\bin\\lib\\BI_jul_aug.csv')
+        data = self.databases['CSV'].data
         theNN = self.neuralnetwork
-        data = self.databases['CSV'].data  # 1. get input data
+        data = [data[0][:pred_start + k],
+                data[1][:pred_start + k],
+                data[2][:pred_start + k]]
+        n_training_days = 30
         
-        # TODO: hier muesste es sein: databases.get() neuste daten aus der DB abrufen
-        b, a = signal.butter(8, 0.01)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
-        data[0] = signal.filtfilt(b, a, data[0], padlen=150)
+        # retrain model
+        data_input_retrain = [data[0][-1440 * 7 * n_training_days:],
+                              data[1][-1440 * 7 * n_training_days:],
+                              data[2][-1440 * 7 * n_training_days:]]
+        X_train, Y_train = theNN.getInputVector(data_input_retrain,
+                                                theNN.lookBack,
+                                                theNN.lookAhead,
+                                                theNN.fMin,
+                                                training=True)
+        theNN.model.fit(X_train, Y_train, epochs=1, batch_size=64, verbose=2)
         
-        # TODO: train the newest data
-        X, Y = theNN.getInputVector(data, theNN.lookBack, theNN.lookAhead, theNN.fMin, training=True)
-        theNN.model.fit(X, Y, epochs=2, batch_size=64, verbose=2)
-        # TODO: create input vector and predict
-        X, Y = theNN.getInputVector(data, theNN.lookBack, theNN.lookAhead, theNN.fMin, training=False)
-        prediction = theNN.model.predict(X[0:1])
-        
-        # plot results:
-        plt.plot(np.linspace(0, 7, 328), X[0].transpose())
-        plt.plot(np.linspace(7, 8, 288), prediction[0, :, :].transpose())
-        
-        return X, prediction
+        # prediction
+        data_input_pred = [data[0][-1440 * 7:],
+                           data[1][-1440 * 7:],
+                           data[2][-1440 * 7:]]
+        X_pred = theNN.getInputVector(data_input_pred,
+                                      theNN.lookBack,
+                                      theNN.lookAhead,
+                                      theNN.fMin,
+                                      training=False)
+        prediction = theNN.model.predict(X_pred)
+        return X_pred, prediction
 
     def persist(self, result):
         for database in reversed(self.databases.values()):
             database.persist(result)
-
-
+    
+        
 class ForecastException(Exception):
     """
     Raise if any error occurred during the forecast.

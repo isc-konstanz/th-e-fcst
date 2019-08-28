@@ -10,6 +10,9 @@ import logging
 import sys
 import numpy as np
 import theforecast.processing as processing
+import matplotlib.pyplot as plt
+from scipy import signal
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,7 +31,9 @@ class NeuralNetwork:
         self.dropout = settings.getfloat('General', 'dropout')
         self.nLayers = settings.getint('General', 'layers')
         self.nNeurons = settings.getint('General', 'neurons')
-        self.lookAhead = int(settings.getint('General', 'lookAhead') / self.fMin)
+        self.lookAhead = int(settings.getint('General', 'lookAhead'))
+        if self.lookAhead < self.fMin:
+            self.lookAhead = self.fMin
         self.dimension = settings.getint('General', 'dimension')
         
         self.model = self.create()
@@ -40,7 +45,7 @@ class NeuralNetwork:
         for z in range(self.nLayers - 1):
             model.add(keras.layers.Dense(self.nNeurons, activation='sigmoid')) 
             model.add(keras.layers.Dropout(self.dropout))
-        model.add(keras.layers.Dense(self.lookAhead, activation='sigmoid'))
+        model.add(keras.layers.Dense(int(self.lookAhead / self.fMin), activation='sigmoid'))
         model.compile(loss='mean_squared_error', optimizer='adam')
         return model
     
@@ -56,16 +61,9 @@ class NeuralNetwork:
         except (OSError) as e:
             logger.error('Fatal forecast error: %s', str(e))
             sys.exit(1)  # abnormal termination
-        return model
+        return model   
     
-    def save(self, model, path):
-        # safe the neural network
-        model.save(path + '\\NNModel')
-    
-    def predict(self, model, inputData):
-        return 
-    
-    def predictRecursive(self):
+    def _predict_recursive(self):
         return
     
     def getInputVector(self, data, lookBack, lookAhead, fMin, training=False):
@@ -75,15 +73,16 @@ class NeuralNetwork:
         :param lookBack:
             number of timesteps (in minutes) the NN looks back for prediction
         :param lookAhead:
-            number of timesteps (in fMin) the NN predicts
+            number of timesteps (in minutes) the NN predicts
         :param fMin:
             smallest interval in the created input vector. All other intervals are fixed 
         """
         
         dataBiNorm = (data[0] + 1) / 2
-        # TODO: data[1] is a series of datetimes and hast index starting at 33121. need to reset this index
-        # how can i handle this???
-        dataDT = processing.getDaytime(data[1])
+        b, a = signal.butter(8, 0.01)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
+        dataBiNorm = signal.filtfilt(b, a, dataBiNorm, padlen=150)
+        
+        dataDT = processing.getDaytime(data[1].reset_index()['unixtimestamp'])
         dataDTNorm = dataDT / (24 * 60 * 60)
         dataSeasonNorm = data[2]
         
@@ -92,9 +91,9 @@ class NeuralNetwork:
         dataSeasonNorm = dataSeasonNorm.reshape(dataSeasonNorm.shape[0], 1)
         
         # reshape into X=t and Y=t+1 ( data needs to be normalized
-        X_bi, Y_bi = processing.create_datasetBI(dataBiNorm, lookBack, lookAhead, fMin, training)
-        X_dt, Y_dt = processing.create_datasetDT(dataDTNorm, lookBack, lookAhead, fMin, training)
-        X_season, Y_season = processing.create_datasetDT(dataSeasonNorm, lookBack, lookAhead, fMin, training)
+        X_bi, Y_bi = processing.create_dataset(dataBiNorm, lookBack, lookAhead, fMin, training)
+        X_dt, Y_dt = processing.create_dataset(dataDTNorm, lookBack, lookAhead, fMin, training)
+        X_season, Y_season = processing.create_dataset(dataSeasonNorm, lookBack, lookAhead, fMin, training)
         
         # reshape input to be [samples, time steps, features]
         X_bi = np.reshape(X_bi, (X_bi.shape[0], 1, X_bi.shape[1]))

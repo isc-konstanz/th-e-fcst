@@ -19,6 +19,11 @@ from configparser import ConfigParser
 import json
 import shutil
 import inspect
+import matplotlib.pyplot as plt
+from keras.models import load_model
+import numpy as np
+import time
+from scipy import signal
 
 
 def main(rundir, args=None):
@@ -39,28 +44,54 @@ def main(rundir, args=None):
     system = Forecast(configs)
     data = system.databases['CSV'].data
 
-    iStart = -nTrainingDays * 1440 - nInputDays * 1440
-    dataTraining = [data[0][iStart:],
-                    data[1][iStart:],
-                    data[2][iStart:]]
+    iStart = (nTrainingDays - nInputDays) * 1440
+    dataTraining = [data[0][iStart:],  # BI
+                    data[1][iStart:],  # DT
+                    data[2][iStart:]]  # Season
     
     X, Y = system.neuralnetwork.getInputVector(dataTraining,
                                                system.neuralnetwork.lookBack,
                                                system.neuralnetwork.lookAhead,
                                                system.neuralnetwork.fMin,
                                                training=True)
-     
-    system.neuralnetwork.model.fit(X, Y, epochs=1, batch_size=64, verbose=2)
+    
+    load_model_conf = True
+    if load_model_conf:
+         system.neuralnetwork.model = load_model('myModel')
+         # system.neuralnetwork.model.fit(X, Y, epochs=1, batch_size=64, verbose=2)
+    if not load_model_conf:
+        system.neuralnetwork.model.fit(X, Y, epochs=5, batch_size=64, verbose=2)
+        system.neuralnetwork.model.save('myModel')
     # TODO: safe model under the config path
+    k = 0
+    pred_start = 50 * 1440
     while True:           
         try:
-            input, result = system.execute()
-            # time.sleep(60)
+            input, prediction = system.execute(pred_start, k)
+            k = k + system.neuralnetwork.fMin
         except (ForecastException) as e:
             logger.error('Fatal forecast error: %s', str(e))
             sys.exit(1)  # abnormal termination
         
-        system.persist(result)
+        # system.databases['CSV'].persist(prediction)
+        
+        plt.figure(1)
+        plt.clf()
+        bi = (system.databases['CSV'].data[0][pred_start - 7 * 1440 + k:pred_start + 1440 + k] + 1) / 2
+        b, a = signal.butter(8, 0.01)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
+        bi = signal.filtfilt(b, a, bi, padlen=150)
+        
+        plt.plot(np.linspace(50 + k / 1440, 58 + k / 1440, 8 * 1440), bi, 'k--')
+        plt.plot(np.linspace(50 + k / 1440, 55 + k / 1440, 120), input[0, 0, 0:120], 'r--')
+        plt.plot(np.linspace(55 + k / 1440, 56.9166 + k / 1440, 184), input[0, 0, 120:304], 'r')
+        plt.plot(np.linspace(56.9166 + k / 1440, 57 + k / 1440, 24), input[0, 0, 304:], 'g')
+        plt.plot(np.linspace(57 + k / 1440, 58 + k / 1440, int(system.neuralnetwork.lookAhead / system.neuralnetwork.fMin)), prediction[0, :, :].transpose(), 'b')
+        plt.grid()
+        plt.xlim([53 + k / 1440, 58.2 + k / 1440])
+        plt.pause(0.1)
+        plt.savefig('plots\\name' + str(k))
+        
+        time.sleep(1)
             
     sys.exit(0)  # successful termination
 
