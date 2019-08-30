@@ -11,7 +11,6 @@ import logging
 import os
 
 import datetime as dt
-import numpy as np
 import pandas as pd
 import pytz as tz
 
@@ -184,16 +183,17 @@ class CsvDatabase(Database):
         """
         
         csv = pd.read_csv(path, sep=self.separator, decimal=self.decimal, parse_dates=[0])
-                    
-        dataBi = csv.loc[:]['y']
-        dataBi = dataBi.values.astype('float32')
-        dataDatetime = csv.loc[:]['unixtimestamp']
-        
-        hourOfYear = np.zeros([len(dataDatetime)])
-        for i in range (len(dataDatetime)): 
-            hourOfYear[i] = dataDatetime[i].timetuple().tm_yday * 24 + int(dataDatetime[i].minute / 60)
-               
-        dataSeason = -0.5 * np.cos((hourOfYear - 360) / 365 / 24 * 2 * np.pi) + 0.5
+        if not csv.empty:           
+            dataBi = csv.loc[:]['y']
+            dataBi = dataBi.values.astype('float32')
+            dataDatetime = csv.loc[:]['unixtimestamp']
+            
+            return [dataBi, dataDatetime]
+#         hourOfYear = np.zeros([len(dataDatetime)])
+#         for i in range (len(dataDatetime)): 
+#             hourOfYear[i] = dataDatetime[i].timetuple().tm_yday * 24 + int(dataDatetime[i].minute / 60)
+#                
+#         dataSeason = -0.5 * np.cos((hourOfYear - 360) / 365 / 24 * 2 * np.pi) + 0.5
 
 #         csv = pd.read_csv(path, sep=self.separator, decimal=self.decimal,
 #                           index_col=index_column, parse_dates=[index_column])
@@ -205,8 +205,6 @@ class CsvDatabase(Database):
 #             csv.index = csv.index.tz_localize(tz.timezone('UTC')).tz_convert(self.timezone)
 #         
 #         csv.index.name = 'time'
-        
-        return [dataBi, dataDatetime, dataSeason]
 
     def read_nearest_file(self, date, path, index_column='time'):
         """

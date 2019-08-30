@@ -69,3 +69,8 @@ def create_dataset(data, look_back, pred_horizon, fMin, training):
             dataY[z, :] = data[z + i1 + i2 + i3:z + i1 + i2 + i3 + pred_horizon][::fMin, 0]
     return dataX, dataY
 
+
+def getdBI(data, fMin):
+    dBI = (data[1:] - data[:-1]) / fMin
+    return dBI
+    

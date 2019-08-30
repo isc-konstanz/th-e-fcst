@@ -26,6 +26,33 @@ import time
 from scipy import signal
 
 
+def plot_results(system, input, prediction, k, pred_start):
+    plt.figure(1)
+    plt.clf()
+    bi = (system.databases['CSV'].data[0][pred_start - 7 * 1440 + k:pred_start + 1440 + k] + 1) / 2
+    b, a = signal.butter(8, 0.01)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
+    bi = signal.filtfilt(b, a, bi, padlen=150)
+    
+    plt.plot(np.linspace(50 + k / 1440, 58 + k / 1440, 8 * 1440), bi, 'k--')
+    
+    plt.plot(np.linspace(50 + k / 1440, 55 + k / 1440, 120), input[0, 0, 0:120], 'r--')
+    plt.plot(np.linspace(55 + k / 1440, 56.9166 + k / 1440, 184), input[0, 0, 120:304], 'r')
+    plt.plot(np.linspace(56.9166 + k / 1440 + 7.5 / 1440, 57 + k / 1440, 24), input[0, 0, 304:], 'g')
+    
+#     plt.plot(np.linspace(50 + k / 1440, 55 + k / 1440, 120), input[0, 1, 0:120] * 100 + 0.5, 'g')
+#     plt.plot(np.linspace(55 + k / 1440, 56.9166 + k / 1440, 184), input[0, 1, 120:304] * 100 + 0.5, 'g')
+#     plt.plot(np.linspace(56.9166 + k / 1440 + 7.5 / 1440, 57 + k / 1440, 24), input[0, 1, 304:] * 100 + 0.5, 'g')
+    
+    plt.plot(np.linspace(57 + k / 1440 + 5 / 1440, 58 + k / 1440 + 5 / 1440, int(system.neuralnetwork.lookAhead / system.neuralnetwork.fMin)), prediction[0, :].transpose(), 'b')
+    # plt.plot(np.linspace(57 + k / 1440 + 5 / 1440, 58 + k / 1440 + 5 / 1440, int(system.neuralnetwork.lookAhead / system.neuralnetwork.fMin)), prediction[0, 1, :].transpose(), 'b--', linewidth=0.3)
+    # plt.plot(np.linspace(57 + k / 1440 + 5 / 1440, 58 + k / 1440 + 5 / 1440, int(system.neuralnetwork.lookAhead / system.neuralnetwork.fMin)), prediction[0, 2, :].transpose(), 'b') * 100 + 0.5
+    # plt.plot(np.linspace(57 + k / 1440 + 5 / 1440, 58 + k / 1440 + 5 / 1440, int(system.neuralnetwork.lookAhead / system.neuralnetwork.fMin)), prediction[0, 3, :].transpose(), 'b')
+    plt.grid()
+    plt.xlim([55 + k / 1440, 58.2 + k / 1440])
+    plt.pause(0.1)
+    plt.savefig('plots\\name' + str(k))
+    
+    
 def main(rundir, args=None):
     from theforecast import Forecast, ForecastException
     from theforecast.neuralnetwork import NeuralNetwork
@@ -46,8 +73,7 @@ def main(rundir, args=None):
 
     iStart = (nTrainingDays - nInputDays) * 1440
     dataTraining = [data[0][iStart:],  # BI
-                    data[1][iStart:],  # DT
-                    data[2][iStart:]]  # Season
+                    data[1][iStart:]]  # timestamp
     
     X, Y = system.neuralnetwork.getInputVector(dataTraining,
                                                system.neuralnetwork.lookBack,
@@ -55,43 +81,51 @@ def main(rundir, args=None):
                                                system.neuralnetwork.fMin,
                                                training=True)
     
-    load_model_conf = True
-    if load_model_conf:
-         system.neuralnetwork.model = load_model('myModel')
-         # system.neuralnetwork.model.fit(X, Y, epochs=1, batch_size=64, verbose=2)
-    if not load_model_conf:
-        system.neuralnetwork.model.fit(X, Y, epochs=5, batch_size=64, verbose=2)
-        system.neuralnetwork.model.save('myModel')
+    try:
+        model = load_model('myModel')
+        if model.get_config() == system.neuralnetwork.model.get_config():
+            system.neuralnetwork.model = model
+        elif model.get_config() != system.neuralnetwork.model.get_config():
+            system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=4, batch_size=64, verbose=2)
+            system.neuralnetwork.model.save('myModel')
+        # system.neuralnetwork.model.save('myModel2D')
+    except (OSError) as e:
+        system.neuralnetwork.model.fit(X, Y, epochs=8, batch_size=64, verbose=2)
+        system.neuralnetwork.model.save('myModel2D')
+        logger.error('No model found. Import error: %s', str(e))
+                    
+#     load_model_conf = False
+#     if load_model_conf:
+#          system.neuralnetwork.model = load_model('myModel4D')
+#          # system.neuralnetwork.model.fit(X, Y, epochs=1, batch_size=64, verbose=2)
+#     if not load_model_conf:
+#         system.neuralnetwork.model = load_model('myModel4D')
+#         system.neuralnetwork.model.fit(X, Y, epochs=1, batch_size=64, verbose=2)
+#         system.neuralnetwork.model.save('myModel4D')
     # TODO: safe model under the config path
+    
     k = 0
     pred_start = 50 * 1440
+    f_prediction = 10
+    
+    plt.figure(1)
+    mng = plt.get_current_fig_manager()
+    plt.pause(.1)
+    mng.window.showMaximized()
+    
     while True:           
         try:
-            input, prediction = system.execute(pred_start, k)
-            k = k + system.neuralnetwork.fMin
+            if k % f_prediction == 0:
+                input, prediction = system.execute(pred_start, k)
+                
         except (ForecastException) as e:
             logger.error('Fatal forecast error: %s', str(e))
             sys.exit(1)  # abnormal termination
-        
+        k = k + system.neuralnetwork.fMin
         # system.databases['CSV'].persist(prediction)
         
-        plt.figure(1)
-        plt.clf()
-        bi = (system.databases['CSV'].data[0][pred_start - 7 * 1440 + k:pred_start + 1440 + k] + 1) / 2
-        b, a = signal.butter(8, 0.01)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
-        bi = signal.filtfilt(b, a, bi, padlen=150)
-        
-        plt.plot(np.linspace(50 + k / 1440, 58 + k / 1440, 8 * 1440), bi, 'k--')
-        plt.plot(np.linspace(50 + k / 1440, 55 + k / 1440, 120), input[0, 0, 0:120], 'r--')
-        plt.plot(np.linspace(55 + k / 1440, 56.9166 + k / 1440, 184), input[0, 0, 120:304], 'r')
-        plt.plot(np.linspace(56.9166 + k / 1440, 57 + k / 1440, 24), input[0, 0, 304:], 'g')
-        plt.plot(np.linspace(57 + k / 1440, 58 + k / 1440, int(system.neuralnetwork.lookAhead / system.neuralnetwork.fMin)), prediction[0, :, :].transpose(), 'b')
-        plt.grid()
-        plt.xlim([53 + k / 1440, 58.2 + k / 1440])
-        plt.pause(0.1)
-        plt.savefig('plots\\name' + str(k))
-        
-        time.sleep(1)
+        plot_results(system, input, prediction, k, pred_start)
+        time.sleep(.1)
             
     sys.exit(0)  # successful termination
 
@@ -113,4 +147,4 @@ if __name__ == '__main__':
                         metavar='DIR')
     
     main(rundir, args=parser.parse_args())
-
+    
