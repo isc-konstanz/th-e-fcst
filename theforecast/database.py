@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from configparser import ConfigParser
 import logging
 import os
-
+import pandas
 import datetime as dt
 import pandas as pd
 import pytz as tz

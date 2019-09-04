@@ -62,14 +62,15 @@ class Forecast:
         # retrain model
         data_input_retrain = [data[0][-1440 * 7 * n_training_days:],
                               data[1][-1440 * 7 * n_training_days:]]
+        
         X_train, Y_train = theNN.getInputVector(data_input_retrain,
                                                 theNN.lookBack,
                                                 theNN.lookAhead,
                                                 theNN.fMin,
                                                 training=True)
-
-        theNN.model.fit(X_train, Y_train[:, 0, :], epochs=1, batch_size=64, verbose=2)
-
+ 
+        # theNN.model.fit(X_train, Y_train[:, 0, :], epochs=1, batch_size=64, verbose=2)
+        
         # prediction
         data_input_pred = [data[0][-1440 * 7:],
                            data[1][-1440 * 7:]]
@@ -78,13 +79,12 @@ class Forecast:
                                       theNN.lookAhead,
                                       theNN.fMin,
                                       training=False)
-        prediction = np.zeros([20, int(theNN.lookAhead / theNN.fMin)])
-        for j in range(20):
-            prediction[j, :] = theNN.model.predict(X_pred)[0, :]
-            plt.plot(prediction[j, :], 'g-', linewidth=0.5)
         
+        prediction = np.zeros([10, int(theNN.lookAhead)])
+        for j in range(10):
+            prediction[j, :] = theNN.model.predict(X_pred)[0, :]
         pred_mean = np.mean(prediction, axis=0)
-        plt.plot(pred_mean, 'r')
+
         return X_pred, pred_mean
 
     def persist(self, result):

@@ -59,7 +59,7 @@ class NeuralNetwork:
         x = keras.layers.Dropout(self.dropout)(x, training=True)
         x = keras.layers.LSTM(self.nNeurons)(x, training=True)
         x = keras.layers.Dropout(self.dropout)(x, training=True)
-        outputs = keras.layers.Dense(int(self.lookAhead / self.fMin))(x)
+        outputs = keras.layers.Dense(int(self.lookAhead))(x)
         model = keras.Model(inputs, outputs)
         model.compile(loss='mean_squared_error', optimizer='adam', metrics=['mae', 'mse']) 
         return model
@@ -91,7 +91,7 @@ class NeuralNetwork:
         """
         
         dataBiNorm = (data[0] + 1) / 2
-        b, a = signal.butter(8, 0.01)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
+        b, a = signal.butter(8, 0.015)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
         dataBiNorm = signal.filtfilt(b, a, dataBiNorm, padlen=150)
         
         data[1] = data[1].reset_index()['unixtimestamp']
@@ -104,36 +104,31 @@ class NeuralNetwork:
                 
         dataSeasonNorm = -0.5 * np.cos((hourOfYear - 360) / 365 / 24 * 2 * np.pi) + 0.5
         
-        data_dBI = processing.getdBI(dataBiNorm, self.fMin) 
-        data_dBI = np.append(data_dBI[0], data_dBI)
-        # dataSeasonNorm = data[2]
-        
         dataBiNorm = dataBiNorm.reshape(dataBiNorm.shape[0], 1)
-        data_dBI = data_dBI.reshape(data_dBI.shape[0], 1)
         dataDTNorm = dataDTNorm.reshape(dataDTNorm.shape[0], 1)
         dataSeasonNorm = dataSeasonNorm.reshape(dataSeasonNorm.shape[0], 1)
         
         # reshape into X=t and Y=t+1 ( data needs to be normalized
-        X_bi, Y_bi = processing.create_dataset(dataBiNorm, lookBack, lookAhead, fMin, training)
-        # X_dbi, Y_dbi = processing.create_dataset(data_dBI, lookBack, lookAhead, fMin, training)
-        X_dt, Y_dt = processing.create_dataset(dataDTNorm, lookBack, lookAhead, fMin, training)
-        # X_season, Y_season = processing.create_dataset(dataSeasonNorm, lookBack, lookAhead, fMin, training)
-        
+        X_bi = processing.create_input_vector(dataBiNorm, lookBack, fMin, training)
+        X_dt = processing.create_input_vector(dataDTNorm, lookBack, fMin, training)
+        if training == True:
+            Y_bi = processing.create_output_vector(dataBiNorm, lookAhead, fMin, training)
+            Y_dt = processing.create_output_vector(dataDTNorm, lookAhead, fMin, training)
+
         # reshape input to be [samples, time steps, features]
         X_bi = np.reshape(X_bi, (X_bi.shape[0], 1, X_bi.shape[1]))
-        # X_dbi = np.reshape(X_dbi, (X_dbi.shape[0], 1, X_dbi.shape[1]))
         X_dt = np.reshape(X_dt, (X_dt.shape[0], 1, X_dt.shape[1]))
-        # X_season = np.reshape(X_season, (X_season.shape[0], 1, X_season.shape[1]))
-        # Xconcat = np.concatenate((X_bi , X_dbi, X_dt, X_season), axis=1)   
+        # X_season = np.reshape(X_season, (X_season.shape[0], 1, X_season.shape[1]))        
+        # X_dbi = np.reshape(X_dbi, (X_dbi.shape[0], 1, X_dbi.shape[1]))
         Xconcat = np.concatenate((X_bi, X_dt), axis=1)    
         
-        # create input vector for LSTM Model
+        # create input vector for model
         if training == True:
             Y_bi = np.reshape(Y_bi, (Y_bi.shape[0], 1, Y_bi.shape[1]))
             # Y_dbi = np.reshape(Y_dbi, (Y_dbi.shape[0], 1, Y_dbi.shape[1]))
             Y_dt = np.reshape(Y_dt, (Y_dt.shape[0], 1, Y_dt.shape[1]))
             # Y_season = np.reshape(Y_season, (Y_season.shape[0], 1, Y_season.shape[1]))
-            # Yconcat = np.concatenate((Y_bi, Y_dbi, Y_dt, Y_season), axis=1)
+
             Yconcat = np.concatenate((Y_bi, Y_dt), axis=1)      
             return Xconcat, Yconcat
         elif training == False:     

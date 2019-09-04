@@ -24,109 +24,104 @@ from keras.models import load_model
 import numpy as np
 import time
 from scipy import signal
+import os
+from scipy import signal
+from theforecast import processing
 
-
-def plot_results(system, input, prediction, k, pred_start):
-    plt.figure(1)
-    plt.clf()
-    bi = (system.databases['CSV'].data[0][pred_start - 7 * 1440 + k:pred_start + 1440 + k] + 1) / 2
-    b, a = signal.butter(8, 0.01)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
-    bi = signal.filtfilt(b, a, bi, padlen=150)
-    
-    plt.plot(np.linspace(50 + k / 1440, 58 + k / 1440, 8 * 1440), bi, 'k--')
-    
-    plt.plot(np.linspace(50 + k / 1440, 55 + k / 1440, 120), input[0, 0, 0:120], 'r--')
-    plt.plot(np.linspace(55 + k / 1440, 56.9166 + k / 1440, 184), input[0, 0, 120:304], 'r')
-    plt.plot(np.linspace(56.9166 + k / 1440 + 7.5 / 1440, 57 + k / 1440, 24), input[0, 0, 304:], 'g')
-    
-#     plt.plot(np.linspace(50 + k / 1440, 55 + k / 1440, 120), input[0, 1, 0:120] * 100 + 0.5, 'g')
-#     plt.plot(np.linspace(55 + k / 1440, 56.9166 + k / 1440, 184), input[0, 1, 120:304] * 100 + 0.5, 'g')
-#     plt.plot(np.linspace(56.9166 + k / 1440 + 7.5 / 1440, 57 + k / 1440, 24), input[0, 1, 304:] * 100 + 0.5, 'g')
-    
-    plt.plot(np.linspace(57 + k / 1440 + 5 / 1440, 58 + k / 1440 + 5 / 1440, int(system.neuralnetwork.lookAhead / system.neuralnetwork.fMin)), prediction[0, :].transpose(), 'b')
-    # plt.plot(np.linspace(57 + k / 1440 + 5 / 1440, 58 + k / 1440 + 5 / 1440, int(system.neuralnetwork.lookAhead / system.neuralnetwork.fMin)), prediction[0, 1, :].transpose(), 'b--', linewidth=0.3)
-    # plt.plot(np.linspace(57 + k / 1440 + 5 / 1440, 58 + k / 1440 + 5 / 1440, int(system.neuralnetwork.lookAhead / system.neuralnetwork.fMin)), prediction[0, 2, :].transpose(), 'b') * 100 + 0.5
-    # plt.plot(np.linspace(57 + k / 1440 + 5 / 1440, 58 + k / 1440 + 5 / 1440, int(system.neuralnetwork.lookAhead / system.neuralnetwork.fMin)), prediction[0, 3, :].transpose(), 'b')
-    plt.grid()
-    plt.xlim([55 + k / 1440, 58.2 + k / 1440])
-    plt.pause(0.1)
-    plt.savefig('plots\\name' + str(k))
-    
     
 def main(rundir, args=None):
     from theforecast import Forecast, ForecastException
     from theforecast.neuralnetwork import NeuralNetwork
-    
-    # Parameter:
-    nTrainingDays = 30
-    nInputDays = 7
+    from theforecast.io_control import IO_control
     
     if args.configs != None:
         configs = args.configs
         logger.debug('System configurations will be read in from "%s"', configs)
     else:
         configs = os.path.join(rundir, 'conf')
-    
-    # load prediction class  
-    system = Forecast(configs)
-    data = system.databases['CSV'].data
-
-    iStart = (nTrainingDays - nInputDays) * 1440
-    dataTraining = [data[0][iStart:],  # BI
-                    data[1][iStart:]]  # timestamp
-    
-    X, Y = system.neuralnetwork.getInputVector(dataTraining,
-                                               system.neuralnetwork.lookBack,
-                                               system.neuralnetwork.lookAhead,
-                                               system.neuralnetwork.fMin,
-                                               training=True)
-    
-    try:
-        model = load_model('myModel')
-        if model.get_config() == system.neuralnetwork.model.get_config():
-            system.neuralnetwork.model = model
-        elif model.get_config() != system.neuralnetwork.model.get_config():
-            system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=4, batch_size=64, verbose=2)
-            system.neuralnetwork.model.save('myModel')
-        # system.neuralnetwork.model.save('myModel2D')
-    except (OSError) as e:
-        system.neuralnetwork.model.fit(X, Y, epochs=8, batch_size=64, verbose=2)
-        system.neuralnetwork.model.save('myModel2D')
-        logger.error('No model found. Import error: %s', str(e))
-                    
-#     load_model_conf = False
-#     if load_model_conf:
-#          system.neuralnetwork.model = load_model('myModel4D')
-#          # system.neuralnetwork.model.fit(X, Y, epochs=1, batch_size=64, verbose=2)
-#     if not load_model_conf:
-#         system.neuralnetwork.model = load_model('myModel4D')
-#         system.neuralnetwork.model.fit(X, Y, epochs=1, batch_size=64, verbose=2)
-#         system.neuralnetwork.model.save('myModel4D')
-    # TODO: safe model under the config path
-    
+        
+    # Parameter and variables:
+    prediction_stack = np.zeros([3, 0])
+    IO_stack = np.zeros(1440)
+    n_training_days = 30
+    n_input_days = 7
     k = 0
     pred_start = 50 * 1440
     f_prediction = 10
+    horizon = 144
+    charge = 80
+    b, a = signal.butter(8, 0.1)  # lowpass filter of order = 8 and critical frequency = 0.1 (-3dB)
+
+    system = Forecast(configs)
+    control = IO_control(system.neuralnetwork.fMin, f_prediction)
+    data = system.databases['CSV'].data
+    i_start = (n_training_days - n_input_days) * 1440
     
-    plt.figure(1)
+    fig, axs = plt.subplots(2, 1)
     mng = plt.get_current_fig_manager()
     plt.pause(.1)
     mng.window.showMaximized()
     
+#     data_training = [data[0][i_start:],  # BI
+#                     data[1][i_start:]]  # timestamp
+#    
+#     X, Y = system.neuralnetwork.getInputVector(data_training,
+#                                                system.neuralnetwork.lookBack,
+#                                                system.neuralnetwork.lookAhead,
+#                                                system.neuralnetwork.fMin,
+#                                                training=True)
+     
+    system.neuralnetwork.model = load_model('myModelInit')
+#     system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=3, batch_size=64, verbose=2)
+#     system.neuralnetwork.model.save('myModelInit')
+#     try:
+#         model = load_model('myModel')
+#         if model.get_config() == system.neuralnetwork.model.get_config():
+#             system.neuralnetwork.model = model
+#         elif model.get_config() != system.neuralnetwork.model.get_config():
+#             system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=4, batch_size=64, verbose=2)
+#             system.neuralnetwork.model.save('myModel')
+#         # system.neuralnetwork.model.save('myModel')
+#     except (OSError) as e:
+#         system.neuralnetwork.model.fit(X, Y, epochs=8, batch_size=64, verbose=2)
+#         system.neuralnetwork.model.save('myModel')
+#         logger.error('No model found. Import error: %s', str(e))
+
     while True:           
         try:
             if k % f_prediction == 0:
                 input, prediction = system.execute(pred_start, k)
+                prediction_mean = signal.filtfilt(b, a, prediction, padlen=150)[:horizon]
+                
+                control.pred_horizon = horizon
+                control.u_init = IO_stack[-2:]
+                control.charge_energy_amount = charge
+                control.prediction = prediction_mean[:horizon]
+                
+                print('Iteration: ' + str(k))
+                IO_actual = control.get_IO()
+                IO_stack = np.roll(IO_stack, -system.neuralnetwork.fMin)
+                IO_stack[-system.neuralnetwork.fMin:] = IO_actual[:system.neuralnetwork.fMin]
+                
+                processing.plot_results(axs, system, input, prediction, IO_stack, IO_actual, k, pred_start)
+                
+#                 plt.figure(2)
+#                 plt.clf()
+#                 plt.plot(IO_actual)
+#                 plt.plot(prediction)
+#                 plt.grid(True)
+                # system.databases['CSV'].persist(prediction)
                 
         except (ForecastException) as e:
             logger.error('Fatal forecast error: %s', str(e))
             sys.exit(1)  # abnormal termination
+
         k = k + system.neuralnetwork.fMin
-        # system.databases['CSV'].persist(prediction)
-        
-        plot_results(system, input, prediction, k, pred_start)
         time.sleep(.1)
-            
+    
+    print(' --- END of SIMULATION --- ')
+    system.neuralnetwork.model.save('myModel_FinalLTS')
+    os.system('shutdown -s')
     sys.exit(0)  # successful termination
 
 
