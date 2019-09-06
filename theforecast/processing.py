@@ -117,13 +117,12 @@ def getdBI(data, fMin):
     return dBI
     
     
-def plot_results(axs, system, input_vector, prediction, IO_stack, IO_actual, k, pred_start):
+def plot_prediction(axs, system, input_vector, prediction, k, pred_start):
     bi = (system.databases['CSV'].data[0][pred_start - 7 * 1440 + k:pred_start + 1440 + k] + 1) / 2
     b, a = signal.butter(8, 0.015)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
     bi = signal.filtfilt(b, a, bi, padlen=150)
     
     axs[0].clear()
-    axs[1].clear()
     
     axs[0].plot(np.linspace(50 + k / 1440, 58 + k / 1440, 8 * 1440), bi, 'k--')
     
@@ -134,22 +133,35 @@ def plot_results(axs, system, input_vector, prediction, IO_stack, IO_actual, k, 
     axs[0].plot(np.linspace(57 + k / 1440 + 1 / 1440, 57 + 1 / 24 + k / 1440 + 5 / 1440, 60), prediction[:60], 'b')
     axs[0].plot(np.linspace(57 + 1 / 24 + k / 1440 + 10 / 1440, 57 + 4 / 24 + k / 1440 + 5 / 1440, 36), prediction[60:96], 'b')
     axs[0].plot(np.linspace(57 + 4 / 24 + k / 1440 + 15 / 1440, 58 + k / 1440 + 5 / 1440, 80), prediction[96:], 'b')
+    
     axs[0].grid(True)
     axs[0].set_xlim([56 + k / 1440, 58.0 + k / 1440])
+    plt.pause(0.1)
 
-    axs[1].plot(np.linspace(56 + (k + 5) / 1440, 57 + (k + 5) / 1440, 1440), IO_stack, 'r.', markersize=3, linewidth=0.4)
     
-    IO_actual_tmp = np.append(IO_actual, np.zeros(len(prediction) - len(IO_actual)))
-    axs[1].plot(np.linspace(57 + k / 1440 + 1 / 1440, 57 + 1 / 24 + k / 1440 + 5 / 1440, 60),
-                IO_actual_tmp[0:60], 'b', linewidth=0.5)
-    axs[1].plot(np.linspace(57 + 1 / 24 + k / 1440 + 10 / 1440, 57 + 4 / 24 + k / 1440 + 5 / 1440, 36),
-                IO_actual_tmp[60:96], 'b', linewidth=0.5)
-    axs[1].plot(np.linspace(57 + 4 / 24 + k / 1440 + 15 / 1440, 58 + k / 1440 + 5 / 1440, 80),
-                IO_actual_tmp[96:], 'b', linewidth=0.5)
+def plot_IO_control(axs, IO_hist, control, k):
+    axs[1].clear()
+    IO_stack = control.IO_stack
+    IO_control = control.IO_control
     
+    axs[1].plot(np.linspace(56 + (k + 5) / 1440, 57 + (k + 5) / 1440, 1440), IO_hist, 'r.', markersize=3, linewidth=0.4)
+    
+    x1 = np.linspace(57 + k / 1440 + 1 / 1440, 57 + 1 / 24 + k / 1440 + 5 / 1440, 60)
+    x2 = np.linspace(57 + 1 / 24 + k / 1440 + 10 / 1440, 57 + 4 / 24 + k / 1440 + 5 / 1440, 36)
+    x3 = np.linspace(57 + 4 / 24 + k / 1440 + 15 / 1440, 58 + k / 1440 + 5 / 1440, 80)
+    
+    for i in range(IO_stack.shape[0]):
+        IO_actual_tmp = np.append(IO_stack[i, :], np.zeros(176 - IO_stack.shape[1]))
+        axs[1].plot(x1, IO_actual_tmp[0:60], '--', linewidth=0.5)
+        axs[1].plot(x2, IO_actual_tmp[60:96], '--', linewidth=0.5)
+        axs[1].plot(x3, IO_actual_tmp[96:], '--', linewidth=0.5)
+        
+    IO_actual_tmp = np.append(IO_control, np.zeros(176 - len(IO_control)))
+    axs[1].plot(x1, IO_actual_tmp[0:60], 'b')
+    axs[1].plot(x2, IO_actual_tmp[60:96], 'b')
+    axs[1].plot(x3, IO_actual_tmp[96:], 'b')  
+      
     axs[1].grid(True)
     axs[1].set_xlim([56 + k / 1440, 58.0 + k / 1440])
     axs[1].set_ylim([-.1, 1.1])
-    plt.pause(0.1)
-    
-    plt.savefig('plots\\name' + str(k))
+    plt.pause(.1)

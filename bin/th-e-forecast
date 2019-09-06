@@ -42,7 +42,7 @@ def main(rundir, args=None):
         
     # Parameter and variables:
     prediction_stack = np.zeros([3, 0])
-    IO_stack = np.zeros(1440)
+    IO_hist = np.zeros(1440)
     n_training_days = 30
     n_input_days = 7
     k = 0
@@ -64,14 +64,17 @@ def main(rundir, args=None):
     
 #     data_training = [data[0][i_start:],  # BI
 #                     data[1][i_start:]]  # timestamp
-#    
+#        
 #     X, Y = system.neuralnetwork.getInputVector(data_training,
 #                                                system.neuralnetwork.lookBack,
 #                                                system.neuralnetwork.lookAhead,
 #                                                system.neuralnetwork.fMin,
 #                                                training=True)
-     
+#  
+#     system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=3, batch_size=64, verbose=2)
+    
     system.neuralnetwork.model = load_model('myModelInit')
+    
 #     system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=3, batch_size=64, verbose=2)
 #     system.neuralnetwork.model.save('myModelInit')
 #     try:
@@ -90,27 +93,25 @@ def main(rundir, args=None):
     while True:           
         try:
             if k % f_prediction == 0:
-                input, prediction = system.execute(pred_start, k)
+                print('Iteration: ' + str(k))
+                horizon = horizon - int(k / 300 * 144)
+                input_vector, prediction = system.execute(pred_start, k)
                 prediction_mean = signal.filtfilt(b, a, prediction, padlen=150)[:horizon]
                 
-                control.pred_horizon = horizon
-                control.u_init = IO_stack[-2:]
-                control.charge_energy_amount = charge
+                control.pred_horizon = horizon 
+                control.u_init = IO_hist[-2:]
+                control.charge_energy_amount = charge - sum(IO_hist)
                 control.prediction = prediction_mean[:horizon]
                 
-                print('Iteration: ' + str(k))
-                IO_actual = control.get_IO()
-                IO_stack = np.roll(IO_stack, -system.neuralnetwork.fMin)
-                IO_stack[-system.neuralnetwork.fMin:] = IO_actual[:system.neuralnetwork.fMin]
-                
-                processing.plot_results(axs, system, input, prediction, IO_stack, IO_actual, k, pred_start)
-                
-#                 plt.figure(2)
-#                 plt.clf()
-#                 plt.plot(IO_actual)
-#                 plt.plot(prediction)
-#                 plt.grid(True)
-                # system.databases['CSV'].persist(prediction)
+                if control.charge_energy_amount >= 0.1:
+                    control.get_IO()
+                IO_actual = control.IO_control
+                IO_hist = np.roll(IO_hist, -f_prediction)
+                IO_hist[-f_prediction:] = IO_actual[:f_prediction]
+        
+                processing.plot_prediction(axs, system, input_vector, prediction, k, pred_start)
+                processing.plot_IO_control(axs, IO_hist, control, k)
+                plt.savefig('plots\\fig_' + str(k))
                 
         except (ForecastException) as e:
             logger.error('Fatal forecast error: %s', str(e))

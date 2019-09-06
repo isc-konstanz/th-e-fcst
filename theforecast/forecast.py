@@ -60,8 +60,8 @@ class Forecast:
         n_training_days = 30
         
         # retrain model
-        data_input_retrain = [data[0][-1440 * 7 * n_training_days:],
-                              data[1][-1440 * 7 * n_training_days:]]
+        data_input_retrain = [data[0][-1440 * n_training_days:],
+                              data[1][-1440 * n_training_days:]]
         
         X_train, Y_train = theNN.getInputVector(data_input_retrain,
                                                 theNN.lookBack,

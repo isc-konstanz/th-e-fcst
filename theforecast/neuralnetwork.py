@@ -92,16 +92,13 @@ class NeuralNetwork:
         
         dataBiNorm = (data[0] + 1) / 2
         b, a = signal.butter(8, 0.015)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
+        
         dataBiNorm = signal.filtfilt(b, a, dataBiNorm, padlen=150)
+        dataDTNorm = processing.getDaytime(data[1]) / (24 * 60 * 60)
         
-        data[1] = data[1].reset_index()['unixtimestamp']
-        dataDT = processing.getDaytime(data[1])
-        dataDTNorm = dataDT / (24 * 60 * 60)
-        
-        hourOfYear = np.zeros([len(dataDT)])
+        hourOfYear = np.zeros([len(dataDTNorm)])
         for i in range (len(data[1])): 
             hourOfYear[i] = data[1][i].timetuple().tm_yday * 24 + int(data[1][i].minute / 60)
-                
         dataSeasonNorm = -0.5 * np.cos((hourOfYear - 360) / 365 / 24 * 2 * np.pi) + 0.5
         
         dataBiNorm = dataBiNorm.reshape(dataBiNorm.shape[0], 1)

@@ -104,6 +104,7 @@ class CsvDatabase(Database):
         datafile = os.path.join(settings.get('CSV', 'input'), self.file)
         if os.path.isfile(datafile):
             self.data = self.read_file(datafile)
+            self.data[1] = pandas.Series.tolist(self.data[1])
     
     def get(self, keys, start, end, interval):
         if interval > 900:

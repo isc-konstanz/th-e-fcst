@@ -6,65 +6,68 @@ Created on 02.09.2019
 import scipy.optimize as optimize
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import MinMaxScaler
 
 
 class IO_control:
 
     def __init__(self, fMin, f_prediction):
-        self.pred_horizon_max = int(1440 / fMin)
+#         self.pred_horizon_max = int(1440 / fMin)
+#         self.f_prediction = f_prediction
         self.pred_horizon = 0
         self.prediction = []
         self.u_init = []
         self.charge_energy_amount = []
-        self.IO_control = np.zeros(10)
-        self.f_prediction = f_prediction
+        self.IO_control = np.zeros(176)
         self.fMin = fMin
-
-        self.const = ({'type': 'eq', 'fun': self.fConst0},
+        self.IO_stack = []
+        
+        self.const = ({'type': 'eq', 'fun': self.fConstPower},
                       {'type': 'eq', 'fun': self.fConstEnd})
 
-#                     {'type': 'eq', 'fun': self.fConstInit})
     def get_IO(self):
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        initial_guess = scaler.fit_transform(self.prediction.reshape(-1, 1))
-        n_iter = 0
-        
-        bnds = ((0, 1),)
-        for i in range(self.pred_horizon - 1):
-            bnds = bnds + ((0, 1),)
-            
-        while n_iter <= 50:
+        self.IO_stack = np.zeros([10, self.pred_horizon])
+        function_values = np.zeros(10)
+        initial_guess = self.IO_control[:self.pred_horizon]
+        if self.pred_horizon > len(self.IO_control):
+            initial_guess = np.append(initial_guess, np.zeros(self.pred_horizon - len(self.IO_control)))
+        bnds = [(0, 1)] * self.pred_horizon
+   
+        for i in range(10):
             res = optimize.minimize(self.function,
-                                    initial_guess[:self.pred_horizon],
+                                    initial_guess,
                                     bounds=bnds,
-                                    constraints=self.const,
-                                    options={'disp': True})
-            initial_guess = res.x
-            n_iter = n_iter + res.nit
+                                    constraints=self.const)
+            function_values[i] = res.fun
+            initial_guess = res.x + np.random.normal(0, .1, self.pred_horizon)
+            self.IO_stack[i, :] = res.x
             
-        self.IO_control = res.x
-        return res.x
-    
+        self.IO_control = self.IO_stack[function_values.argmin(), :]
+
     def function(self, u):
         sumDiff = sum(-(self.prediction[:self.pred_horizon] * u)) 
-        u = np.append(self.u_init, u)
+        u = np.concatenate((self.u_init, np.append(u, 0)))
         sumDeltaDerivation = sum(((2 * u[1:-1] - u[:-2] - u[2:])) ** 2)
-        return sumDiff + 1 * sumDeltaDerivation
+        return sumDiff + .4 * sumDeltaDerivation
     
     # sum of all inputs must equal the desired power
-    def fConst0(self, u):
+    def fConstPower(self, u):
         return sum(u) - self.charge_energy_amount
     
     # last value/input must be 0
     def fConstEnd(self, u):
         return u[-1]
     
-    # initial conditions
-    def fConstInit(self, u):
-        return u[0] - self.IO_control[self.fMin]
-    
-    # constraining the absolute differntiation 
-    def fConst2(self, u): 
-        return np.absolute((u[1:] - u[:-1])) - 0.002
-
+#     # initial conditions
+#     def fConstInit(self, u):
+#         return u[0] - self.IO_control[self.fMin]
+#     
+#     # constraining the absolute differntiation 
+#     def fConst2(self, u): 
+#         return np.absolute((u[1:] - u[:-1])) - 0.002
+#     
+#     def getData(self, nSamples):
+#         data = np.zeros(nSamples)
+#         x = np.linspace(-5, 20, nSamples)
+#         for i in range(nSamples):
+#             data[i] = np.sin(x[i]) / x[i] - 0.1
+#         return data
