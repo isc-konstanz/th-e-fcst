@@ -68,7 +68,7 @@ class Forecast:
                                                     theNN.lookAhead,
                                                     theNN.fMin,
                                                     training=True)
-            theNN.model.fit(X_train, Y_train[:, 0, :], epochs=4, batch_size=64, verbose=2)
+            # theNN.model.fit(X_train, Y_train[:, 0, :], epochs=1, batch_size=64, verbose=2)
         
         # prediction
         data_input_pred = [data[0][-1440 * 7:],
@@ -79,12 +79,13 @@ class Forecast:
                                       theNN.fMin,
                                       training=False)
         
-        prediction = np.zeros([10, int(theNN.lookAhead)])
-        for j in range(10):
-            prediction[j, :] = theNN.model.predict(X_pred)[0, :]
-        pred_mean = np.mean(prediction, axis=0)
-
-        return X_pred, pred_mean
+#         prediction = np.zeros([10, int(theNN.lookAhead)])
+#         for j in range(10):
+#             prediction[j, :] = theNN.model.predict(X_pred)[0, :]
+#         pred_mean = np.mean(prediction, axis=0)
+        
+        y = theNN.predict_recursive(data_input_pred)
+        return X_pred, y
 
     def persist(self, result):
         for database in reversed(self.databases.values()):

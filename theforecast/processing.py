@@ -70,10 +70,9 @@ def create_dataset(data, look_back, pred_horizon, fMin, training):
     return dataX, dataY
 
 
-def create_input_vector(data, look_back, fMin, training):
-    look_ahead_total = 1440  # [min]
+def create_input_vector(data, look_back, look_ahead, fMin, training):
     if training == True:
-        l = int(len(data) - 7 * 24 * 60 - look_ahead_total)
+        l = int(len(data) - 7 * 24 * 60 - look_ahead)
     elif training == False:
         l = 1 
     dataX = np.zeros([l, look_back]) 
@@ -92,22 +91,23 @@ def create_input_vector(data, look_back, fMin, training):
 
 
 def create_output_vector(data, look_ahead, fMin, training):
-    look_ahead_total = 1440  # [min]
     if training == True:
-        l = int(len(data) - 7 * 24 * 60 - look_ahead_total)
+        l = int(len(data) - 7 * 24 * 60 - look_ahead)
     elif training == False:
         l = 1 
-    dataY = np.zeros([l, 176])  
+    dataY = np.zeros([l, look_ahead])  
     i1 = 60  # 1 min interval      ~ 1h
     i2 = 36 * 5  # 5 min interval      ~ 3h
     i3 = 80 * 15  # 15 min interval     ~ 20h
         
     i_start = 7 * 24 * 60  
     for z in range(l):
-        section1 = data[z + i_start:z + i_start + i1, 0]
-        section2 = data[z + i_start + i1: z + i_start + i1 + i2, 0][int(5 / 2)::5]
-        section3 = data[z + i_start + i1 + i2: z + i_start + i1 + i2 + i3, 0][int(15 / 2)::15]
-        dataY[z, :] = np.concatenate([section1, section2, section3])
+        section1 = data[z + i_start:z + i_start + look_ahead, 0]
+        dataY[z, :] = section1
+#         section1 = data[z + i_start:z + i_start + i1, 0]
+#         section2 = data[z + i_start + i1: z + i_start + i1 + i2, 0][int(5 / 2)::5]
+#         section3 = data[z + i_start + i1 + i2: z + i_start + i1 + i2 + i3, 0][int(15 / 2)::15]
+#         dataY[z, :] = np.concatenate([section1, section2, section3])
 
     return dataY
 
@@ -125,15 +125,16 @@ def plot_prediction(axs, system, input_vector, prediction, k, pred_start):
     axs[0].clear()
     
     axs[0].plot(np.linspace(50 + k / 1440, 58 + k / 1440, 8 * 1440), bi, 'k--')
-    
+
     axs[0].plot(np.linspace(50 + k / 1440, 55 + k / 1440, 120), input_vector[0, 0, 0:120], 'r')
     axs[0].plot(np.linspace(55 + k / 1440, 56.9166 + k / 1440, 184), input_vector[0, 0, 120:304], 'r')
     axs[0].plot(np.linspace(56.9166 + k / 1440 + 7.5 / 1440, 57 + k / 1440, 24), input_vector[0, 0, 304:], 'r')
-    
-    axs[0].plot(np.linspace(57 + k / 1440 + 1 / 1440, 57 + 1 / 24 + k / 1440 + 5 / 1440, 60), prediction[:60], 'b')
-    axs[0].plot(np.linspace(57 + 1 / 24 + k / 1440 + 10 / 1440, 57 + 4 / 24 + k / 1440 + 5 / 1440, 36), prediction[60:96], 'b')
-    axs[0].plot(np.linspace(57 + 4 / 24 + k / 1440 + 15 / 1440, 58 + k / 1440 + 5 / 1440, 80), prediction[96:], 'b')
-    
+     
+    axs[0].plot(np.linspace(57 + (k + 1) / 1440, 58 + (k + 1) / 1440, 1440), prediction, 'b') 
+#     axs[0].plot(np.linspace(57 + k / 1440 + 1 / 1440, 57 + 1 / 24 + k / 1440 + 5 / 1440, 60), prediction[:60], 'b')
+#     axs[0].plot(np.linspace(57 + 1 / 24 + k / 1440 + 10 / 1440, 57 + 4 / 24 + k / 1440 + 5 / 1440, 36), prediction[60:96], 'b')
+#     axs[0].plot(np.linspace(57 + 4 / 24 + k / 1440 + 15 / 1440, 58 + k / 1440 + 5 / 1440, 80), prediction[96:], 'b')
+#     
     axs[0].grid(True)
     axs[0].set_xlim([56 + k / 1440, 58.0 + k / 1440])
     plt.pause(0.1)

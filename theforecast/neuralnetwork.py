@@ -49,16 +49,17 @@ class NeuralNetwork:
         for z in range(self.nLayers - 1):
             model.add(keras.layers.Dense(self.nNeurons, activation='sigmoid')) 
             model.add(keras.layers.Dropout(self.dropout))
-        model.add(keras.layers.Dense(int(self.lookAhead / self.fMin), activation='sigmoid'))
+        model.add(keras.layers.Dense(int(self.lookAhead), activation='sigmoid'))
         model.compile(loss='mean_squared_error', optimizer='adam')
         return model
     
     def create_model_dropout(self):
+        mode_training = False
         inputs = keras.layers.Input(shape=(self.dimension, self.lookBack))
-        x = keras.layers.LSTM(self.nNeurons, recurrent_dropout=self.dropout, return_sequences=True)(inputs, training=True)
-        x = keras.layers.Dropout(self.dropout)(x, training=True)
-        x = keras.layers.LSTM(self.nNeurons)(x, training=True)
-        x = keras.layers.Dropout(self.dropout)(x, training=True)
+        x = keras.layers.LSTM(self.nNeurons, recurrent_dropout=self.dropout, return_sequences=True)(inputs, training=mode_training)
+        x = keras.layers.Dropout(self.dropout)(x, training=mode_training)
+        x = keras.layers.LSTM(self.nNeurons)(x, training=mode_training)
+        x = keras.layers.Dropout(self.dropout)(x, training=mode_training)
         outputs = keras.layers.Dense(int(self.lookAhead))(x)
         model = keras.Model(inputs, outputs)
         model.compile(loss='mean_squared_error', optimizer='adam', metrics=['mae', 'mse']) 
@@ -106,11 +107,13 @@ class NeuralNetwork:
         dataSeasonNorm = dataSeasonNorm.reshape(dataSeasonNorm.shape[0], 1)
         
         # reshape into X=t and Y=t+1 ( data needs to be normalized
-        X_bi = processing.create_input_vector(dataBiNorm, lookBack, fMin, training)
-        X_dt = processing.create_input_vector(dataDTNorm, lookBack, fMin, training)
+        X_bi = processing.create_input_vector(dataBiNorm, lookBack, lookAhead, fMin, training)
+        X_dt = processing.create_input_vector(dataDTNorm, lookBack, lookAhead, fMin, training)
         if training == True:
             Y_bi = processing.create_output_vector(dataBiNorm, lookAhead, fMin, training)
             Y_dt = processing.create_output_vector(dataDTNorm, lookAhead, fMin, training)
+#             Y_bi = processing.create_output_vector(dataBiNorm, lookAhead, fMin, training)
+#             Y_dt = processing.create_output_vector(dataDTNorm, lookAhead, fMin, training)
 
         # reshape input to be [samples, time steps, features]
         X_bi = np.reshape(X_bi, (X_bi.shape[0], 1, X_bi.shape[1]))
@@ -133,28 +136,23 @@ class NeuralNetwork:
         
     def predict_recursive(self, data):
         n_predictions = int(1440 / self.lookAhead)
-        _predStack = np.zeros([self.dimension, 1440])
-        v1 = np.zeros([self.dimension, self.lookAhead])
-
-        plt.plot(data[0][-2880:], linewidth=0.5)
+        predStack = np.zeros(1440)  # predStack = np.zeros([self.dimension, 1440])
         
         for z in range(n_predictions):
             inputVectorTemp = self.getInputVector(data, self.lookBack, self.lookAhead, self.fMin, training=False)
-            _predRecursive = self.model.predict(inputVectorTemp)
-            for k in range(0, self.lookAhead, self.fMin):
-                v1[0, k:k + self.fMin] = _predRecursive[0, 0, int(k / self.fMin)]
-                v1[1, k:k + self.fMin] = _predRecursive[0, 1, int(k / self.fMin)]
+            pred = self.model.predict(inputVectorTemp)
             
-            I = data[1].shape[0]
-            ts = data[1][I - 1] 
             data = [np.roll(data[0], -self.lookAhead, axis=0),
-                    data[1].shift(periods=-self.lookAhead)]
-            data[0][-self.lookAhead:] = v1[0, :] * 2 - 1
+                    np.roll(data[1], -self.lookAhead, axis=0)]
+            
+            data[0][-self.lookAhead:] = pred * 2 - 1
+            
+            I = data[0].shape[0]
+            ts = data[1][I - 1] 
             for k in range(self.lookAhead):
                 data[1][I - self.lookAhead + k] = ts + np.timedelta64(k + 1, 'm')
                 
-            _predStack[:, z * _predRecursive.shape[2] : (z + 1) * _predRecursive.shape[2]] = _predRecursive[0, :, :]
-            plt.plot(np.linspace(z * self.lookAhead, z * self.lookAhead + 2880, 2880), data[0][-2880:], linewidth=0.5)
+            predStack[z * self.lookAhead : (z + 1) * self.lookAhead] = pred
             
-        return _predStack
+        return predStack
         
