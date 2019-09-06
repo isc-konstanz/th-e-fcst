@@ -139,16 +139,16 @@ def plot_prediction(axs, system, input_vector, prediction, k, pred_start):
     plt.pause(0.1)
 
     
-def plot_IO_control(axs, IO_hist, control, k):
+def plot_IO_control(axs, IO_hist, control, k, f_pred):
     axs[1].clear()
     IO_stack = control.IO_stack
     IO_control = control.IO_control
     
-    axs[1].plot(np.linspace(56 + (k + 5) / 1440, 57 + (k + 5) / 1440, 1440), IO_hist, 'r.', markersize=3, linewidth=0.4)
+    axs[1].plot(np.linspace(56 + (k + f_pred) / 1440, 57 + (k + f_pred) / 1440, 1440), IO_hist, 'r.', markersize=3, linewidth=0.4)
     
-    x1 = np.linspace(57 + k / 1440 + 1 / 1440, 57 + 1 / 24 + k / 1440 + 5 / 1440, 60)
-    x2 = np.linspace(57 + 1 / 24 + k / 1440 + 10 / 1440, 57 + 4 / 24 + k / 1440 + 5 / 1440, 36)
-    x3 = np.linspace(57 + 4 / 24 + k / 1440 + 15 / 1440, 58 + k / 1440 + 5 / 1440, 80)
+    x1 = np.linspace(57 + k / 1440 + 1 / 1440, 57 + 1 / 24 + k / 1440 + f_pred / 1440, 60)
+    x2 = np.linspace(57 + 1 / 24 + k / 1440 + 10 / 1440, 57 + 4 / 24 + k / 1440 + f_pred / 1440, 36)
+    x3 = np.linspace(57 + 4 / 24 + k / 1440 + 15 / 1440, 58 + k / 1440 + f_pred / 1440, 80)
     
     for i in range(IO_stack.shape[0]):
         IO_actual_tmp = np.append(IO_stack[i, :], np.zeros(176 - IO_stack.shape[1]))

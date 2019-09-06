@@ -38,7 +38,8 @@ class IO_control:
                                     bounds=bnds,
                                     constraints=self.const)
             function_values[i] = res.fun
-            initial_guess = res.x + np.random.normal(0, .1, self.pred_horizon)
+            # initial_guess = res.x + np.random.normal(0, .1, self.pred_horizon)
+            initial_guess[:10] = res.x[:10] + np.random.normal(0, .1, 10)
             self.IO_stack[i, :] = res.x
             
         self.IO_control = self.IO_stack[function_values.argmin(), :]
