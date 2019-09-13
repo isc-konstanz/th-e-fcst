@@ -6,6 +6,7 @@ Created on 09.08.2019
 import numpy as np
 from scipy import signal
 import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
 
 
 def getDaytime(data):
@@ -120,48 +121,37 @@ def getdBI(data, fMin):
 def plot_prediction(axs, system, input_vector, prediction, k, pred_start):
     bi = (system.databases['CSV'].data[0][pred_start - 7 * 1440 + k:pred_start + 1440 + k] + 1) / 2
     b, a = signal.butter(8, 0.015)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
-    bi = signal.filtfilt(b, a, bi, padlen=150)
+    bi_filtered = signal.filtfilt(b, a, bi, padlen=150)
     
     axs[0].clear()
     
-    axs[0].plot(np.linspace(50 + k / 1440, 58 + k / 1440, 8 * 1440), bi, 'k--')
+    axs[0].plot(np.linspace(50 + k / 1440, 58 + k / 1440, 8 * 1440), bi, 'g--', linewidth=0.5)
+    axs[0].plot(np.linspace(50 + k / 1440, 58 + k / 1440, 8 * 1440), bi_filtered, 'k--')
 
     axs[0].plot(np.linspace(50 + k / 1440, 55 + k / 1440, 120), input_vector[0, 0, 0:120], 'r')
     axs[0].plot(np.linspace(55 + k / 1440, 56.9166 + k / 1440, 184), input_vector[0, 0, 120:304], 'r')
     axs[0].plot(np.linspace(56.9166 + k / 1440 + 7.5 / 1440, 57 + k / 1440, 24), input_vector[0, 0, 304:], 'r')
      
     axs[0].plot(np.linspace(57 + (k + 1) / 1440, 58 + (k + 1) / 1440, 1440), prediction, 'b') 
-#     axs[0].plot(np.linspace(57 + k / 1440 + 1 / 1440, 57 + 1 / 24 + k / 1440 + 5 / 1440, 60), prediction[:60], 'b')
-#     axs[0].plot(np.linspace(57 + 1 / 24 + k / 1440 + 10 / 1440, 57 + 4 / 24 + k / 1440 + 5 / 1440, 36), prediction[60:96], 'b')
-#     axs[0].plot(np.linspace(57 + 4 / 24 + k / 1440 + 15 / 1440, 58 + k / 1440 + 5 / 1440, 80), prediction[96:], 'b')
-#     
+
     axs[0].grid(True)
     axs[0].set_xlim([56 + k / 1440, 58.0 + k / 1440])
     plt.pause(0.1)
 
     
-def plot_IO_control(axs, IO_hist, control, k, f_pred):
+def plot_IO_control(axs, IO_hist, control, prediction, k, f_pred):
     axs[1].clear()
-    IO_stack = control.IO_stack
-    IO_control = control.IO_control
+    IO_control = np.append(control.IO_control, np.zeros(1440 - len(control.IO_control)))
     
     axs[1].plot(np.linspace(56 + (k + f_pred) / 1440, 57 + (k + f_pred) / 1440, 1440), IO_hist, 'r.', markersize=3, linewidth=0.4)
+    axs[1].plot(np.linspace(57 + (k + 1) / 1440, 58 + (k + 1) / 1440, 1440), IO_control)    
     
-    x1 = np.linspace(57 + k / 1440 + 1 / 1440, 57 + 1 / 24 + k / 1440 + f_pred / 1440, 60)
-    x2 = np.linspace(57 + 1 / 24 + k / 1440 + 10 / 1440, 57 + 4 / 24 + k / 1440 + f_pred / 1440, 36)
-    x3 = np.linspace(57 + 4 / 24 + k / 1440 + 15 / 1440, 58 + k / 1440 + f_pred / 1440, 80)
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    pred_scaled = scaler.fit_transform(prediction.reshape(-1, 1))
+    axs[1].plot(np.linspace(57 + (k + 1) / 1440, 58 + (k + 1) / 1440, 1440), pred_scaled)
+#     axs[1].plot([57 + (k + 1) / 1440 , 57 + (k + 1) / 1440], [-1.5, 1.5], 'g--', linewidth = 0.5)
+    axs[1].plot([57 + (k + 1 + control.pred_horizon) / 1440, 57 + (k + 1 + control.pred_horizon) / 1440], [-1.5, 1.5], 'g--', linewidth=0.5)
     
-    for i in range(IO_stack.shape[0]):
-        IO_actual_tmp = np.append(IO_stack[i, :], np.zeros(176 - IO_stack.shape[1]))
-        axs[1].plot(x1, IO_actual_tmp[0:60], '--', linewidth=0.5)
-        axs[1].plot(x2, IO_actual_tmp[60:96], '--', linewidth=0.5)
-        axs[1].plot(x3, IO_actual_tmp[96:], '--', linewidth=0.5)
-        
-    IO_actual_tmp = np.append(IO_control, np.zeros(176 - len(IO_control)))
-    axs[1].plot(x1, IO_actual_tmp[0:60], 'b')
-    axs[1].plot(x2, IO_actual_tmp[60:96], 'b')
-    axs[1].plot(x3, IO_actual_tmp[96:], 'b')  
-      
     axs[1].grid(True)
     axs[1].set_xlim([56 + k / 1440, 58.0 + k / 1440])
     axs[1].set_ylim([-.1, 1.1])

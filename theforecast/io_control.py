@@ -3,72 +3,46 @@ Created on 02.09.2019
 
 @author: sf
 '''
-import scipy.optimize as optimize
+
+from __future__ import print_function
 import numpy as np
 import matplotlib.pyplot as plt
+from ortools.linear_solver import pywraplp
 
 
 class IO_control:
 
-    def __init__(self, fMin, f_prediction):
-#         self.pred_horizon_max = int(1440 / fMin)
-#         self.f_prediction = f_prediction
+    def __init__(self):
         self.pred_horizon = 0
         self.prediction = []
-        self.u_init = []
-        self.charge_energy_amount = []
-        self.IO_control = np.zeros(176)
-        self.fMin = fMin
-        self.IO_stack = []
-        
-        self.const = ({'type': 'eq', 'fun': self.fConstPower},
-                      {'type': 'eq', 'fun': self.fConstEnd})
+        self.u_init = [0, 0]
+        self.charge_energy_amount = 0
+        self.IO_control = []
 
     def get_IO(self):
-        self.IO_stack = np.zeros([10, self.pred_horizon])
-        function_values = np.zeros(10)
-        initial_guess = self.IO_control[:self.pred_horizon]
-        if self.pred_horizon > len(self.IO_control):
-            initial_guess = np.append(initial_guess, np.zeros(self.pred_horizon - len(self.IO_control)))
-        bnds = [(0, 1)] * self.pred_horizon
-   
-        for i in range(10):
-            res = optimize.minimize(self.function,
-                                    initial_guess,
-                                    bounds=bnds,
-                                    constraints=self.const)
-            function_values[i] = res.fun
-            # initial_guess = res.x + np.random.normal(0, .1, self.pred_horizon)
-            initial_guess[:10] = res.x[:10] + np.random.normal(0, .1, 10)
-            self.IO_stack[i, :] = res.x
-            
-        self.IO_control = self.IO_stack[function_values.argmin(), :]
+        lb = 0
+        ub = 10  # number of controlling steps; depends on device
 
-    def function(self, u):
-        sumDiff = sum(-(self.prediction[:self.pred_horizon] * u)) 
-        u = np.concatenate((self.u_init, np.append(u, 0)))
-        sumDeltaDerivation = sum(((2 * u[1:-1] - u[:-2] - u[2:])) ** 2)
-        return sumDiff + .4 * sumDeltaDerivation
+        solver = pywraplp.Solver('simple_lp_program',
+                                      pywraplp.Solver.CBC_MIXED_INTEGER_PROGRAMMING)
+        
+        # Create the variables
+        x = {}
+        for i in range(self.pred_horizon):
+            x[i] = solver.IntVar(lb, ub, 'x_%i' % i)
+        # add constraints    
+        solver.Add(solver.Sum([x[i] for i in range(self.pred_horizon)]) == self.charge_energy_amount * ub)
+        solver.Add(x[self.pred_horizon - 1] == 0)
+        solver.Add(-3 <= x[0] - self.u_init[-1] * ub <= 3)
+        for i in range(self.pred_horizon - 1):
+            solver.Add(-3 <= x[i + 1] - x[i] <= 3)
+        # define cost function    
+        solver.Maximize(solver.Sum([self.prediction[i] * x[i] for i in range(self.pred_horizon)]))
+        
+        solver.Solve()
+        solver.Objective().Value()
     
-    # sum of all inputs must equal the desired power
-    def fConstPower(self, u):
-        return sum(u) - self.charge_energy_amount
-    
-    # last value/input must be 0
-    def fConstEnd(self, u):
-        return u[-1]
-    
-#     # initial conditions
-#     def fConstInit(self, u):
-#         return u[0] - self.IO_control[self.fMin]
-#     
-#     # constraining the absolute differntiation 
-#     def fConst2(self, u): 
-#         return np.absolute((u[1:] - u[:-1])) - 0.002
-#     
-#     def getData(self, nSamples):
-#         data = np.zeros(nSamples)
-#         x = np.linspace(-5, 20, nSamples)
-#         for i in range(nSamples):
-#             data[i] = np.sin(x[i]) / x[i] - 0.1
-#         return data
+        self.IO_control = np.zeros(self.pred_horizon)
+        for i in range(self.pred_horizon):
+            self.IO_control[i] = x[i].solution_value() / ub
+

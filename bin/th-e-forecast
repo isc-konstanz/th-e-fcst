@@ -47,13 +47,11 @@ def main(rundir, args=None):
     n_input_days = 7
     pred_start = 50 * 1440
     f_prediction = 5
-    f_retrain = 6 * 60
-    horizon_0 = 144
-    charge = 80
-    b, a = signal.butter(8, 0.1)  # lowpass filter of order = 8 and critical frequency = 0.1 (-3dB)
+    f_retrain = 120  # 6 * 60
+    b, a = signal.butter(8, 0.02)  # lowpass filter of order = 8 and critical frequency = 0.1 (-3dB)
 
     system = Forecast(configs)
-    control = IO_control(system.neuralnetwork.fMin, f_prediction)
+    control = IO_control()
     data = system.databases['CSV'].data
     i_start = (n_training_days - n_input_days) * 1440
     
@@ -62,22 +60,20 @@ def main(rundir, args=None):
     plt.pause(.1)
     mng.window.showMaximized()
     
-#     data_training = [data[0][i_start:],  # BI
-#                     data[1][i_start:]]  # timestamp
-#         
-#     X, Y = system.neuralnetwork.getInputVector(data_training,
-#                                                system.neuralnetwork.lookBack,
-#                                                system.neuralnetwork.lookAhead,
-#                                                system.neuralnetwork.fMin,
-#                                                training=True)
-#    
-#     system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=1, batch_size=64, verbose=2)
-#     system.neuralnetwork.model.save('myModel')
-    system.neuralnetwork.model = load_model('myModel')
+    data_training = [data[0][i_start:],  # BI
+                    data[1][i_start:]]  # timestamp
+         
+    X, Y = system.neuralnetwork.getInputVector(data_training,
+                                               system.neuralnetwork.lookBack,
+                                               system.neuralnetwork.lookAhead,
+                                               system.neuralnetwork.fMin,
+                                               training=True)
 
 #     system.neuralnetwork.model = load_model('myModel')
+    system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=1, batch_size=64, verbose=2)
+    system.neuralnetwork.model.save('myModel')
+#     system.neuralnetwork.model = load_model('myModel')
 #     system.neuralnetwork.model = load_model('myModelInit')
-    
 #     system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=3, batch_size=64, verbose=2)
 #     system.neuralnetwork.model.save('myModelInit')
 #     try:
@@ -96,27 +92,36 @@ def main(rundir, args=None):
     while True:           
         try:
             print('Iteration: ' + str(k))
-            horizon = horizon_0 - int(k / f_prediction)
-            
+            if k == 0:
+                horizon = 600 
+                charge = 300
+            if k == 300:
+                horizon = 480
+                charge = 200
+            if k == 400:
+                charge = charge + 150
             input_vector, prediction = system.execute(pred_start, k, f_retrain)
-            processing.plot_prediction(axs, system, input_vector, prediction, k, pred_start)
-            prediction_mean = signal.filtfilt(b, a, prediction, padlen=150)[:horizon]
             
+            prediction_mean = signal.filtfilt(b, a, prediction, padlen=150)
             control.pred_horizon = horizon 
-            control.u_init = IO_hist[-2:]
-            control.charge_energy_amount = charge - sum(IO_hist)
+            control.charge_energy_amount = charge 
             control.prediction = prediction_mean[:horizon]
+            control.u_init = IO_hist[-2:]
             
             if control.charge_energy_amount >= 0.1:
                 control.get_IO()
                 IO_actual = control.IO_control
             elif control.charge_energy_amount < 0.1:
                 IO_actual = np.zeros(f_prediction)
+                control.IO_control = IO_actual
                 
             IO_hist = np.roll(IO_hist, -f_prediction)
             IO_hist[-f_prediction:] = IO_actual[:f_prediction]
-    
-            processing.plot_IO_control(axs, IO_hist, control, k, f_prediction)
+            horizon = horizon - f_prediction
+            charge = charge - sum(IO_actual[:f_prediction])
+            
+            processing.plot_prediction(axs, system, input_vector, prediction, k, pred_start)
+            processing.plot_IO_control(axs, IO_hist, control, prediction_mean, k, f_prediction)
             plt.savefig('plots\\fig_' + str(k))
             
         except (ForecastException) as e:

@@ -53,8 +53,9 @@ class Forecast:
         logger.info("Starting th-e-forecast")
         # get new data from CSV-file
         # data = self.databases['CSV'].read_file('C:\\Users\\sf\\Software\\eclipse\\PyWorkspace\\th-e-forecast\\bin\\lib\\BI_jul_aug.csv')
-        data = self.databases['CSV'].data
         theNN = self.neuralnetwork
+        data = self.databases['CSV'].data
+        # TODO: norm data here!?
         data = [data[0][:pred_start + k],
                 data[1][:pred_start + k]]
         n_training_days = 30
@@ -68,8 +69,9 @@ class Forecast:
                                                     theNN.lookAhead,
                                                     theNN.fMin,
                                                     training=True)
-            # theNN.model.fit(X_train, Y_train[:, 0, :], epochs=1, batch_size=64, verbose=2)
-        
+            theNN.model.fit(X_train, Y_train[:, 0, :], epochs=3, batch_size=64, verbose=2)
+            theNN.model.save('myModel')
+            
         # prediction
         data_input_pred = [data[0][-1440 * 7:],
                            data[1][-1440 * 7:]]
@@ -78,7 +80,7 @@ class Forecast:
                                       theNN.lookAhead,
                                       theNN.fMin,
                                       training=False)
-        
+# only use when mode_training = True        
 #         prediction = np.zeros([10, int(theNN.lookAhead)])
 #         for j in range(10):
 #             prediction[j, :] = theNN.model.predict(X_pred)[0, :]

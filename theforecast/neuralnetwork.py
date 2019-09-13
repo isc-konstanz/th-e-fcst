@@ -92,8 +92,8 @@ class NeuralNetwork:
         """
         
         dataBiNorm = (data[0] + 1) / 2
-        b, a = signal.butter(8, 0.015)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
-        
+        b, a = signal.butter(8, 0.02)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
+         
         dataBiNorm = signal.filtfilt(b, a, dataBiNorm, padlen=150)
         dataDTNorm = processing.getDaytime(data[1]) / (24 * 60 * 60)
         
