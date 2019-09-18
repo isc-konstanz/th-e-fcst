@@ -15,6 +15,7 @@ from .database import CsvDatabase
 import numpy as np
 import matplotlib.pyplot as plt
 from keras.models import load_model
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +50,12 @@ class Forecast:
     def __init_neuralnetwork__(self, configs):
         return NeuralNetwork(configs)
         
-    def execute(self, pred_start, k, f_retrain):
+    def execute(self, pred_start, k, f_retrain, status_predict):
         logger.info("Starting th-e-forecast")
         # get new data from CSV-file
         # data = self.databases['CSV'].read_file('C:\\Users\\sf\\Software\\eclipse\\PyWorkspace\\th-e-forecast\\bin\\lib\\BI_jul_aug.csv')
+        X_pred = []
+        y = []
         theNN = self.neuralnetwork
         data = self.databases['CSV'].data
         # TODO: norm data here!?
@@ -61,7 +64,7 @@ class Forecast:
         n_training_days = 30
         
         # retrain model        
-        if k % f_retrain == 0:
+        if k % f_retrain == 190:
             data_input_retrain = [data[0][-1440 * n_training_days:],
                                   data[1][-1440 * n_training_days:]]
             X_train, Y_train = theNN.getInputVector(data_input_retrain,
@@ -69,24 +72,20 @@ class Forecast:
                                                     theNN.lookAhead,
                                                     theNN.fMin,
                                                     training=True)
-            theNN.model.fit(X_train, Y_train[:, 0, :], epochs=3, batch_size=64, verbose=2)
-            theNN.model.save('myModel')
-            
-        # prediction
-        data_input_pred = [data[0][-1440 * 7:],
-                           data[1][-1440 * 7:]]
-        X_pred = theNN.getInputVector(data_input_pred,
-                                      theNN.lookBack,
-                                      theNN.lookAhead,
-                                      theNN.fMin,
-                                      training=False)
-# only use when mode_training = True        
-#         prediction = np.zeros([10, int(theNN.lookAhead)])
-#         for j in range(10):
-#             prediction[j, :] = theNN.model.predict(X_pred)[0, :]
-#         pred_mean = np.mean(prediction, axis=0)
+            theNN.model.fit(X_train, Y_train[:, 0, :], epochs=1, batch_size=64, verbose=2)
+            theNN.model.save('myModel2')
         
-        y = theNN.predict_recursive(data_input_pred)
+        # prediction 
+        if status_predict == True:    
+            data_input_pred = [data[0][-1440 * 7:],
+                               data[1][-1440 * 7:]]
+            X_pred = theNN.getInputVector(data_input_pred,
+                                          theNN.lookBack,
+                                          theNN.lookAhead,
+                                          theNN.fMin,
+                                          training=False)
+            y = theNN.predict_recursive(data_input_pred)
+   
         return X_pred, y
 
     def persist(self, result):

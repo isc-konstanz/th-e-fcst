@@ -20,13 +20,14 @@ import json
 import shutil
 import inspect
 import matplotlib.pyplot as plt
+from matplotlib.pyplot import plot
 from keras.models import load_model
 import numpy as np
 import time
 from scipy import signal
 import os
-from scipy import signal
 from theforecast import processing
+import warnings
 
     
 def main(rundir, args=None):
@@ -47,7 +48,7 @@ def main(rundir, args=None):
     n_input_days = 7
     pred_start = 50 * 1440
     f_prediction = 5
-    f_retrain = 120  # 6 * 60
+    f_retrain = 200  # 6 * 60
     b, a = signal.butter(8, 0.02)  # lowpass filter of order = 8 and critical frequency = 0.1 (-3dB)
 
     system = Forecast(configs)
@@ -60,8 +61,10 @@ def main(rundir, args=None):
     plt.pause(.1)
     mng.window.showMaximized()
     
-    data_training = [data[0][i_start:],  # BI
-                    data[1][i_start:]]  # timestamp
+#     data_training = [data[0][i_start:],  # BI
+#                      data[1][i_start:]]  # timestamp
+    data_training = [data[0][:pred_start],  # BI
+                     data[1][:pred_start]]  # timestamp
          
     X, Y = system.neuralnetwork.getInputVector(data_training,
                                                system.neuralnetwork.lookBack,
@@ -69,67 +72,76 @@ def main(rundir, args=None):
                                                system.neuralnetwork.fMin,
                                                training=True)
 
-#     system.neuralnetwork.model = load_model('myModel')
+#     system.neuralnetwork.model = load_model('myModel2')
     system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=1, batch_size=64, verbose=2)
-    system.neuralnetwork.model.save('myModel')
-#     system.neuralnetwork.model = load_model('myModel')
-#     system.neuralnetwork.model = load_model('myModelInit')
-#     system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=3, batch_size=64, verbose=2)
-#     system.neuralnetwork.model.save('myModelInit')
-#     try:
-#         model = load_model('myModel')
-#         if model.get_config() == system.neuralnetwork.model.get_config():
-#             system.neuralnetwork.model = model
-#         elif model.get_config() != system.neuralnetwork.model.get_config():
-#             system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=4, batch_size=64, verbose=2)
-#             system.neuralnetwork.model.save('myModel')
-#         # system.neuralnetwork.model.save('myModel')
-#     except (OSError) as e:
-#         system.neuralnetwork.model.fit(X, Y, epochs=8, batch_size=64, verbose=2)
-#         system.neuralnetwork.model.save('myModel')
-#         logger.error('No model found. Import error: %s', str(e))
+#     system.neuralnetwork.model.save('myModel2')
+
     k = 0
-    while True:           
+    horizon = 50
+    charge = 10
+    t_request1 = 0
+    t_request2 = 0
+    status_predict = True
+    stat_run = True
+    
+    while stat_run:
+                   
+        print('Iteration: ' + str(k))
+        # GENERATE REQUEST
+        # request1: 6-8h, horizon 3-4h
+        # request2: 12-14h, horizon 8-12h  
+        if k % 1440 == 0:
+            t_request1 = 6 * 60 + np.random.uniform() * 2 * 60   
+            t_request2 = 12 * 60 + np.random.uniform() * 120  
+        # req1 activation         
+        if (k % 1440) >= t_request1:  
+            horizon = 240  # int(180 + np.random.uniform() * 60)
+            charge = 120  # horizon - 30 - int(np.random.uniform() * 120)
+            t_request1 = 1441
+        # req2 activation
+        if (k % 1440) >= t_request2:    
+            horizon = int(8 * 60 + np.random.uniform() * 4.5 * 60)
+            charge = horizon - 100 - int(np.random.uniform() * 120)
+            t_request2 = 1441
+
+        # FORECAST   
+        if charge < 0.5:
+            status_predict = False
+        elif charge >= 0.5:
+            status_predict = True 
         try:
-            print('Iteration: ' + str(k))
-            if k == 0:
-                horizon = 600 
-                charge = 300
-            if k == 300:
-                horizon = 480
-                charge = 200
-            if k == 400:
-                charge = charge + 150
-            input_vector, prediction = system.execute(pred_start, k, f_retrain)
-            
-            prediction_mean = signal.filtfilt(b, a, prediction, padlen=150)
-            control.pred_horizon = horizon 
-            control.charge_energy_amount = charge 
-            control.prediction = prediction_mean[:horizon]
-            control.u_init = IO_hist[-2:]
-            
-            if control.charge_energy_amount >= 0.1:
-                control.get_IO()
-                IO_actual = control.IO_control
-            elif control.charge_energy_amount < 0.1:
-                IO_actual = np.zeros(f_prediction)
-                control.IO_control = IO_actual
-                
-            IO_hist = np.roll(IO_hist, -f_prediction)
-            IO_hist[-f_prediction:] = IO_actual[:f_prediction]
-            horizon = horizon - f_prediction
-            charge = charge - sum(IO_actual[:f_prediction])
-            
-            processing.plot_prediction(axs, system, input_vector, prediction, k, pred_start)
-            processing.plot_IO_control(axs, IO_hist, control, prediction_mean, k, f_prediction)
-            plt.savefig('plots\\fig_' + str(k))
-            
+            input_vector, prediction = system.execute(pred_start, k, f_retrain, status_predict)
         except (ForecastException) as e:
             logger.error('Fatal forecast error: %s', str(e))
             sys.exit(1)  # abnormal termination
+            
+        # MPC
+        if charge >= 0.5:
+            control.pred_horizon = horizon 
+            control.charge_energy_amount = charge 
+            control.prediction = signal.filtfilt(b, a, prediction, method='pad', padtype='even', padlen=150)
+            control.u_init = IO_hist[-2:]
+        
+            control.execute()
 
+            processing.plot_prediction(axs, system, input_vector, prediction, k, pred_start)
+            processing.plot_IO_control(axs, system, IO_hist, control, k, pred_start)
+            plt.savefig('plots\\fig_' + str(int(k / 1440)) + '_' + str(k % 1440))
+            
+        elif charge < 0.5:
+            print('no charge request - idle')
+            control.IO_control = np.zeros(f_prediction)
+            
+        IO_hist = np.roll(IO_hist, -f_prediction)
+        IO_hist[-f_prediction:] = np.concatenate((control.IO_control[:f_prediction],
+                                             np.zeros(f_prediction - len(control.IO_control[:f_prediction]))))
+        horizon = horizon - f_prediction
+        charge = charge - sum(control.IO_control[:f_prediction])
         k = k + f_prediction
-        time.sleep(.1)
+        
+        # ENDING CONDITION
+        if k >= 90 * 1440:
+            stat_run = False
     
     print(' --- END of SIMULATION --- ')
     system.neuralnetwork.model.save('myModel_FinalLTS')
@@ -152,6 +164,6 @@ if __name__ == '__main__':
                         dest='configs',
                         help='Directory of system configuration files',
                         metavar='DIR')
-    
+
     main(rundir, args=parser.parse_args())
-    
+  

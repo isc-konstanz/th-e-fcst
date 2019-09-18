@@ -7,6 +7,7 @@ import numpy as np
 from scipy import signal
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
+from datetime import datetime, timedelta
 
 
 def getDaytime(data):
@@ -14,7 +15,7 @@ def getDaytime(data):
     seconds = np.zeros([len(data), 1])
     for z in range(0, len(data)):
         seconds[z, 0] = data[z].hour * 3600 + data[z].minute * 60 + data[z].second
-    return seconds
+    return seconds / (24 * 60 * 60)
 
 
 def create_dataset_mean(data, look_back, pred_horizon, fMin, training):
@@ -97,9 +98,9 @@ def create_output_vector(data, look_ahead, fMin, training):
     elif training == False:
         l = 1 
     dataY = np.zeros([l, look_ahead])  
-    i1 = 60  # 1 min interval      ~ 1h
-    i2 = 36 * 5  # 5 min interval      ~ 3h
-    i3 = 80 * 15  # 15 min interval     ~ 20h
+#     i1 = 60  # 1 min interval      ~ 1h
+#     i2 = 36 * 5  # 5 min interval      ~ 3h
+#     i3 = 80 * 15  # 15 min interval     ~ 20h
         
     i_start = 7 * 24 * 60  
     for z in range(l):
@@ -120,39 +121,54 @@ def getdBI(data, fMin):
     
 def plot_prediction(axs, system, input_vector, prediction, k, pred_start):
     bi = (system.databases['CSV'].data[0][pred_start - 7 * 1440 + k:pred_start + 1440 + k] + 1) / 2
-    b, a = signal.butter(8, 0.015)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
-    bi_filtered = signal.filtfilt(b, a, bi, padlen=150)
+    b, a = signal.butter(8, 0.02)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
+    bi_filtered = signal.filtfilt(b, a, bi, method='pad', padtype='even', padlen=150)
+
+    dt = system.databases['CSV'].data[1][pred_start - 7 * 1440 + k:pred_start + 1440 + k]
+    base = dt[-1] + timedelta(minutes=1)
+    x_pred = np.arange(base - timedelta(minutes=1440), base , timedelta(minutes=1)).astype(datetime)
+    a1 = np.arange(dt[-8 * 1440], dt[-3 * 1440], timedelta(minutes=60))
+    a2 = np.arange(dt[-3 * 1440], dt[-3 * 1440 + 46 * 60], timedelta(minutes=15))
+    a3 = np.arange(dt[-1440 - 120], dt[-1440], timedelta(minutes=system.neuralnetwork.fMin))
+    x_input = np.concatenate((a1, a2, a3))
     
     axs[0].clear()
+    axs[0].plot(dt, bi, 'g--', linewidth=0.5, label='bi (raw)')
+    axs[0].plot(dt, bi_filtered, 'k--', label='bi (filtered)')
+    axs[0].plot(x_input, input_vector[0, 0, :], 'r', label='input Data')
+    axs[0].plot(x_pred, prediction, 'b', label='prediction') 
     
-    axs[0].plot(np.linspace(50 + k / 1440, 58 + k / 1440, 8 * 1440), bi, 'g--', linewidth=0.5)
-    axs[0].plot(np.linspace(50 + k / 1440, 58 + k / 1440, 8 * 1440), bi_filtered, 'k--')
-
-    axs[0].plot(np.linspace(50 + k / 1440, 55 + k / 1440, 120), input_vector[0, 0, 0:120], 'r')
-    axs[0].plot(np.linspace(55 + k / 1440, 56.9166 + k / 1440, 184), input_vector[0, 0, 120:304], 'r')
-    axs[0].plot(np.linspace(56.9166 + k / 1440 + 7.5 / 1440, 57 + k / 1440, 24), input_vector[0, 0, 304:], 'r')
-     
-    axs[0].plot(np.linspace(57 + (k + 1) / 1440, 58 + (k + 1) / 1440, 1440), prediction, 'b') 
-
+    axs[0].set_title('prediction')
+    axs[0].legend(loc='lower left')
     axs[0].grid(True)
-    axs[0].set_xlim([56 + k / 1440, 58.0 + k / 1440])
+    axs[0].set_xlim([base - timedelta(days=2.1), base])
     plt.pause(0.1)
 
     
-def plot_IO_control(axs, IO_hist, control, prediction, k, f_pred):
-    axs[1].clear()
-    IO_control = np.append(control.IO_control, np.zeros(1440 - len(control.IO_control)))
-    
-    axs[1].plot(np.linspace(56 + (k + f_pred) / 1440, 57 + (k + f_pred) / 1440, 1440), IO_hist, 'r.', markersize=3, linewidth=0.4)
-    axs[1].plot(np.linspace(57 + (k + 1) / 1440, 58 + (k + 1) / 1440, 1440), IO_control)    
-    
+def plot_IO_control(axs, system, IO_hist, control, k, pred_start):
+    dt = system.databases['CSV'].data[1][pred_start - 7 * 1440 + k:pred_start + 1440 + k]
+    base = dt[-1] + timedelta(minutes=1)
+    x_pred = np.arange(base - timedelta(minutes=1440),
+                       base ,
+                       timedelta(minutes=1)).astype(datetime)
+    x_hist = np.arange(base - timedelta(minutes=2880),
+                       base - timedelta(minutes=1440),
+                       timedelta(minutes=1)).astype(datetime)
+    IO_control = np.append(control.IO_control, np.zeros(1440 - len(control.IO_control)))  
     scaler = MinMaxScaler(feature_range=(0, 1))
-    pred_scaled = scaler.fit_transform(prediction.reshape(-1, 1))
-    axs[1].plot(np.linspace(57 + (k + 1) / 1440, 58 + (k + 1) / 1440, 1440), pred_scaled)
-#     axs[1].plot([57 + (k + 1) / 1440 , 57 + (k + 1) / 1440], [-1.5, 1.5], 'g--', linewidth = 0.5)
-    axs[1].plot([57 + (k + 1 + control.pred_horizon) / 1440, 57 + (k + 1 + control.pred_horizon) / 1440], [-1.5, 1.5], 'g--', linewidth=0.5)
+    pred_scaled = scaler.fit_transform(control.prediction.reshape(-1, 1))
     
+    axs[1].clear()
+
+    axs[1].plot(x_hist, IO_hist, 'r.', markersize=3, linewidth=0.4, label='MPC (history)')
+    axs[1].plot(x_pred, IO_control, 'k', label='MPC')    
+    axs[1].plot(x_pred, pred_scaled, 'b', label='prediction')
+    axs[1].plot([x_pred[control.pred_horizon],
+                 x_pred[control.pred_horizon]], [-1.5, 1.5], 'g--', linewidth=0.5, label='horizon')
+    
+    axs[1].set_title('MPC')
+    axs[1].legend(loc='lower left')
     axs[1].grid(True)
-    axs[1].set_xlim([56 + k / 1440, 58.0 + k / 1440])
+    axs[1].set_xlim([base - timedelta(days=2.1), base])
     axs[1].set_ylim([-.1, 1.1])
     plt.pause(.1)

@@ -39,7 +39,6 @@ class NeuralNetwork:
             self.lookAhead = self.fMin
         self.dimension = settings.getint('General', 'dimension')
         
-        # self.model = self.create()
         self.model = self.create_model_dropout()
     
     def create(self):    
@@ -72,8 +71,24 @@ class NeuralNetwork:
             logger.error('Trainig error : %s', str(e)) 
     
     def load(self, path):
+        #     system.neuralnetwork.model = load_model('myModel')
+#     system.neuralnetwork.model = load_model('myModelInit')
+#     system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=3, batch_size=64, verbose=2)
+#     system.neuralnetwork.model.save('myModelInit')
+#     try:
+#         model = load_model('myModel')
+#         if model.get_config() == system.neuralnetwork.model.get_config():
+#             system.neuralnetwork.model = model
+#         elif model.get_config() != system.neuralnetwork.model.get_config():
+#             system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=4, batch_size=64, verbose=2)
+#             system.neuralnetwork.model.save('myModel')
+#         # system.neuralnetwork.model.save('myModel')
+#     except (OSError) as e:
+#         system.neuralnetwork.model.fit(X, Y, epochs=8, batch_size=64, verbose=2)
+#         system.neuralnetwork.model.save('myModel')
+#         logger.error('No model found. Import error: %s', str(e))
         try:
-            model = keras.models.load_model(path + '\\NNModel')
+            model = keras.models.load_model(path + '\\myModel')
         except (OSError) as e:
             logger.error('Fatal forecast error: %s', str(e))
             sys.exit(1)  # abnormal termination
@@ -92,11 +107,19 @@ class NeuralNetwork:
         """
         
         dataBiNorm = (data[0] + 1) / 2
-        b, a = signal.butter(8, 0.02)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
+        b, a = signal.butter(8, 0.022)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
          
-        dataBiNorm = signal.filtfilt(b, a, dataBiNorm, padlen=150)
-        dataDTNorm = processing.getDaytime(data[1]) / (24 * 60 * 60)
-        
+        dataBiNorm = signal.filtfilt(b, a, dataBiNorm, method='pad', padtype='even', padlen=150)
+        dataDTNorm = processing.getDaytime(data[1]) 
+#         c='b'
+#         plt.clf()
+#         plt.plot(dataBiNorm)
+#         plt.plot(signal.filtfilt(b, a, dataBiNorm, method='gust'), label='gust')
+#         plt.plot(signal.filtfilt(b, a, dataBiNorm, method='pad', padtype='odd', padlen=150),c, label='odd')
+#         plt.plot(signal.filtfilt(b, a, dataBiNorm, method='pad', padtype='even', padlen=150),c, label='even')
+#         plt.plot(signal.filtfilt(b, a, dataBiNorm, method='pad', padtype='constant', padlen=150),c, label='constant')
+#         plt.legend()
+        # even, constant
         hourOfYear = np.zeros([len(dataDTNorm)])
         for i in range (len(data[1])): 
             hourOfYear[i] = data[1][i].timetuple().tm_yday * 24 + int(data[1][i].minute / 60)

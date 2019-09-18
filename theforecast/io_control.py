@@ -8,6 +8,7 @@ from __future__ import print_function
 import numpy as np
 import matplotlib.pyplot as plt
 from ortools.linear_solver import pywraplp
+import warnings
 
 
 class IO_control:
@@ -19,15 +20,15 @@ class IO_control:
         self.charge_energy_amount = 0
         self.IO_control = []
 
-    def get_IO(self):
+    def execute(self):
         lb = 0
         ub = 10  # number of controlling steps; depends on device
-
+        self.IO_control = np.zeros(self.pred_horizon)
         solver = pywraplp.Solver('simple_lp_program',
                                       pywraplp.Solver.CBC_MIXED_INTEGER_PROGRAMMING)
+        x = {}
         
         # Create the variables
-        x = {}
         for i in range(self.pred_horizon):
             x[i] = solver.IntVar(lb, ub, 'x_%i' % i)
         # add constraints    
@@ -40,9 +41,6 @@ class IO_control:
         solver.Maximize(solver.Sum([self.prediction[i] * x[i] for i in range(self.pred_horizon)]))
         
         solver.Solve()
-        solver.Objective().Value()
-    
-        self.IO_control = np.zeros(self.pred_horizon)
         for i in range(self.pred_horizon):
             self.IO_control[i] = x[i].solution_value() / ub
 
