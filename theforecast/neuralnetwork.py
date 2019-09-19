@@ -135,14 +135,12 @@ class NeuralNetwork:
         if training == True:
             Y_bi = processing.create_output_vector(dataBiNorm, lookAhead, fMin, training)
             Y_dt = processing.create_output_vector(dataDTNorm, lookAhead, fMin, training)
-#             Y_bi = processing.create_output_vector(dataBiNorm, lookAhead, fMin, training)
 #             Y_dt = processing.create_output_vector(dataDTNorm, lookAhead, fMin, training)
 
         # reshape input to be [samples, time steps, features]
         X_bi = np.reshape(X_bi, (X_bi.shape[0], 1, X_bi.shape[1]))
         X_dt = np.reshape(X_dt, (X_dt.shape[0], 1, X_dt.shape[1]))
-        # X_season = np.reshape(X_season, (X_season.shape[0], 1, X_season.shape[1]))        
-        # X_dbi = np.reshape(X_dbi, (X_dbi.shape[0], 1, X_dbi.shape[1]))
+#         X_season = np.reshape(X_season, (X_season.shape[0], 1, X_season.shape[1]))        
         Xconcat = np.concatenate((X_bi, X_dt), axis=1)    
         
         # create input vector for model
@@ -158,12 +156,22 @@ class NeuralNetwork:
             return Xconcat
         
     def predict_recursive(self, data):
+        '''Description: recursiveley predicts the BI over 1 Day.
+        :param data: raw Data '''
         n_predictions = int(1440 / self.lookAhead)
         predStack = np.zeros(1440)  # predStack = np.zeros([self.dimension, 1440])
         
         for z in range(n_predictions):
             inputVectorTemp = self.getInputVector(data, self.lookBack, self.lookAhead, self.fMin, training=False)
             pred = self.model.predict(inputVectorTemp)
+            
+#             plt.figure(2)
+#             plt.clf()
+#             plt.plot((data[0] + 1) / 2)
+#             a1 = np.linspace(0, 2 * 1440, 48)
+#             a2 = np.linspace(2 * 1440, 2 * 1440 + 46 * 60, 46 * 4)
+#             a3 = np.linspace(2 * 1440 + 46 * 60, 4 * 1440, 24)
+#             plt.plot(np.concatenate((a1, a2, a3)), inputVectorTemp[0, 0, :])
             
             data = [np.roll(data[0], -self.lookAhead, axis=0),
                     np.roll(data[1], -self.lookAhead, axis=0)]

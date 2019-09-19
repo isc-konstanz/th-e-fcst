@@ -23,11 +23,8 @@ import matplotlib.pyplot as plt
 from matplotlib.pyplot import plot
 from keras.models import load_model
 import numpy as np
-import time
-from scipy import signal
 import os
 from theforecast import processing
-import warnings
 
     
 def main(rundir, args=None):
@@ -42,27 +39,20 @@ def main(rundir, args=None):
         configs = os.path.join(rundir, 'conf')
         
     # Parameter and variables:
-    prediction_stack = np.zeros([3, 0])
     IO_hist = np.zeros(1440)
-    n_training_days = 30
-    n_input_days = 7
     pred_start = 50 * 1440
     f_prediction = 5
     f_retrain = 200  # 6 * 60
-    b, a = signal.butter(8, 0.02)  # lowpass filter of order = 8 and critical frequency = 0.1 (-3dB)
 
     system = Forecast(configs)
     control = IO_control()
     data = system.databases['CSV'].data
-    i_start = (n_training_days - n_input_days) * 1440
     
     fig, axs = plt.subplots(2, 1)
     mng = plt.get_current_fig_manager()
     plt.pause(.1)
     mng.window.showMaximized()
     
-#     data_training = [data[0][i_start:],  # BI
-#                      data[1][i_start:]]  # timestamp
     data_training = [data[0][:pred_start],  # BI
                      data[1][:pred_start]]  # timestamp
          
@@ -71,14 +61,14 @@ def main(rundir, args=None):
                                                system.neuralnetwork.lookAhead,
                                                system.neuralnetwork.fMin,
                                                training=True)
-
-#     system.neuralnetwork.model = load_model('myModel2')
-    system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=1, batch_size=64, verbose=2)
-#     system.neuralnetwork.model.save('myModel2')
+    
+#     system.neuralnetwork.model = load_model('myModel')
+    system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=15, batch_size=64, verbose=2)
+    system.neuralnetwork.model.save('myModel')
 
     k = 0
-    horizon = 50
-    charge = 10
+    horizon = 0
+    charge = 0
     t_request1 = 0
     t_request2 = 0
     status_predict = True
@@ -88,17 +78,15 @@ def main(rundir, args=None):
                    
         print('Iteration: ' + str(k))
         # GENERATE REQUEST
-        # request1: 6-8h, horizon 3-4h
-        # request2: 12-14h, horizon 8-12h  
         if k % 1440 == 0:
             t_request1 = 6 * 60 + np.random.uniform() * 2 * 60   
             t_request2 = 12 * 60 + np.random.uniform() * 120  
-        # req1 activation         
+        # daily request 1: 6-8h, horizon 3-4h      
         if (k % 1440) >= t_request1:  
-            horizon = 240  # int(180 + np.random.uniform() * 60)
-            charge = 120  # horizon - 30 - int(np.random.uniform() * 120)
+            horizon = int(180 + np.random.uniform() * 60)
+            charge = 120  # horizon - 60 - int(np.random.uniform() * 60)
             t_request1 = 1441
-        # req2 activation
+        # daily request 2: 12-14h, horizon 8-12h
         if (k % 1440) >= t_request2:    
             horizon = int(8 * 60 + np.random.uniform() * 4.5 * 60)
             charge = horizon - 100 - int(np.random.uniform() * 120)
@@ -110,7 +98,7 @@ def main(rundir, args=None):
         elif charge >= 0.5:
             status_predict = True 
         try:
-            input_vector, prediction = system.execute(pred_start, k, f_retrain, status_predict)
+            system.execute(pred_start, k, f_retrain, status_predict)
         except (ForecastException) as e:
             logger.error('Fatal forecast error: %s', str(e))
             sys.exit(1)  # abnormal termination
@@ -119,13 +107,12 @@ def main(rundir, args=None):
         if charge >= 0.5:
             control.pred_horizon = horizon 
             control.charge_energy_amount = charge 
-            control.prediction = signal.filtfilt(b, a, prediction, method='pad', padtype='even', padlen=150)
             control.u_init = IO_hist[-2:]
         
-            control.execute()
-
-            processing.plot_prediction(axs, system, input_vector, prediction, k, pred_start)
-            processing.plot_IO_control(axs, system, IO_hist, control, k, pred_start)
+            control.execute(system.forecast)
+                 
+            processing.plot_prediction(axs, k, pred_start, system)
+            processing.plot_IO_control(axs, k, pred_start, system, control, IO_hist)
             plt.savefig('plots\\fig_' + str(int(k / 1440)) + '_' + str(k % 1440))
             
         elif charge < 0.5:

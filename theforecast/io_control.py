@@ -15,12 +15,11 @@ class IO_control:
 
     def __init__(self):
         self.pred_horizon = 0
-        self.prediction = []
         self.u_init = [0, 0]
         self.charge_energy_amount = 0
         self.IO_control = []
 
-    def execute(self):
+    def execute(self, prediction):
         lb = 0
         ub = 10  # number of controlling steps; depends on device
         self.IO_control = np.zeros(self.pred_horizon)
@@ -38,7 +37,7 @@ class IO_control:
         for i in range(self.pred_horizon - 1):
             solver.Add(-3 <= x[i + 1] - x[i] <= 3)
         # define cost function    
-        solver.Maximize(solver.Sum([self.prediction[i] * x[i] for i in range(self.pred_horizon)]))
+        solver.Maximize(solver.Sum([prediction[i] * x[i] for i in range(self.pred_horizon)]))
         
         solver.Solve()
         for i in range(self.pred_horizon):
