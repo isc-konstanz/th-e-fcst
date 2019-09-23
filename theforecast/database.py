@@ -105,7 +105,8 @@ class CsvDatabase(Database):
         if os.path.isfile(datafile):
             self.data = self.read_file(datafile)
             self.data[1] = pandas.Series.tolist(self.data[1])
-    
+            
+    @abstractmethod
     def get(self, keys, start, end, interval):
         if interval > 900:
             offset = (start - start.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() % interval
@@ -125,14 +126,16 @@ class CsvDatabase(Database):
                 return data.loc[:end]
         else:
             return data.truncate(before=start).head(1)
-
+        
+    @abstractmethod
     def last(self, keys, interval):
         date = dt.datetime.now(tz.utc).replace(second=0, microsecond=0)
         if date.minute % (interval / 60) != 0:
             date = date - dt.timedelta(minutes=date.minute % (interval / 60))
         
         return self.get(keys, date, date, interval)
-
+    
+    @abstractmethod
     def persist(self, data):
         if data is not None:
             path = self.output

@@ -129,6 +129,8 @@ def main(rundir, args=None):
         # ENDING CONDITION
         if k >= 90 * 1440:
             stat_run = False
+        
+        print(IO_hist[0])
     
     print(' --- END of SIMULATION --- ')
     system.neuralnetwork.model.save('myModel_FinalLTS')
