@@ -7,7 +7,6 @@ import os
 from configparser import ConfigParser
 import keras
 import logging
-import sys
 import numpy as np
 import pandas as pd
 import theforecast.processing as processing
@@ -27,74 +26,45 @@ class NeuralNetwork:
         settings = ConfigParser()
         settings.read(neuralnetworkfile)
         self.fMin = settings.getint('Input vector', 'fMin')
-        self.lookBack = int(settings.getint('Input vector', 'interval 1') / 60) + \
+        self.look_back = int(settings.getint('Input vector', 'interval 1') / 60) + \
                         int(settings.getint('Input vector', 'interval 2') / 15) + \
                         int(settings.getint('Input vector', 'interval 3') / self.fMin)
-        
         self.dropout = settings.getfloat('General', 'dropout')
-        self.nLayers = settings.getint('General', 'layers')
-        self.nNeurons = settings.getint('General', 'neurons')
-        self.lookAhead = int(settings.getint('General', 'lookAhead'))
-        if self.lookAhead < self.fMin:
-            self.lookAhead = self.fMin
+        self.layers = settings.getint('General', 'layers')
+        self.neurons = settings.getint('General', 'neurons')
+        self.look_ahead = int(settings.getint('General', 'lookAhead'))
         self.dimension = settings.getint('General', 'dimension')
-        
-        self.model = self.create_model_dropout()
+        self.epochs_retrain = settings.getint('General', 'epochs_retrain')
+        self.epochs_init = settings.getint('General', 'epochs_init')
+        self.model = self.create_model()
     
-    def create(self):    
-        model = keras.Sequential()
-        model.add(keras.layers.LSTM(self.nNeurons, input_shape=(self.dimension, self.lookBack), return_sequences=True))
-        model.add(keras.layers.Dropout(self.dropout))
-        for z in range(self.nLayers - 1):
-            model.add(keras.layers.Dense(self.nNeurons, activation='sigmoid')) 
-            model.add(keras.layers.Dropout(self.dropout))
-        model.add(keras.layers.Dense(int(self.lookAhead), activation='sigmoid'))
-        model.compile(loss='mean_squared_error', optimizer='adam')
-        return model
-    
-    def create_model_dropout(self):
+    def create_model(self):
         mode_training = False
-        inputs = keras.layers.Input(shape=(self.dimension, self.lookBack))
-        x = keras.layers.LSTM(self.nNeurons, recurrent_dropout=self.dropout, return_sequences=True)(inputs, training=mode_training)
+        inputs = keras.layers.Input(shape=(self.dimension, self.look_back))
+        x = keras.layers.LSTM(self.neurons, recurrent_dropout=self.dropout, return_sequences=True)(inputs, training=mode_training)
         x = keras.layers.Dropout(self.dropout)(x, training=mode_training)
-        x = keras.layers.LSTM(self.nNeurons)(x, training=mode_training)
+        x = keras.layers.LSTM(self.neurons)(x, training=mode_training)
         x = keras.layers.Dropout(self.dropout)(x, training=mode_training)
-        outputs = keras.layers.Dense(int(self.lookAhead))(x)
+        outputs = keras.layers.Dense(int(self.look_ahead))(x)
         model = keras.Model(inputs, outputs)
         model.compile(loss='mean_squared_error', optimizer='adam', metrics=['mae', 'mse']) 
         return model
     
-    def train(self, trainingData):
+    def train(self, X, Y, epochs=1):
         try: 
-            self.model.fit(trainingData)
+            self.model.fit(X, Y, epochs=epochs, batch_size=64, verbose=2)
         except(ImportError) as e:
             logger.error('Trainig error : %s', str(e)) 
     
-    def load(self, path):
-        #     system.neuralnetwork.model = load_model('myModel')
-#     system.neuralnetwork.model = load_model('myModelInit')
-#     system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=3, batch_size=64, verbose=2)
-#     system.neuralnetwork.model.save('myModelInit')
-#     try:
-#         model = load_model('myModel')
-#         if model.get_config() == system.neuralnetwork.model.get_config():
-#             system.neuralnetwork.model = model
-#         elif model.get_config() != system.neuralnetwork.model.get_config():
-#             system.neuralnetwork.model.fit(X, Y[:, 0, :], epochs=4, batch_size=64, verbose=2)
-#             system.neuralnetwork.model.save('myModel')
-#         # system.neuralnetwork.model.save('myModel')
-#     except (OSError) as e:
-#         system.neuralnetwork.model.fit(X, Y, epochs=8, batch_size=64, verbose=2)
-#         system.neuralnetwork.model.save('myModel')
-#         logger.error('No model found. Import error: %s', str(e))
-        try:
-            model = keras.models.load_model(path + '\\myModel')
-        except (OSError) as e:
-            logger.error('Fatal forecast error: %s', str(e))
-            sys.exit(1)  # abnormal termination
-        return model   
+    def load(self, path, name):
+        modelfile = os.path.join(path, name)
+        if os.path.isfile(modelfile):
+            self.model = keras.models.load_model(modelfile)
+        else: 
+            # TODO: logger info: no modelfile found in directory
+            print('logger info: no model-file found in directory.')
     
-    def getInputVector(self, data, lookBack, lookAhead, fMin, training=False):
+    def getInputVector(self, data, training=False):
         """ Description: input data will be normalized and shaped into specified form 
         :param data: 
             data which is loaded from the database
@@ -105,6 +75,9 @@ class NeuralNetwork:
         :param fMin:
             smallest interval in the created input vector. All other intervals are fixed 
         """
+        look_back = self.look_back
+        look_ahead = self.look_ahead
+        fMin = self.fMin
         
         dataBiNorm = (data[0] + 1) / 2
         b, a = signal.butter(8, 0.022)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
@@ -130,11 +103,11 @@ class NeuralNetwork:
         dataSeasonNorm = dataSeasonNorm.reshape(dataSeasonNorm.shape[0], 1)
         
         # reshape into X=t and Y=t+1 ( data needs to be normalized
-        X_bi = processing.create_input_vector(dataBiNorm, lookBack, lookAhead, fMin, training)
-        X_dt = processing.create_input_vector(dataDTNorm, lookBack, lookAhead, fMin, training)
+        X_bi = processing.create_input_vector(dataBiNorm, look_back, look_ahead, fMin, training)
+        X_dt = processing.create_input_vector(dataDTNorm, look_back, look_ahead, fMin, training)
         if training == True:
-            Y_bi = processing.create_output_vector(dataBiNorm, lookAhead, fMin, training)
-            Y_dt = processing.create_output_vector(dataDTNorm, lookAhead, fMin, training)
+            Y_bi = processing.create_output_vector(dataBiNorm, look_ahead, fMin, training)
+            Y_dt = processing.create_output_vector(dataDTNorm, look_ahead, fMin, training)
 #             Y_dt = processing.create_output_vector(dataDTNorm, lookAhead, fMin, training)
 
         # reshape input to be [samples, time steps, features]
@@ -158,11 +131,11 @@ class NeuralNetwork:
     def predict_recursive(self, data):
         '''Description: recursiveley predicts the BI over 1 Day.
         :param data: raw Data '''
-        n_predictions = int(1440 / self.lookAhead)
+        n_predictions = int(1440 / self.look_ahead)
         predStack = np.zeros(1440)  # predStack = np.zeros([self.dimension, 1440])
         
         for z in range(n_predictions):
-            inputVectorTemp = self.getInputVector(data, self.lookBack, self.lookAhead, self.fMin, training=False)
+            inputVectorTemp = self.getInputVector(data, training=False)
             pred = self.model.predict(inputVectorTemp)
             
 #             plt.figure(2)
@@ -173,17 +146,17 @@ class NeuralNetwork:
 #             a3 = np.linspace(2 * 1440 + 46 * 60, 4 * 1440, 24)
 #             plt.plot(np.concatenate((a1, a2, a3)), inputVectorTemp[0, 0, :])
             
-            data = [np.roll(data[0], -self.lookAhead, axis=0),
-                    np.roll(data[1], -self.lookAhead, axis=0)]
+            data = [np.roll(data[0], -self.look_ahead, axis=0),
+                    np.roll(data[1], -self.look_ahead, axis=0)]
             
-            data[0][-self.lookAhead:] = pred * 2 - 1
+            data[0][-self.look_ahead:] = pred * 2 - 1
             
             I = data[0].shape[0]
             ts = data[1][I - 1] 
-            for k in range(self.lookAhead):
-                data[1][I - self.lookAhead + k] = ts + np.timedelta64(k + 1, 'm')
+            for k in range(self.look_ahead):
+                data[1][I - self.look_ahead + k] = ts + np.timedelta64(k + 1, 'm')
                 
-            predStack[z * self.lookAhead : (z + 1) * self.lookAhead] = pred
+            predStack[z * self.look_ahead : (z + 1) * self.look_ahead] = pred
             
         return predStack
         

@@ -67,9 +67,6 @@ def plot_prediction(axs, k, pred_start, system):
     data_input_pred = [data[0][pred_start - 4 * 1440 + k : pred_start + k],
                        data[1][pred_start - 4 * 1440 + k : pred_start + k]]
     input_vector = system.neuralnetwork.getInputVector(data_input_pred,
-                                                       system.neuralnetwork.lookBack,
-                                                       system.neuralnetwork.lookAhead,
-                                                       system.neuralnetwork.fMin,
                                                        training=False)
                 
     dt = data[1][pred_start - 4 * 1440 + k:pred_start + 1440 + k]

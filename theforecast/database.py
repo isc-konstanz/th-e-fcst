@@ -106,7 +106,6 @@ class CsvDatabase(Database):
             self.data = self.read_file(datafile)
             self.data[1] = pandas.Series.tolist(self.data[1])
             
-    @abstractmethod
     def get(self, keys, start, end, interval):
         if interval > 900:
             offset = (start - start.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() % interval
@@ -127,7 +126,6 @@ class CsvDatabase(Database):
         else:
             return data.truncate(before=start).head(1)
         
-    @abstractmethod
     def last(self, keys, interval):
         date = dt.datetime.now(tz.utc).replace(second=0, microsecond=0)
         if date.minute % (interval / 60) != 0:
@@ -135,22 +133,22 @@ class CsvDatabase(Database):
         
         return self.get(keys, date, date, interval)
     
-    @abstractmethod
     def persist(self, data):
         if data is not None:
             path = self.output
-            if self.summarize:
-                path = os.path.join(path, 'lib')
-                
-            if not os.path.exists(path):
-                os.makedirs(path)
-                
-            if self.summarize:
-                self.write_file(path, data)
-                self.concat_file(self.output, data)
-                
-            else:
-                self.write_file(path, data)
+            self.concat_file(path, data)
+#             if self.summarize:
+#                 path = os.path.join(path, 'lib')
+#                 
+#             if not os.path.exists(path):
+#                 os.makedirs(path)
+#                 
+#             if self.summarize:
+#                 self.write_file(path, data)
+#                 self.concat_file(self.output, data)
+#                 
+#             else:
+#                 self.write_file(path, data)
 
     def read_file(self, path, index_column='unixtimestamp', unix=True):
         """
@@ -171,14 +169,6 @@ class CsvDatabase(Database):
             the flag, if the index column contains UNIX timestamps that need to be parsed accordingly.
         :type unix:
             boolean
-        
-        :param timezone: 
-            the timezone, in which the data is logged and available in the data file.
-            See http://en.wikipedia.org/wiki/List_of_tz_database_time_zones for a list of 
-            valid time zones.
-        :type timezone:
-            str or unicode
-        
         
         :returns: 
             the retrieved columns, indexed by their date
