@@ -94,14 +94,13 @@ def main(rundir, args=None):
             t_request2 = 1441
         
         # LOGGING
-        # Neu
-#         if system.forecast.__len__() != 0:
-#             df = pandas.DataFrame({'unixtimestamp': system.databases['CSV'].data[1][pred_start + k : pred_start + k + f_prediction],
-#                                    'bi': system.databases['CSV'].data[0][pred_start + k : pred_start + k + f_prediction],
-#                                    'forecast': system.forecast[:f_prediction],
-#                                    'IO': control.IO_control[:f_prediction]})
-#             df = df.set_index('unixtimestamp')
-#             system.databases['CSV'].persist(df)
+        if system.forecast.__len__() != 0:
+            df = pandas.DataFrame({'unixtimestamp': system.databases['CSV'].data[1][pred_start + k : pred_start + k + f_prediction],
+                                   'bi': system.databases['CSV'].data[0][pred_start + k : pred_start + k + f_prediction],
+                                   'forecast': system.forecast[:f_prediction],
+                                   'IO': control.IO_control[:f_prediction]})
+            df = df.set_index('unixtimestamp')
+            system.databases['CSV'].persist(df)
         
         # READ DATA FROM FILE
         
