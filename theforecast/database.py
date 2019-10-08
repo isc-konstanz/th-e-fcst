@@ -266,19 +266,20 @@ class CsvDatabase(Database):
         data.tz_convert(self.timezone).astype(float).round(3).to_csv(filepath, sep=self.separator, decimal=self.decimal, encoding='utf-8')
 
     def concat_file(self, path, data):
-        filename = data.index[0].astimezone(self.timezone).strftime('%Y') + '_sim.csv';
+#         filename = data.index[0].astimezone(self.timezone).strftime('%Y') + '_sim.csv'
+        filename = data.index[0].strftime('%Y') + '_sim.csv'
         filepath = os.path.join(path, filename)
         
         data.index.name = 'time'
-        
         if os.path.isfile(filepath):
             csv = pd.read_csv(filepath, sep=self.separator, decimal=self.decimal, index_col='time', parse_dates=['time'])
-            csv.index = csv.index.tz_localize(tz.utc).tz_convert(self.timezone)
+#             csv.index = csv.index.tz_localize(tz.utc).tz_convert(self.timezone)
         else:
             csv = pd.DataFrame()
         
         # Concatenate data to existing file
         # Preserve column order, as pandas concatenation may sort them as result of a bug (https://github.com/pandas-dev/pandas/issues/4588)
-        csv = pd.concat([csv, data.tz_convert(self.timezone)])
+#         csv = pd.concat([csv, data.tz_convert(self.timezone)])
+        csv = pd.concat([csv, data])
         csv[data.columns].astype(float).round(3).to_csv(filepath, sep=self.separator, decimal=self.decimal, encoding='utf-8')
 

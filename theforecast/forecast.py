@@ -82,10 +82,6 @@ class Forecast:
             y = signal.filtfilt(b, a, y, method='pad', padtype='even', padlen=150)
         
         self.forecast = y[-1440:]
-
-    def persist(self, result):
-        for database in reversed(self.databases.values()):
-            database.persist(result)
     
         
 class ForecastException(Exception):
