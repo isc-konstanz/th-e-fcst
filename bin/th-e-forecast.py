@@ -103,6 +103,7 @@ def main(rundir, args=None):
             system.databases['CSV'].persist(df)
         
         # READ DATA FROM FILE
+        # TODO: get new data from DB
         
         # FORECAST   
         if charge < 5:

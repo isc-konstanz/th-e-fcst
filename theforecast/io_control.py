@@ -21,7 +21,7 @@ class IO_control:
 
     def execute(self, prediction):
         lb = 0
-        ub = 10  # number of controlling steps; depends on device
+        ub = 2  # number of controlling steps; depends on device
         self.IO_control = np.zeros(self.pred_horizon)
         solver = pywraplp.Solver('simple_lp_program',
                                       pywraplp.Solver.CBC_MIXED_INTEGER_PROGRAMMING)
