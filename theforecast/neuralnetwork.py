@@ -84,14 +84,7 @@ class NeuralNetwork:
          
         dataBiNorm = signal.filtfilt(b, a, dataBiNorm, method='pad', padtype='even', padlen=150)
         dataDTNorm = processing.getDaytime(data[1]) 
-#         c='b'
-#         plt.clf()
-#         plt.plot(dataBiNorm)
-#         plt.plot(signal.filtfilt(b, a, dataBiNorm, method='gust'), label='gust')
-#         plt.plot(signal.filtfilt(b, a, dataBiNorm, method='pad', padtype='odd', padlen=150),c, label='odd')
-#         plt.plot(signal.filtfilt(b, a, dataBiNorm, method='pad', padtype='even', padlen=150),c, label='even')
-#         plt.plot(signal.filtfilt(b, a, dataBiNorm, method='pad', padtype='constant', padlen=150),c, label='constant')
-#         plt.legend()
+
         # even, constant
         hourOfYear = np.zeros([len(dataDTNorm)])
         for i in range (len(data[1])): 
@@ -137,14 +130,6 @@ class NeuralNetwork:
         for z in range(n_predictions):
             inputVectorTemp = self.getInputVector(data, training=False)
             pred = self.model.predict(inputVectorTemp)
-            
-#             plt.figure(2)
-#             plt.clf()
-#             plt.plot((data[0] + 1) / 2)
-#             a1 = np.linspace(0, 2 * 1440, 48)
-#             a2 = np.linspace(2 * 1440, 2 * 1440 + 46 * 60, 46 * 4)
-#             a3 = np.linspace(2 * 1440 + 46 * 60, 4 * 1440, 24)
-#             plt.plot(np.concatenate((a1, a2, a3)), inputVectorTemp[0, 0, :])
             
             data = [np.roll(data[0], -self.look_ahead, axis=0),
                     np.roll(data[1], -self.look_ahead, axis=0)]

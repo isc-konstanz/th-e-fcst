@@ -15,7 +15,7 @@ class IO_control:
 
     def __init__(self):
         self.pred_horizon = 0
-        self.u_init = [0, 0]
+        self.u_init = 0
         self.charge_energy_amount = 0
         self.IO_control = []
 
@@ -30,14 +30,25 @@ class IO_control:
         # Create the variables
         for i in range(self.pred_horizon):
             x[i] = solver.IntVar(lb, ub, 'x_%i' % i)
+        for j in range(1, self.pred_horizon + 1):    
+            x[i + j] = solver.IntVar(lb, ub, 'T_%i' % j)
         # add constraints    
         solver.Add(solver.Sum([x[i] for i in range(self.pred_horizon)]) == self.charge_energy_amount * ub)
         solver.Add(x[self.pred_horizon - 1] == 0)
-        solver.Add(-3 <= x[0] - self.u_init[-1] * ub <= 3)
+        
+        solver.Add(-self.u_init - x[0] + x[self.pred_horizon] <= 0)
+        solver.Add(self.u_init - x[0] - x[self.pred_horizon] <= 0)
+        solver.Add(-self.u_init + x[0] - x[self.pred_horizon] <= 0)
+        solver.Add(self.u_init + x[0] + x[self.pred_horizon] <= 2 * ub)
         for i in range(self.pred_horizon - 1):
-            solver.Add(-3 <= x[i + 1] - x[i] <= 3)
+            solver.Add(-x[i] - x[i + 1] + x[i + 1 + self.pred_horizon] <= 0)
+            solver.Add(x[i] - x[i + 1] - x[i + 1 + self.pred_horizon] <= 0)
+            solver.Add(-x[i] + x[i + 1] - x[i + 1 + self.pred_horizon] <= 0)
+            solver.Add(x[i] + x[i + 1] + x[i + 1 + self.pred_horizon] <= 2 * ub)
+            
         # define cost function    
-        solver.Maximize(solver.Sum([prediction[i] * x[i] for i in range(self.pred_horizon)]))
+        solver.Maximize(solver.Sum([prediction[i] * x[i] for i in range(self.pred_horizon)]) - 
+                        0.2 * solver.Sum([x[i + self.pred_horizon] for i in range(self.pred_horizon - 1)]))
         
         solver.Solve()
         for i in range(self.pred_horizon):

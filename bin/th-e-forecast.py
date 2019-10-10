@@ -39,7 +39,6 @@ def main(rundir, args=None):
     else:
         configs = os.path.join(rundir, 'conf')
     logging = os.path.join(rundir, 'log')
-    output = os.path.join(rundir, 'bin\data')
         
     # Parameter and variables:
     IO_hist = np.zeros(1440)
@@ -62,14 +61,14 @@ def main(rundir, args=None):
     X, Y = system.neuralnetwork.getInputVector(data_training,
                                                training=True)
     
-    system.neuralnetwork.load(output, 'myModel')
+    system.neuralnetwork.load(logging, 'myModel')
 #     system.neuralnetwork.train(X, Y[:, 0, :], system.neuralnetwork.epochs_init)
 #     system.neuralnetwork.train(X, Y[:, 0, :], 1)
-#     system.neuralnetwork.model.save(output + '\myModel')
+#     system.neuralnetwork.model.save(logging + '\myModel')
 
     k = 0
-    horizon = 120
-    charge = 40
+    horizon = 18
+    charge = 10
     t_request1 = 0
     t_request2 = 0
     status_predict = True
@@ -95,6 +94,8 @@ def main(rundir, args=None):
         
         # LOGGING
         if system.forecast.__len__() != 0:
+            if len(control.IO_control) <= f_prediction:
+                control.IO_control = np.append(control.IO_control, np.zeros(f_prediction - len(control.IO_control)))
             df = pandas.DataFrame({'unixtimestamp': system.databases['CSV'].data[1][pred_start + k : pred_start + k + f_prediction],
                                    'bi': system.databases['CSV'].data[0][pred_start + k : pred_start + k + f_prediction],
                                    'forecast': system.forecast[:f_prediction],
@@ -102,7 +103,7 @@ def main(rundir, args=None):
             df = df.set_index('unixtimestamp')
             system.databases['CSV'].persist(df)
         
-        # READ DATA FROM FILE
+        # GET NEW DATA FROM DATABASE
         # TODO: get new data from DB
         
         # FORECAST   
@@ -111,22 +112,22 @@ def main(rundir, args=None):
         elif charge >= 5:
             status_predict = True 
         try:
-            system.execute(pred_start, k, f_retrain, status_predict, output)
+            system.execute(pred_start, k, f_retrain, status_predict, logging)
         except (ForecastException) as e:
             logger.error('Fatal forecast error: %s', str(e))
             sys.exit(1)  # abnormal termination
         
         # MPC
-        if charge >= 5 and horizon > 0:
+        if status_predict and horizon > 0:
             control.pred_horizon = horizon 
             control.charge_energy_amount = charge 
-            control.u_init = IO_hist[-2:]
+            control.u_init = IO_hist[-1]
         
             control.execute(system.forecast)
                  
             processing.plot_prediction(axs, k, pred_start, system)
             processing.plot_IO_control(axs, k, pred_start, system, control, IO_hist)
-            plt.savefig('data\\plots\\fig_' + str(int(k / 1440)) + '_' + str(k % 1440))
+            plt.savefig(logging + '\\plots\\fig_' + str(int(k / 1440)) + '_' + str(k % 1440))
             
         elif charge < 5:
             print('no charge request - idle')
@@ -142,8 +143,6 @@ def main(rundir, args=None):
         # ENDING CONDITION
         if k >= 90 * 1440:
             stat_run = False
-        
-        print(IO_hist[0])
     
     print(' --- END of SIMULATION --- ')
     system.neuralnetwork.model.save('myModel_FinalLTS')

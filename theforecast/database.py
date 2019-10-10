@@ -101,6 +101,7 @@ class CsvDatabase(Database):
         self.summarize = settings.getboolean('CSV', 'summarize')
         self.file = settings.get('CSV', 'file')
         
+        # datafile = os.path.join(settings.get('CSV', 'input'), self.file)
         datafile = os.path.join(settings.get('CSV', 'input'), self.file)
         if os.path.isfile(datafile):
             self.data = self.read_file(datafile)
@@ -137,18 +138,6 @@ class CsvDatabase(Database):
         if data is not None:
             path = self.output
             self.concat_file(path, data)
-#             if self.summarize:
-#                 path = os.path.join(path, 'lib')
-#                 
-#             if not os.path.exists(path):
-#                 os.makedirs(path)
-#                 
-#             if self.summarize:
-#                 self.write_file(path, data)
-#                 self.concat_file(self.output, data)
-#                 
-#             else:
-#                 self.write_file(path, data)
 
     def read_file(self, path, index_column='unixtimestamp', unix=True):
         """
@@ -178,7 +167,7 @@ class CsvDatabase(Database):
         
         csv = pd.read_csv(path, sep=self.separator, decimal=self.decimal, parse_dates=[0])
         if not csv.empty:           
-            dataBi = csv.loc[:]['y']
+            dataBi = csv.loc[:]['bi']
             dataBi = dataBi.values.astype('float32')
             dataDatetime = csv.loc[:]['unixtimestamp']
             

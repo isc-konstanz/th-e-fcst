@@ -52,7 +52,7 @@ class Forecast:
     def __init_neuralnetwork__(self, configs):
         return NeuralNetwork(configs)
         
-    def execute(self, pred_start, k, f_retrain, status_predict, output):
+    def execute(self, pred_start, k, f_retrain, status_predict, logging):
         logger.info("Starting th-e-forecast")
         # get new data from CSV-file
         # data = self.databases['CSV'].read_file('C:\\Users\\sf\\Software\\eclipse\\PyWorkspace\\th-e-forecast\\bin\\lib\\BI_jul_aug.csv')
@@ -70,7 +70,7 @@ class Forecast:
             X_train, Y_train = theNN.getInputVector(data_input_retrain,
                                                     training=True)
             theNN.model.fit(X_train, Y_train[:, 0, :], epochs=1, batch_size=64, verbose=2)
-            theNN.model.save(output + 'myModel')
+            theNN.model.save(logging + 'myModel')
         
         # prediction 
         if status_predict == True:    

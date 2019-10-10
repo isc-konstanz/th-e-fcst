@@ -94,3 +94,4 @@ ENV/
 *.pydevproject
 *.settings/
 *.png
+*.csv
