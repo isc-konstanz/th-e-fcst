@@ -75,10 +75,6 @@ class NeuralNetwork:
         :param fMin:
             smallest interval in the created input vector. All other intervals are fixed 
         """
-        look_back = self.look_back
-        look_ahead = self.look_ahead
-        fMin = self.fMin
-        
         dataBiNorm = (data[0] + 1) / 2
         b, a = signal.butter(8, 0.022)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
          
@@ -96,12 +92,16 @@ class NeuralNetwork:
         dataSeasonNorm = dataSeasonNorm.reshape(dataSeasonNorm.shape[0], 1)
         
         # reshape into X=t and Y=t+1 ( data needs to be normalized
-        X_bi = processing.create_input_vector(dataBiNorm, look_back, look_ahead, fMin, training)
-        X_dt = processing.create_input_vector(dataDTNorm, look_back, look_ahead, fMin, training)
         if training == True:
-            Y_bi = processing.create_output_vector(dataBiNorm, look_ahead, fMin, training)
-            Y_dt = processing.create_output_vector(dataDTNorm, look_ahead, fMin, training)
-#             Y_dt = processing.create_output_vector(dataDTNorm, lookAhead, fMin, training)
+            length = int(len(data[0]) - 4 * 24 * 60 - self.look_ahead)
+        elif training == False:
+            length = 1 
+        X_bi = processing.create_input_vector(dataBiNorm, self, length)
+        X_dt = processing.create_input_vector(dataDTNorm, self, length)
+        if training == True:
+            Y_bi = processing.create_output_vector(dataBiNorm, self, length)
+            Y_dt = processing.create_output_vector(dataDTNorm, self, length)
+#             Y_dt = processing.create_output_vector(dataDTNorm, self, training)
 
         # reshape input to be [samples, time steps, features]
         X_bi = np.reshape(X_bi, (X_bi.shape[0], 1, X_bi.shape[1]))

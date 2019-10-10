@@ -67,8 +67,8 @@ def main(rundir, args=None):
 #     system.neuralnetwork.model.save(logging + '\myModel')
 
     k = 0
-    horizon = 18
-    charge = 10
+    horizon = 180
+    charge = 50
     t_request1 = 0
     t_request2 = 0
     status_predict = True

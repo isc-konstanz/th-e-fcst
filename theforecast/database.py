@@ -101,7 +101,6 @@ class CsvDatabase(Database):
         self.summarize = settings.getboolean('CSV', 'summarize')
         self.file = settings.get('CSV', 'file')
         
-        # datafile = os.path.join(settings.get('CSV', 'input'), self.file)
         datafile = os.path.join(settings.get('CSV', 'input'), self.file)
         if os.path.isfile(datafile):
             self.data = self.read_file(datafile)

@@ -18,14 +18,8 @@ def getDaytime(data):
     return seconds / (24 * 60 * 60)
 
 
-def create_input_vector(data, look_back, look_ahead, fMin, training):
-    if training == True:
-        l = int(len(data) - 4 * 24 * 60 - look_ahead)
-    elif training == False:
-        l = 1 
-    dataX = np.zeros([l, look_back]) 
-
-    # i1 = 24 * 5 * 60  # 60 min interval      ~ 5d
+def create_input_vector(data, theNN, l):
+    dataX = np.zeros([l, theNN.look_back]) 
     i1 = 24 * 2 * 60
     i2 = 46 * 60  # 15 min interval      ~ 46h
     i3 = 2 * 60  # fMin min interval     ~ 2h
@@ -33,27 +27,19 @@ def create_input_vector(data, look_back, look_ahead, fMin, training):
     for z in range(l):
         section1 = data[z:z + i1, 0][int(60 / 2)::60]
         section2 = data[z + i1: z + i1 + i2, 0][int(15 / 2)::15]
-        section3 = data[z + i1 + i2: z + i1 + i2 + i3, 0][int(fMin / 2)::fMin]
+        section3 = data[z + i1 + i2: z + i1 + i2 + i3, 0][int(theNN.fMin / 2)::theNN.fMin]
         dataX[z, :] = np.concatenate([section1, section2, section3])
 
     return dataX
 
 
-def create_output_vector(data, look_ahead, fMin, training):
-    if training == True:
-        l = int(len(data) - 4 * 24 * 60 - look_ahead)
-    elif training == False:
-        l = 1 
-    dataY = np.zeros([l, look_ahead])  
+def create_output_vector(data, theNN, l):
+    dataY = np.zeros([l, theNN.look_ahead])  
         
     i_start = 4 * 24 * 60  
     for z in range(l):
-        section1 = data[z + i_start:z + i_start + look_ahead, 0]
+        section1 = data[z + i_start:z + i_start + theNN.look_ahead, 0]
         dataY[z, :] = section1
-#         section1 = data[z + i_start:z + i_start + i1, 0]
-#         section2 = data[z + i_start + i1: z + i_start + i1 + i2, 0][int(5 / 2)::f]
-#         section3 = data[z + i_start + i1 + i2: z + i_start + i1 + i2 + i3, 0][int(15 / 2)::15]
-#         dataY[z, :] = np.concatenate([section1, section2, section3])
 
     return dataY
     
