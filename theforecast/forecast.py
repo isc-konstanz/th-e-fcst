@@ -52,38 +52,24 @@ class Forecast:
     def __init_neuralnetwork__(self, configs):
         return NeuralNetwork(configs)
         
-    def execute(self, pred_start, k, f_retrain, status_predict, logging):
+    def execute(self):
         logger.info("Starting th-e-forecast")
-        # get new data from CSV-file
-        # data = self.databases['CSV'].read_file('C:\\Users\\sf\\Software\\eclipse\\PyWorkspace\\th-e-forecast\\bin\\lib\\BI_jul_aug.csv')
-        y = []
-        theNN = self.neuralnetwork
         data = self.databases['CSV'].data
-        data = [data[0][:pred_start + k],
-                data[1][:pred_start + k]]
-        n_training_days = 30
+#         retrain model        
+#         if k % 200 == 180:
+#             X_train, Y_train = self.neuralnetwork.getInputVector(data, training=True)
+#             self.neuralnetwork.train(X_train, Y_train[:, 0, :], epochs = 1)
+#             self.neuralnetwork.model.save(logging + '\myModel')
         
-        # retrain model        
-        if k % f_retrain == 180:
-            data_input_retrain = [data[0][-1440 * n_training_days:],
-                                  data[1][-1440 * n_training_days:]]
-            X_train, Y_train = theNN.getInputVector(data_input_retrain,
-                                                    training=True)
-            theNN.model.fit(X_train, Y_train[:, 0, :], epochs=1, batch_size=64, verbose=2)
-            theNN.model.save(logging + 'myModel')
+        # prediction     
+        data_input_pred = [data[0][-1440 * 4:],
+                           data[1][-1440 * 4:]]
+        y = self.neuralnetwork.predict_recursive(data_input_pred)
+        self.forecast_unfiltered = y
+        b, a = signal.butter(8, 0.022)
+        self.forecast = signal.filtfilt(b, a, y, method='pad', padtype='even', padlen=150)
         
-        # prediction 
-        if status_predict == True:    
-            data_input_pred = [data[0][-1440 * 4:],
-                               data[1][-1440 * 4:]]
-            y = theNN.predict_recursive(data_input_pred)
-            self.forecast_unfiltered = y
-            b, a = signal.butter(8, 0.022)
-            y = signal.filtfilt(b, a, y, method='pad', padtype='even', padlen=150)
-        
-        self.forecast = y[-1440:]
-    
-        
+
 class ForecastException(Exception):
     """
     Raise if any error occurred during the forecast.

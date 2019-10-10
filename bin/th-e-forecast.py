@@ -41,26 +41,21 @@ def main(rundir, args=None):
     logging = os.path.join(rundir, 'log')
         
     # Parameter and variables:
-    IO_hist = np.zeros(1440)
     pred_start = 50 * 1440
     f_prediction = 20
     f_retrain = 200  # 6 * 60
 
     system = Forecast(configs)
     control = IO_control()
-    data = system.databases['CSV'].data
     
     fig, axs = plt.subplots(2, 1)
     mng = plt.get_current_fig_manager()
     plt.pause(.1)
     mng.window.showMaximized()
     
-    data_training = [data[0][:pred_start],  # BI
-                     data[1][:pred_start]]  # timestamp
-         
-    X, Y = system.neuralnetwork.getInputVector(data_training,
-                                               training=True)
-    
+    data = [system.databases['CSV'].data[0][-pred_start:],
+            system.databases['CSV'].data[1][-pred_start:]]     
+    X, Y = system.neuralnetwork.getInputVector(data, training=True)
     system.neuralnetwork.load(logging, 'myModel')
 #     system.neuralnetwork.train(X, Y[:, 0, :], system.neuralnetwork.epochs_init)
 #     system.neuralnetwork.train(X, Y[:, 0, :], 1)
@@ -71,7 +66,6 @@ def main(rundir, args=None):
     charge = 50
     t_request1 = 0
     t_request2 = 0
-    status_predict = True
     stat_run = True
     
     while stat_run:
@@ -96,45 +90,43 @@ def main(rundir, args=None):
         if system.forecast.__len__() != 0:
             if len(control.IO_control) <= f_prediction:
                 control.IO_control = np.append(control.IO_control, np.zeros(f_prediction - len(control.IO_control)))
-            df = pandas.DataFrame({'unixtimestamp': system.databases['CSV'].data[1][pred_start + k : pred_start + k + f_prediction],
-                                   'bi': system.databases['CSV'].data[0][pred_start + k : pred_start + k + f_prediction],
+            df = pandas.DataFrame({'unixtimestamp': system.databases['CSV'].data[1][-f_prediction:],
+                                   'bi': system.databases['CSV'].data[0][-f_prediction:],
                                    'forecast': system.forecast[:f_prediction],
                                    'IO': control.IO_control[:f_prediction]})
             df = df.set_index('unixtimestamp')
             system.databases['CSV'].persist(df)
         
         # GET NEW DATA FROM DATABASE
-        # TODO: get new data from DB
+        system.databases['CSV'].read_file(system.databases['CSV'].datafile, k)
         
         # FORECAST   
-        if charge < 5:
-            status_predict = False
-        elif charge >= 5:
-            status_predict = True 
         try:
-            system.execute(pred_start, k, f_retrain, status_predict, logging)
+            system.execute()
         except (ForecastException) as e:
             logger.error('Fatal forecast error: %s', str(e))
             sys.exit(1)  # abnormal termination
         
         # MPC
-        if status_predict and horizon > 0:
+        if charge > 5 and horizon > 0:
             control.pred_horizon = horizon 
             control.charge_energy_amount = charge 
-            control.u_init = IO_hist[-1]
-        
             control.execute(system.forecast)
-                 
-            processing.plot_prediction(axs, k, pred_start, system)
-            processing.plot_IO_control(axs, k, pred_start, system, control, IO_hist)
-            plt.savefig(logging + '\\plots\\fig_' + str(int(k / 1440)) + '_' + str(k % 1440))
             
-        elif charge < 5:
+            # GRAPHICS:     
+            processing.plot_prediction(axs, system)
+            processing.plot_IO_control(axs, system, control)
+#             plt.savefig(logging + '\\plots\\fig_' + str(int(k / 1440)) + '_' + str(k % 1440))
+            
+        else:
             print('no charge request - idle')
             control.IO_control = np.zeros(f_prediction)
+        
+        # RETRAIN MODEL
+        # TODO: retrain model with new data
             
-        IO_hist = np.roll(IO_hist, -f_prediction)
-        IO_hist[-f_prediction:] = np.concatenate((control.IO_control[:f_prediction],
+        control.IO_history = np.roll(control.IO_history, -f_prediction)
+        control.IO_history[-f_prediction:] = np.concatenate((control.IO_control[:f_prediction],
                                              np.zeros(f_prediction - len(control.IO_control[:f_prediction]))))
         horizon = horizon - f_prediction
         charge = charge - sum(control.IO_control[:f_prediction])

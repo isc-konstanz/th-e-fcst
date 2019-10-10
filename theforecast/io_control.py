@@ -15,9 +15,9 @@ class IO_control:
 
     def __init__(self):
         self.pred_horizon = 0
-        self.u_init = 0
         self.charge_energy_amount = 0
         self.IO_control = []
+        self.IO_history = np.zeros(1440)
 
     def execute(self, prediction):
         lb = 0
@@ -36,10 +36,10 @@ class IO_control:
         solver.Add(solver.Sum([x[i] for i in range(self.pred_horizon)]) == self.charge_energy_amount * ub)
         solver.Add(x[self.pred_horizon - 1] == 0)
         
-        solver.Add(-self.u_init - x[0] + x[self.pred_horizon] <= 0)
-        solver.Add(self.u_init - x[0] - x[self.pred_horizon] <= 0)
-        solver.Add(-self.u_init + x[0] - x[self.pred_horizon] <= 0)
-        solver.Add(self.u_init + x[0] + x[self.pred_horizon] <= 2 * ub)
+        solver.Add(-self.IO_history[-1] - x[0] + x[self.pred_horizon] <= 0)
+        solver.Add(self.IO_history[-1] - x[0] - x[self.pred_horizon] <= 0)
+        solver.Add(-self.IO_history[-1] + x[0] - x[self.pred_horizon] <= 0)
+        solver.Add(self.IO_history[-1] + x[0] + x[self.pred_horizon] <= 2 * ub)
         for i in range(self.pred_horizon - 1):
             solver.Add(-x[i] - x[i + 1] + x[i + 1 + self.pred_horizon] <= 0)
             solver.Add(x[i] - x[i + 1] - x[i + 1 + self.pred_horizon] <= 0)

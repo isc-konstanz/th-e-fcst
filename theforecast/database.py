@@ -101,10 +101,9 @@ class CsvDatabase(Database):
         self.summarize = settings.getboolean('CSV', 'summarize')
         self.file = settings.get('CSV', 'file')
         
-        datafile = os.path.join(settings.get('CSV', 'input'), self.file)
-        if os.path.isfile(datafile):
-            self.data = self.read_file(datafile)
-            self.data[1] = pandas.Series.tolist(self.data[1])
+        self.datafile = os.path.join(settings.get('CSV', 'input'), self.file)
+        if os.path.isfile(self.datafile):
+            self.read_file(self.datafile, k=0)
             
     def get(self, keys, start, end, interval):
         if interval > 900:
@@ -138,7 +137,7 @@ class CsvDatabase(Database):
             path = self.output
             self.concat_file(path, data)
 
-    def read_file(self, path, index_column='unixtimestamp', unix=True):
+    def read_file(self, path, k, index_column='unixtimestamp', unix=True):
         """
         Reads the content of a specified CSV file.
         
@@ -170,7 +169,9 @@ class CsvDatabase(Database):
             dataBi = dataBi.values.astype('float32')
             dataDatetime = csv.loc[:]['unixtimestamp']
             
-            return [dataBi, dataDatetime]
+            self.data = [dataBi[:50 * 1440 + k], dataDatetime[:50 * 1440 + k]]
+            self.data[1] = pandas.Series.tolist(self.data[1])
+            
 #         hourOfYear = np.zeros([len(dataDatetime)])
 #         for i in range (len(dataDatetime)): 
 #             hourOfYear[i] = dataDatetime[i].timetuple().tm_yday * 24 + int(dataDatetime[i].minute / 60)

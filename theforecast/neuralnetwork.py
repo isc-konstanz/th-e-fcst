@@ -36,6 +36,7 @@ class NeuralNetwork:
         self.dimension = settings.getint('General', 'dimension')
         self.epochs_retrain = settings.getint('General', 'epochs_retrain')
         self.epochs_init = settings.getint('General', 'epochs_init')
+        self.n_samples_retrain = settings.getint('Prediction', 'training samples')
         self.model = self.create_model()
     
     def create_model(self):

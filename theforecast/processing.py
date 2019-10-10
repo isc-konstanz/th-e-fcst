@@ -44,23 +44,23 @@ def create_output_vector(data, theNN, l):
     return dataY
     
     
-def plot_prediction(axs, k, pred_start, system):
+def plot_prediction(axs, system):
     data = system.databases['CSV'].data
-    bi = (data[0][pred_start - 4 * 1440 + k:pred_start + 1440 + k] + 1) / 2
+    bi = (data[0] + 1) / 2
     b, a = signal.butter(8, 0.02)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
     bi_filtered = signal.filtfilt(b, a, bi, method='pad', padtype='even', padlen=150)         
     
-    data_input_pred = [data[0][pred_start - 4 * 1440 + k : pred_start + k],
-                       data[1][pred_start - 4 * 1440 + k : pred_start + k]]
+    data_input_pred = [data[0][-4 * 1440:],
+                       data[1][-4 * 1440:]]
     input_vector = system.neuralnetwork.getInputVector(data_input_pred,
                                                        training=False)
                 
-    dt = data[1][pred_start - 4 * 1440 + k:pred_start + 1440 + k]
+    dt = data[1]
     base = dt[-1] + timedelta(minutes=1)
-    x_pred = np.arange(base - timedelta(minutes=1440), base , timedelta(minutes=1)).astype(datetime)
-    a1 = np.arange(dt[-5 * 1440], dt[-3 * 1440], timedelta(minutes=60))
-    a2 = np.arange(dt[-3 * 1440], dt[-3 * 1440 + 46 * 60], timedelta(minutes=15))
-    a3 = np.arange(dt[-1440 - 120], dt[-1440], timedelta(minutes=system.neuralnetwork.fMin))
+    x_pred = np.arange(base , base + timedelta(minutes=1440), timedelta(minutes=1)).astype(datetime)
+    a1 = np.arange(dt[-4 * 1440], dt[-2 * 1440], timedelta(minutes=60))
+    a2 = np.arange(dt[-2 * 1440], dt[-2 * 1440 + 46 * 60], timedelta(minutes=15))
+    a3 = np.arange(dt[-120], dt[-1], timedelta(minutes=system.neuralnetwork.fMin))
     x_input = np.concatenate((a1, a2, a3))
     
     axs[0].clear()
@@ -73,18 +73,18 @@ def plot_prediction(axs, k, pred_start, system):
     axs[0].set_title('prediction')
     axs[0].legend(loc='lower left')
     axs[0].grid(True)
-    axs[0].set_xlim([base - timedelta(days=2.1), base])
+    axs[0].set_xlim([base - timedelta(days=1.1), base + timedelta(days=1)])
     plt.pause(0.1)
 
     
-def plot_IO_control(axs, k, pred_start, system, control, IO_hist):
-    dt = system.databases['CSV'].data[1][pred_start - 4 * 1440 + k:pred_start + 1440 + k]
+def plot_IO_control(axs, system, control):
+    dt = system.databases['CSV'].data[1][-4 * 1440:]
     base = dt[-1] + timedelta(minutes=1)
-    x_pred = np.arange(base - timedelta(minutes=1440),
-                       base ,
+    x_pred = np.arange(base + timedelta(minutes=1),
+                       base + timedelta(minutes=1441),
                        timedelta(minutes=1)).astype(datetime)
-    x_hist = np.arange(base - timedelta(minutes=2880),
-                       base - timedelta(minutes=1440),
+    x_hist = np.arange(base - timedelta(minutes=1440),
+                       base,
                        timedelta(minutes=1)).astype(datetime)
     IO_control = np.append(control.IO_control, np.zeros(1440 - len(control.IO_control)))  
     scaler = MinMaxScaler(feature_range=(0, 1))
@@ -92,7 +92,7 @@ def plot_IO_control(axs, k, pred_start, system, control, IO_hist):
     
     axs[1].clear()
 
-    axs[1].plot(x_hist, IO_hist, 'r.', markersize=3, linewidth=0.4, label='MPC (history)')
+    axs[1].plot(x_hist, control.IO_history, 'r.', markersize=3, linewidth=0.4, label='MPC (history)')
     axs[1].plot(x_pred, IO_control, 'k', label='MPC')    
     axs[1].plot(x_pred, pred_scaled, 'b', label='prediction')
     axs[1].plot([x_pred[control.pred_horizon],
@@ -101,6 +101,6 @@ def plot_IO_control(axs, k, pred_start, system, control, IO_hist):
     axs[1].set_title('MPC')
     axs[1].legend(loc='lower left')
     axs[1].grid(True)
-    axs[1].set_xlim([base - timedelta(days=2.1), base])
+    axs[1].set_xlim([base - timedelta(days=1.1), base + timedelta(days=1)])
     axs[1].set_ylim([-.1, 1.1])
     plt.pause(.1)
