@@ -26,6 +26,7 @@ import numpy as np
 import os
 from theforecast import processing
 import pandas
+from datetime import datetime
 
     
 def main(rundir, args=None):
@@ -52,14 +53,16 @@ def main(rundir, args=None):
     mng = plt.get_current_fig_manager()
     plt.pause(.1)
     mng.window.showMaximized()
-    
-    data = [system.databases['CSV'].data[0][-pred_start:],
-            system.databases['CSV'].data[1][-pred_start:]]     
-    X, Y = system.neuralnetwork.getInputVector(data, training=True)
+   
+    X, Y = system.neuralnetwork.getInputVector(system.databases['CSV'].data, training=True)
     system.neuralnetwork.load(logging, 'myModel')
 #     system.neuralnetwork.train(X, Y[:, 0, :], system.neuralnetwork.epochs_init)
-#     system.neuralnetwork.train(X, Y[:, 0, :], 1)
-#     system.neuralnetwork.model.save(logging + '\myModel')
+#     t_start = datetime.now()
+#     t_now = datetime.now()
+#     while (t_now - t_start).seconds <= 10 * 60:  # trainingsintervall in seconds
+#         system.neuralnetwork.train(X, Y[:, 0, :], 1)
+#         system.neuralnetwork.model.save(logging + '\myModel')
+#         t_now = datetime.now()
 
     k = 0
     horizon = 180
@@ -88,17 +91,15 @@ def main(rundir, args=None):
         
         # LOGGING
         if system.forecast.__len__() != 0:
-            if len(control.IO_control) <= f_prediction:
-                control.IO_control = np.append(control.IO_control, np.zeros(f_prediction - len(control.IO_control)))
             df = pandas.DataFrame({'unixtimestamp': system.databases['CSV'].data[1][-f_prediction:],
                                    'bi': system.databases['CSV'].data[0][-f_prediction:],
                                    'forecast': system.forecast[:f_prediction],
-                                   'IO': control.IO_control[:f_prediction]})
+                                   'IO': control.IO_history[-f_prediction:]})
             df = df.set_index('unixtimestamp')
             system.databases['CSV'].persist(df)
         
         # GET NEW DATA FROM DATABASE
-        system.databases['CSV'].read_file(system.databases['CSV'].datafile, k)
+        system.databases['CSV'].read_file(system.databases['CSV'].datafile, k, pred_start)
         
         # FORECAST   
         try:
@@ -113,17 +114,22 @@ def main(rundir, args=None):
             control.charge_energy_amount = charge 
             control.execute(system.forecast)
             
-            # GRAPHICS:     
+            # GRAPHICS
             processing.plot_prediction(axs, system)
             processing.plot_IO_control(axs, system, control)
-#             plt.savefig(logging + '\\plots\\fig_' + str(int(k / 1440)) + '_' + str(k % 1440))
+            plt.savefig(logging + '\\plots\\fig_' + str(int(k / 1440)) + '_' + str(k % 1440))
             
         else:
             print('no charge request - idle')
             control.IO_control = np.zeros(f_prediction)
         
-        # RETRAIN MODEL
-        # TODO: retrain model with new data
+        # UPDATE MODEL
+        if k % f_retrain == f_retrain - f_prediction:
+            X, Y = system.neuralnetwork.getInputVector([system.databases['CSV'].data[0][-system.neuralnetwork.n_samples_retrain:],
+                                                        system.databases['CSV'].data[1][-system.neuralnetwork.n_samples_retrain:],
+                                                        system.databases['CSV'].data[2][-system.neuralnetwork.n_samples_retrain:]],
+                                                        training=True)
+            system.neuralnetwork.train(X, Y, system.neuralnetwork.epochs_retrain)
             
         control.IO_history = np.roll(control.IO_history, -f_prediction)
         control.IO_history[-f_prediction:] = np.concatenate((control.IO_control[:f_prediction],

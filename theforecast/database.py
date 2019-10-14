@@ -103,7 +103,7 @@ class CsvDatabase(Database):
         
         self.datafile = os.path.join(settings.get('CSV', 'input'), self.file)
         if os.path.isfile(self.datafile):
-            self.read_file(self.datafile, k=0)
+            self.read_file(self.datafile, k=0, pred_start=50 * 1440)
             
     def get(self, keys, start, end, interval):
         if interval > 900:
@@ -137,7 +137,7 @@ class CsvDatabase(Database):
             path = self.output
             self.concat_file(path, data)
 
-    def read_file(self, path, k, index_column='unixtimestamp', unix=True):
+    def read_file(self, path, k, pred_start, index_column='unixtimestamp', unix=True):
         """
         Reads the content of a specified CSV file.
         
@@ -169,7 +169,7 @@ class CsvDatabase(Database):
             dataBi = dataBi.values.astype('float32')
             dataDatetime = csv.loc[:]['unixtimestamp']
             
-            self.data = [dataBi[:50 * 1440 + k], dataDatetime[:50 * 1440 + k]]
+            self.data = [dataBi[:pred_start + k], dataDatetime[:pred_start + k]]
             self.data[1] = pandas.Series.tolist(self.data[1])
             
 #         hourOfYear = np.zeros([len(dataDatetime)])

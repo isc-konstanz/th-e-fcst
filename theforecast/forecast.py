@@ -55,11 +55,6 @@ class Forecast:
     def execute(self):
         logger.info("Starting th-e-forecast")
         data = self.databases['CSV'].data
-#         retrain model        
-#         if k % 200 == 180:
-#             X_train, Y_train = self.neuralnetwork.getInputVector(data, training=True)
-#             self.neuralnetwork.train(X_train, Y_train[:, 0, :], epochs = 1)
-#             self.neuralnetwork.model.save(logging + '\myModel')
         
         # prediction     
         data_input_pred = [data[0][-1440 * 4:],

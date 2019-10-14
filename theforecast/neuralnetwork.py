@@ -99,25 +99,25 @@ class NeuralNetwork:
             length = 1 
         X_bi = processing.create_input_vector(dataBiNorm, self, length)
         X_dt = processing.create_input_vector(dataDTNorm, self, length)
+        X_season = processing.create_input_vector(dataSeasonNorm, self, length)
         if training == True:
             Y_bi = processing.create_output_vector(dataBiNorm, self, length)
             Y_dt = processing.create_output_vector(dataDTNorm, self, length)
-#             Y_dt = processing.create_output_vector(dataDTNorm, self, training)
+            Y_season = processing.create_output_vector(dataSeasonNorm, self, length)
 
         # reshape input to be [samples, time steps, features]
         X_bi = np.reshape(X_bi, (X_bi.shape[0], 1, X_bi.shape[1]))
         X_dt = np.reshape(X_dt, (X_dt.shape[0], 1, X_dt.shape[1]))
-#         X_season = np.reshape(X_season, (X_season.shape[0], 1, X_season.shape[1]))        
-        Xconcat = np.concatenate((X_bi, X_dt), axis=1)    
+        X_season = np.reshape(X_season, (X_season.shape[0], 1, X_season.shape[1]))        
+        Xconcat = np.concatenate((X_bi, X_dt, X_season), axis=1)    
         
         # create input vector for model
         if training == True:
             Y_bi = np.reshape(Y_bi, (Y_bi.shape[0], 1, Y_bi.shape[1]))
-            # Y_dbi = np.reshape(Y_dbi, (Y_dbi.shape[0], 1, Y_dbi.shape[1]))
             Y_dt = np.reshape(Y_dt, (Y_dt.shape[0], 1, Y_dt.shape[1]))
-            # Y_season = np.reshape(Y_season, (Y_season.shape[0], 1, Y_season.shape[1]))
+            Y_season = np.reshape(Y_season, (Y_season.shape[0], 1, Y_season.shape[1]))
 
-            Yconcat = np.concatenate((Y_bi, Y_dt), axis=1)      
+            Yconcat = np.concatenate((Y_bi, Y_dt, Y_season), axis=1)      
             return Xconcat, Yconcat
         elif training == False:     
             return Xconcat
