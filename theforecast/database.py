@@ -9,7 +9,6 @@ from abc import ABC, abstractmethod
 from configparser import ConfigParser
 import logging
 import os
-import pandas
 import datetime as dt
 import pandas as pd
 import pytz as tz
@@ -164,20 +163,12 @@ class CsvDatabase(Database):
         """
         
         csv = pd.read_csv(path, sep=self.separator, decimal=self.decimal, parse_dates=[0])
-        if not csv.empty:           
-            dataBi = csv.loc[:]['bi']
-            dataBi = dataBi.values.astype('float32')
-            dataDatetime = csv.loc[:]['unixtimestamp']
-            
-            self.data = [dataBi[:pred_start + k], dataDatetime[:pred_start + k]]
-            self.data[1] = pandas.Series.tolist(self.data[1])
-            
-#         hourOfYear = np.zeros([len(dataDatetime)])
-#         for i in range (len(dataDatetime)): 
-#             hourOfYear[i] = dataDatetime[i].timetuple().tm_yday * 24 + int(dataDatetime[i].minute / 60)
-#                
-#         dataSeason = -0.5 * np.cos((hourOfYear - 360) / 365 / 24 * 2 * np.pi) + 0.5
-
+        
+        if not csv.empty:  
+            csv = csv.set_index('time')
+            csv = csv.iloc[:pred_start + k]         
+            self.data = csv
+        
 #         csv = pd.read_csv(path, sep=self.separator, decimal=self.decimal,
 #                           index_col=index_column, parse_dates=[index_column])
 # 

@@ -9,14 +9,10 @@ from collections import OrderedDict
 from configparser import ConfigParser
 import logging
 import os
-from theforecast import neuralnetwork
 from theforecast.neuralnetwork import NeuralNetwork
 from .database import CsvDatabase
-import numpy as np
-import matplotlib.pyplot as plt
-from keras.models import load_model
-import time
 from scipy import signal
+import pandas
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +50,11 @@ class Forecast:
         
     def execute(self):
         logger.info("Starting th-e-forecast")
-        data = self.databases['CSV'].data
         
-        # prediction     
-        data_input_pred = [data[0][-1440 * 4:],
-                           data[1][-1440 * 4:]]
-        y = self.neuralnetwork.predict_recursive(data_input_pred)
+        data = self.databases['CSV'].data
+        data = [data.loc[:]['bi'].get_values()[-4 * 1440:],
+                pandas.Series.tolist(data.index[-4 * 1440:])]
+        y = self.neuralnetwork.predict_recursive(data)
         self.forecast_unfiltered = y
         b, a = signal.butter(8, 0.022)
         self.forecast = signal.filtfilt(b, a, y, method='pad', padtype='even', padlen=150)

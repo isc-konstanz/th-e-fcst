@@ -1,5 +1,3 @@
-#!/usr/bin/python
-# -*- coding: utf-8 -*-
 """
     th-e-forecast
     ~~~~~
@@ -26,13 +24,13 @@ import numpy as np
 import os
 from theforecast import processing
 import pandas
-from datetime import datetime
+import datetime as dt
 
     
 def main(rundir, args=None):
     from theforecast import Forecast, ForecastException
     from theforecast.neuralnetwork import NeuralNetwork
-    from theforecast.io_control import IO_control
+    from theforecast.control import Control
     
     if args.configs != None:
         configs = args.configs
@@ -47,25 +45,27 @@ def main(rundir, args=None):
     f_retrain = 200  # 6 * 60
 
     system = Forecast(configs)
-    control = IO_control()
-    
+    control = Control()
+
+    system.neuralnetwork.load(logging, 'myModelInit')
+#     system.neuralnetwork.train_initial(system.databases['CSV'].data)
+#     system.neuralnetwork.model.save(logging + '\myModel')
+
+#     t_start = dt.datetime.now()
+#     t_now = dt.datetime.now()
+#     while (t_now - t_start).seconds <= 10 * 60 * 60:  # trainingsintervall in seconds
+#         system.neuralnetwork.train_initial(system.databases['CSV'].data)
+#         system.neuralnetwork.model.save(logging + '\myModel')
+#         system.neuralnetwork.model.save(logging + '\myModelInit')
+#         t_now = dt.datetime.now()
+
     fig, axs = plt.subplots(2, 1)
     mng = plt.get_current_fig_manager()
-    plt.pause(.1)
     mng.window.showMaximized()
-   
-    X, Y = system.neuralnetwork.getInputVector(system.databases['CSV'].data, training=True)
-    system.neuralnetwork.load(logging, 'myModel')
-#     system.neuralnetwork.train(X, Y[:, 0, :], system.neuralnetwork.epochs_init)
-#     t_start = datetime.now()
-#     t_now = datetime.now()
-#     while (t_now - t_start).seconds <= 10 * 60:  # trainingsintervall in seconds
-#         system.neuralnetwork.train(X, Y[:, 0, :], 1)
-#         system.neuralnetwork.model.save(logging + '\myModel')
-#         t_now = datetime.now()
-
+    plt.pause(.1)
+    
     k = 0
-    horizon = 180
+    horizon = 150
     charge = 50
     t_request1 = 0
     t_request2 = 0
@@ -91,10 +91,10 @@ def main(rundir, args=None):
         
         # LOGGING
         if system.forecast.__len__() != 0:
-            df = pandas.DataFrame({'unixtimestamp': system.databases['CSV'].data[1][-f_prediction:],
-                                   'bi': system.databases['CSV'].data[0][-f_prediction:],
-                                   'forecast': system.forecast[:f_prediction],
-                                   'IO': control.IO_history[-f_prediction:]})
+            df = pandas.DataFrame({'unixtimestamp': system.databases['CSV'].data.index[-f_prediction:],
+                                   'bi': system.databases['CSV'].data.loc[:]['bi'][-f_prediction:],
+                                   'forecast': (system.forecast[:f_prediction] * 2) - 1,
+                                   'IO': control.history[-f_prediction:]})
             df = df.set_index('unixtimestamp')
             system.databases['CSV'].persist(df)
         
@@ -110,32 +110,33 @@ def main(rundir, args=None):
         
         # MPC
         if charge > 5 and horizon > 0:
-            control.pred_horizon = horizon 
-            control.charge_energy_amount = charge 
-            control.execute(system.forecast)
-            
+            control.horizon = horizon 
+            control.charge_energy_amount = charge             
+            if charge <= horizon:
+                control.execute(system.forecast)
+            else:
+                # TODO: what to do if this happens? why does it happen
+                print('error: charge > horizon')
+                control.control = np.roll(control.control, -f_prediction)
+                
             # GRAPHICS
             processing.plot_prediction(axs, system)
-            processing.plot_IO_control(axs, system, control)
+            processing.plot_control(axs, system, control)
             plt.savefig(logging + '\\plots\\fig_' + str(int(k / 1440)) + '_' + str(k % 1440))
             
         else:
             print('no charge request - idle')
-            control.IO_control = np.zeros(f_prediction)
+            control.control = np.zeros(f_prediction)
         
         # UPDATE MODEL
         if k % f_retrain == f_retrain - f_prediction:
-            X, Y = system.neuralnetwork.getInputVector([system.databases['CSV'].data[0][-system.neuralnetwork.n_samples_retrain:],
-                                                        system.databases['CSV'].data[1][-system.neuralnetwork.n_samples_retrain:],
-                                                        system.databases['CSV'].data[2][-system.neuralnetwork.n_samples_retrain:]],
-                                                        training=True)
-            system.neuralnetwork.train(X, Y, system.neuralnetwork.epochs_retrain)
+            system.neuralnetwork.train(system.databases['CSV'].data)
             
-        control.IO_history = np.roll(control.IO_history, -f_prediction)
-        control.IO_history[-f_prediction:] = np.concatenate((control.IO_control[:f_prediction],
-                                             np.zeros(f_prediction - len(control.IO_control[:f_prediction]))))
+        control.history = np.roll(control.history, -f_prediction)
+        control.history[-f_prediction:] = np.concatenate((control.control[:f_prediction],
+                                             np.zeros(f_prediction - len(control.control[:f_prediction]))))
         horizon = horizon - f_prediction
-        charge = charge - sum(control.IO_control[:f_prediction])
+        charge = charge - sum(control.control[:f_prediction])
         k = k + f_prediction
         
         # ENDING CONDITION
