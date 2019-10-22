@@ -40,7 +40,7 @@ def main(rundir, args=None):
     logging = os.path.join(rundir, 'log')
         
     # Parameter and variables:
-    pred_start = 50 * 1440
+    pred_start = 100 * 1440  # ALSO: needs manually to be changed in database -> __init__()
     f_prediction = 20
     f_retrain = 200  # 6 * 60
 
@@ -118,6 +118,7 @@ def main(rundir, args=None):
                 # TODO: what to do if this happens? why does it happen
                 print('error: charge > horizon')
                 control.control = np.roll(control.control, -f_prediction)
+                horizon = charge
                 
             # GRAPHICS
             processing.plot_prediction(axs, system)
@@ -140,7 +141,7 @@ def main(rundir, args=None):
         k = k + f_prediction
         
         # ENDING CONDITION
-        if k >= 90 * 1440:
+        if k >= 30 * 1440:
             stat_run = False
     
     print(' --- END of SIMULATION --- ')

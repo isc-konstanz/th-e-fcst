@@ -102,7 +102,7 @@ class CsvDatabase(Database):
         
         self.datafile = os.path.join(settings.get('CSV', 'input'), self.file)
         if os.path.isfile(self.datafile):
-            self.read_file(self.datafile, k=0, pred_start=50 * 1440)
+            self.read_file(self.datafile, k=0, pred_start=100 * 1440)
             
     def get(self, keys, start, end, interval):
         if interval > 900:
