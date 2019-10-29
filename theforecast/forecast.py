@@ -50,11 +50,8 @@ class Forecast:
         
     def execute(self):
         logger.info("Starting th-e-forecast")
-        
-        data = self.databases['CSV'].data
-        data = [data.loc[:]['bi'].get_values()[-4 * 1440:],
-                pandas.Series.tolist(data.index[-4 * 1440:])]
-        y = self.neuralnetwork.predict_recursive(data)
+
+        y = self.neuralnetwork.predict_recursive(self.databases['CSV'].data)
         self.forecast_unfiltered = y
         b, a = signal.butter(8, 0.022)
         self.forecast = signal.filtfilt(b, a, y, method='pad', padtype='even', padlen=150)

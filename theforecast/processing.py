@@ -51,41 +51,39 @@ def plot_prediction(axs, system):
     data = system.databases['CSV'].data
     data = [data.loc[:]['bi'].get_values(),
             pandas.Series.tolist(data.index)]
-    
     bi = (data[0][-1440 * 5:] + 1) / 2
-    b, a = signal.butter(8, 0.02)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
-    bi_filtered = signal.filtfilt(b, a, bi, method='pad', padtype='even', padlen=150)         
-    
     data_input_pred = [data[0][-4 * 1440:],
                        data[1][-4 * 1440:]]
-    input_vector = system.neuralnetwork.get_data_vector(data_input_pred,
-                                                       training=False)
+    input_vector = system.neuralnetwork.get_data_vector(data_input_pred, training=False)
                 
     dt = data[1][-1440 * 5:]
     base = dt[-1] + timedelta(minutes=1)
     x_pred = np.arange(base , base + timedelta(minutes=1440), timedelta(minutes=1)).astype(datetime)
-    a1 = np.arange(dt[-4 * 1440], dt[-2 * 1440], timedelta(minutes=60))
-    a2 = np.arange(dt[-2 * 1440], dt[-2 * 1440 + 46 * 60], timedelta(minutes=15))
-    a3 = np.arange(dt[-120], dt[-1], timedelta(minutes=system.neuralnetwork.fMin))
-    x_input = np.concatenate((a1, a2, a3))
+    x_input = np.concatenate((np.arange(dt[-4 * 1440], dt[-2 * 1440], timedelta(minutes=60)),
+                              np.arange(dt[-2 * 1440], dt[-2 * 1440 + 46 * 60], timedelta(minutes=15)),
+                              np.arange(dt[-120], dt[-1], timedelta(minutes=system.neuralnetwork.fMin))))
     
-    axs[0].clear()
-    axs[0].plot(dt, bi, 'g--', linewidth=0.5, label='bi (raw)')
-    axs[0].plot(dt, bi_filtered, 'k--', label='bi (filtered)')
-    axs[0].plot(x_input, input_vector[0, 0, :], 'r', label='input Data')
-    axs[0].plot(x_pred, system.forecast, 'b', label='prediction') 
-    axs[0].plot(x_pred, system.forecast_unfiltered, 'b--', linewidth=0.5, label='prediction')
+    axs.clear()    
+    axs.plot(dt, bi, 'c', linewidth=0.5, label='bi (raw)')
+    axs.plot(x_input, input_vector[0, 0, :], 'r', label='input Data')
+    axs.plot(x_pred, system.forecast, 'b', label='prediction') 
     
-    axs[0].set_title('prediction')
-    axs[0].legend(loc='lower left')
-    axs[0].grid(True)
-    axs[0].set_xlim([base - timedelta(days=1.1), base + timedelta(days=1)])
+    axs.set_ylabel('prediction', color='tab:blue')
+    axs.set_title('Results - prediction & control')
+    axs.legend(loc='lower left')
+    axs.grid(True)
+    axs.set_xlim([base - timedelta(days=1.1), base + timedelta(days=1)])
     plt.pause(0.1)
 
     
 def plot_control(axs, system, control):
-    dt = system.databases['CSV'].data.loc[:]['bi'][-4 * 1440:]
-    base = dt.index[-1] + timedelta(minutes=1)
+    data = system.databases['CSV'].data
+    data = [data.loc[:]['bi'].get_values(),
+            pandas.Series.tolist(data.index)]
+    bi = (data[0][-1440 * 5:] + 1) / 2
+                
+    dt = data[1][-1440 * 5:]
+    base = dt[-1] + timedelta(minutes=1)
     x_pred = np.arange(base + timedelta(minutes=1),
                        base + timedelta(minutes=1441),
                        timedelta(minutes=1)).astype(datetime)
@@ -93,20 +91,18 @@ def plot_control(axs, system, control):
                        base,
                        timedelta(minutes=1)).astype(datetime)
     ctrl = np.append(control.control, np.zeros(1440 - len(control.control)))  
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    pred_scaled = scaler.fit_transform(system.forecast.reshape(-1, 1))
+    ts_horizon = dt[-1] + timedelta(minutes=len(control.control))
     
-    axs[1].clear()
-
-    axs[1].plot(x_hist, control.history, 'r.', markersize=3, linewidth=0.4, label='MPC (history)')
-    axs[1].plot(x_pred, ctrl, 'k', label='MPC')    
-    axs[1].plot(x_pred, pred_scaled, 'b', label='prediction')
-    axs[1].plot([x_pred[control.horizon],
-                 x_pred[control.horizon]], [-1.5, 1.5], 'g--', linewidth=0.5, label='horizon')
+    axs.clear()    
+    axs.plot(dt, bi, 'c', linewidth=0.5, label='bi (raw)')
+    axs.plot(x_hist, control.history, 'r.', markersize=3, linewidth=0.4, label='MPC (history)')
+    axs.plot(x_pred, ctrl, 'k', label='MPC')    
+    axs.plot(x_pred, system.forecast, 'b', label='prediction')
+    axs.plot([ts_horizon, ts_horizon], [-1.5, 1.5], 'g--', linewidth=0.7, label='horizon')
     
-    axs[1].set_title('MPC')
-    axs[1].legend(loc='lower left')
-    axs[1].grid(True)
-    axs[1].set_xlim([base - timedelta(days=1.1), base + timedelta(days=1)])
-    axs[1].set_ylim([-.1, 1.1])
+    axs.set_title('MPC')
+    axs.legend(loc='lower left')
+    axs.grid(True)
+    axs.set_xlim([base - timedelta(days=1.1), base + timedelta(days=1)])
+    axs.set_ylim([-.1, 1.1])
     plt.pause(.1)

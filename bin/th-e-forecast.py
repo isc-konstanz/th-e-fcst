@@ -23,8 +23,9 @@ from keras.models import load_model
 import numpy as np
 import os
 from theforecast import processing
-import pandas
-import datetime as dt
+import pandas as pd
+from datetime import datetime, timedelta
+import random
 
     
 def main(rundir, args=None):
@@ -40,9 +41,8 @@ def main(rundir, args=None):
     logging = os.path.join(rundir, 'log')
         
     # Parameter and variables:
-    pred_start = 100 * 1440  # ALSO: needs manually to be changed in database -> __init__()
     f_prediction = 20
-    f_retrain = 200  # 6 * 60
+    f_retrain = 3 * 60  # 6 * 60
 
     system = Forecast(configs)
     control = Control()
@@ -64,44 +64,30 @@ def main(rundir, args=None):
     mng.window.showMaximized()
     plt.pause(.1)
     
-    k = 0
-    horizon = 150
-    charge = 50
-    t_request1 = 0
-    t_request2 = 0
-    stat_run = True
+    time = datetime.strptime('2018-08-01 00:00:00', '%Y-%m-%d %H:%M:%S')  # change also in CSV-database -> __init__()-method
+    horizon = 0
+    charge = 0
+    hp_req = False  # request from heatpump
+    hp_req_gen = True
     
-    while stat_run:
-                   
-        print('Iteration: ' + str(k))
+    while True:
+        print('Iteration: ' + str(time))
+        # TODO: make horizon to datetime object
+        # TODO: plot req_time-stack
         # GENERATE REQUEST
-        if k % 1440 == 0:
-            t_request1 = 6 * 60 + np.random.uniform() * 2 * 60   
-            t_request2 = 12 * 60 + np.random.uniform() * 120  
-        # daily request 1: 6-8h, horizon 3-4h      
-        if (k % 1440) >= t_request1:  
-            horizon = int(180 + np.random.uniform() * 60)
-            charge = 120  # horizon - 60 - int(np.random.uniform() * 60)
-            t_request1 = 1441
-        # daily request 2: 12-14h, horizon 8-12h
-        if (k % 1440) >= t_request2:    
-            horizon = int(8 * 60 + np.random.uniform() * 4.5 * 60)
-            charge = horizon - 100 - int(np.random.uniform() * 120)
-            t_request2 = 1441
+        if hp_req_gen:
+            req_time = time  # + timedelta(minutes=random.randrange(30, 3 * 60))
+            hp_req_gen = False            
         
-        # LOGGING
-        if system.forecast.__len__() != 0:
-            df = pandas.DataFrame({'unixtimestamp': system.databases['CSV'].data.index[-f_prediction:],
-                                   'bi': system.databases['CSV'].data.loc[:]['bi'][-f_prediction:],
-                                   'forecast': (system.forecast[:f_prediction] * 2) - 1,
-                                   'IO': control.history[-f_prediction:]})
-            df = df.set_index('unixtimestamp')
-            system.databases['CSV'].persist(df)
+        if time >= req_time and not hp_req:
+            horizon = int(60 + np.random.uniform() * 7 * 60)
+            charge = int((.85 - 4 * np.random.uniform() / 10) * horizon)  # hier 
+            hp_req = True
         
         # GET NEW DATA FROM DATABASE
-        system.databases['CSV'].read_file(system.databases['CSV'].datafile, k, pred_start)
+        system.databases['CSV'].read_file(system.databases['CSV'].datafile, time)
         
-        # FORECAST   
+       # FORECAST   
         try:
             system.execute()
         except (ForecastException) as e:
@@ -109,7 +95,7 @@ def main(rundir, args=None):
             sys.exit(1)  # abnormal termination
         
         # MPC
-        if charge > 5 and horizon > 0:
+        if hp_req and horizon > 0:           
             control.horizon = horizon 
             control.charge_energy_amount = charge             
             if charge <= horizon:
@@ -121,29 +107,43 @@ def main(rundir, args=None):
                 horizon = charge
                 
             # GRAPHICS
-            processing.plot_prediction(axs, system)
-            processing.plot_control(axs, system, control)
-            plt.savefig(logging + '\\plots\\fig_' + str(int(k / 1440)) + '_' + str(k % 1440))
+            processing.plot_prediction(axs[0], system)
+            processing.plot_control(axs[1], system, control)
+            plt.savefig(logging + '\\plots\\' + time.strftime("%Y-%m-%d %H-%M"))
             
         else:
             print('no charge request - idle')
             control.control = np.zeros(f_prediction)
-        
+
+        # LOGGING
+        if system.forecast.__len__() != 0:
+            df = pd.DataFrame({'unixtimestamp': system.databases['CSV'].data.index[-f_prediction:],
+                                   'bi': system.databases['CSV'].data.loc[:]['bi'][-f_prediction:],
+                                   'forecast': (system.forecast[:f_prediction] * 2) - 1,
+                                   'IO': control.history[-f_prediction:]})
+            df = df.set_index('unixtimestamp')
+            system.databases['CSV'].persist(df)
+   
         # UPDATE MODEL
-        if k % f_retrain == f_retrain - f_prediction:
+        if int(time.timestamp() / 60) % f_retrain == 0:  # retrain every 3 hours
             system.neuralnetwork.train(system.databases['CSV'].data)
-            
+
+        if  horizon <= 0 and time >= req_time:
+            hp_req = False
+            hp_req_gen = True
+
+        # ENDING CONDITION
+        if time >= datetime.strptime('2018-08-28 23:00:00', '%Y-%m-%d %H:%M:%S'):
+            break
+        
+        # NEXT TIMESTEP
         control.history = np.roll(control.history, -f_prediction)
         control.history[-f_prediction:] = np.concatenate((control.control[:f_prediction],
                                              np.zeros(f_prediction - len(control.control[:f_prediction]))))
         horizon = horizon - f_prediction
         charge = charge - sum(control.control[:f_prediction])
-        k = k + f_prediction
-        
-        # ENDING CONDITION
-        if k >= 30 * 1440:
-            stat_run = False
-    
+        time = time + timedelta(minutes=f_prediction)  
+          
     print(' --- END of SIMULATION --- ')
     system.neuralnetwork.model.save('myModel_FinalLTS')
     os.system('shutdown -s')

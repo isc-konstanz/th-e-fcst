@@ -24,7 +24,7 @@ class Control:
         :dtype ndarray:
         '''
         lb = 0
-        ub = 2  # number of controlling steps; depends on device
+        ub = 1  # number of controlling steps; depends on device
         self.control = np.zeros(self.horizon)
         solver = pywraplp.Solver('simple_lp_program',
                                       pywraplp.Solver.CBC_MIXED_INTEGER_PROGRAMMING)

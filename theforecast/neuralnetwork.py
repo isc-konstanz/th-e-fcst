@@ -11,6 +11,7 @@ import numpy as np
 import theforecast.processing as processing
 from datetime import timedelta 
 from scipy import signal
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,9 @@ class NeuralNetwork:
         '''Description: recursively predicts the BI over next 24 hours.
         :param data: raw Data
         :dtype list with dimension = conf - file'''
+        data = [data.loc[:]['bi'].get_values()[-4 * 1440:],
+                pd.Series.tolist(data.index[-4 * 1440:])]
+        
         n_predictions = int(1440 / self.look_ahead)
         predStack = np.zeros(1440)  # predStack = np.zeros([self.dimension, 1440])
         

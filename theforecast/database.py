@@ -102,7 +102,7 @@ class CsvDatabase(Database):
         
         self.datafile = os.path.join(settings.get('CSV', 'input'), self.file)
         if os.path.isfile(self.datafile):
-            self.read_file(self.datafile, k=0, pred_start=100 * 1440)
+            self.read_file(self.datafile, time='2018-08-01 00:00:00')
             
     def get(self, keys, start, end, interval):
         if interval > 900:
@@ -136,7 +136,7 @@ class CsvDatabase(Database):
             path = self.output
             self.concat_file(path, data)
 
-    def read_file(self, path, k, pred_start, index_column='unixtimestamp', unix=True):
+    def read_file(self, path, time, index_column='unixtimestamp', unix=True):
         """
         Reads the content of a specified CSV file.
         
@@ -166,7 +166,7 @@ class CsvDatabase(Database):
         
         if not csv.empty:  
             csv = csv.set_index('time')
-            csv = csv.iloc[:pred_start + k]         
+            csv = csv[csv.index <= time]         
             self.data = csv
         
 #         csv = pd.read_csv(path, sep=self.separator, decimal=self.decimal,
