@@ -4,9 +4,7 @@ Created on 09.08.2019
 @author: sf
 '''
 import numpy as np
-from scipy import signal
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timedelta
 import pandas
 
@@ -78,7 +76,7 @@ def plot_prediction(axs, system):
     
 def plot_control(axs, system, control):
     data = system.databases['CSV'].data
-    data = [data.loc[:]['bi'].get_values(),
+    data = [data['bi'].get_values(),
             pandas.Series.tolist(data.index)]
     bi = (data[0][-1440 * 5:] + 1) / 2
                 
@@ -106,3 +104,4 @@ def plot_control(axs, system, control):
     axs.set_xlim([base - timedelta(days=1.1), base + timedelta(days=1)])
     axs.set_ylim([-.1, 1.1])
     plt.pause(.1)
+

@@ -25,6 +25,7 @@ class NeuralNetwork:
         settings = ConfigParser()
         settings.read(neuralnetworkfile)
         
+        self.modelname = settings.get('General', 'modelname')
         self.fMin = settings.getint('Input vector', 'fMin')
         self.look_back = int(settings.getint('Input vector', 'interval 1') / 60) + \
                         int(settings.getint('Input vector', 'interval 2') / 15) + \
@@ -67,7 +68,7 @@ class NeuralNetwork:
         except(ImportError) as e:
             logger.error('Trainig error : %s', str(e)) 
             
-    def train_initial(self, data):
+    def initialize(self, data):
         '''Description: initially trains the neural network with all data available
         :param data: 
         input data to train the neural network with
@@ -77,13 +78,15 @@ class NeuralNetwork:
                 data.index]
         X, Y = self.get_data_vector(data, training=True)
         try: 
-            # self.model.fit(X, Y[:, 0, :], epochs=self.epochs_init, batch_size=64, verbose=2)
-            self.model.fit(X, Y[:, 0, :], epochs=1, batch_size=64, verbose=2)
+            self.model.fit(X, Y[:, 0, :], epochs=self.epochs_init, batch_size=64, verbose=2)
+            # self.model.fit(X, Y[:, 0, :], epochs=1, batch_size=64, verbose=2)
         except(ImportError) as e:
             logger.error('Initial trainig error : %s', str(e)) 
     
-    def load(self, path, name):
-        modelfile = os.path.join(path, name)
+    def load(self, path):
+        folder = os.path.join(path, 'lib')
+        modelfile = os.path.join(folder, self.modelname)
+        
         if os.path.isfile(modelfile):
             self.model = keras.models.load_model(modelfile)
         else: 
@@ -97,20 +100,18 @@ class NeuralNetwork:
         :param training:
             defines if the function additionally returns an output vector or just an input vector
         """
-        data_bi_norm = (data[0] + 1) / 2
+        data_array = np.zeros([self.dimension, data[0].__len__()])
+        
+        data_array[0, :] = (data[0] + 1) / 2
         b, a = signal.butter(8, 0.022)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
-        data_bi_norm = signal.filtfilt(b, a, data_bi_norm, method='pad', padtype='even', padlen=150)
-        data_daytime_norm = processing.get_daytime(data[1]) 
+        data_array[0, :] = signal.filtfilt(b, a, data_array[0, :], method='pad', padtype='even', padlen=150)
+        
+        data_array[1, :] = processing.get_daytime(data[1]) 
 
-        hour_of_year = np.zeros([len(data_daytime_norm)])
+        hour_of_year = np.zeros([len(data_array[1, :])])
         for i in range (len(data[1])): 
             hour_of_year[i] = data[1][i].timetuple().tm_yday * 24 + int(data[1][i].minute / 60)
-        data_season_norm = -0.5 * np.cos((hour_of_year - 360) / 365 / 24 * 2 * np.pi) + 0.5
-        
-        data_array = np.zeros([self.dimension, data_bi_norm.__len__()])
-        data_array[0, :] = data_bi_norm
-        data_array[1, :] = data_daytime_norm
-        data_array[2, :] = data_season_norm
+        data_array[2, :] = -0.5 * np.cos((hour_of_year - 360) / 365 / 24 * 2 * np.pi) + 0.5
 
         if training == True:
             length = int(len(data_array[0]) - 4 * 24 * 60 - self.look_ahead)
@@ -136,7 +137,7 @@ class NeuralNetwork:
                 pd.Series.tolist(data.index[-4 * 1440:])]
         
         n_predictions = int(1440 / self.look_ahead)
-        predStack = np.zeros(1440)  # predStack = np.zeros([self.dimension, 1440])
+        pred_stack = np.zeros(1440)  # pred_stack = np.zeros([self.dimension, 1440])
         
         for z in range(n_predictions):
             inputVectorTemp = self.get_data_vector(data, training=False)
@@ -147,7 +148,7 @@ class NeuralNetwork:
             for i in range(1440 - 1):
                 data[1][i + 1] = data[1][i] + timedelta(minutes=1)
                 
-            predStack[z * self.look_ahead : (z + 1) * self.look_ahead] = pred
+            pred_stack[z * self.look_ahead : (z + 1) * self.look_ahead] = pred
             
-        return predStack
+        return pred_stack
         

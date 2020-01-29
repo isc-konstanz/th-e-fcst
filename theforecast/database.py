@@ -87,7 +87,7 @@ class Database(ABC):
 
 class CsvDatabase(Database):
 
-    def __init__(self, configs, timezone='UTC'):
+    def __init__(self, configs, start, timezone='UTC'):
         super().__init__(timezone=timezone)
         
         settingsfile = os.path.join(configs, 'database.cfg')
@@ -95,6 +95,7 @@ class CsvDatabase(Database):
         settings.read(settingsfile)
         
         self.output = settings.get('CSV', 'output')
+        self.output_filename = dt.datetime.now()
         self.decimal = settings.get('CSV', 'decimal')
         self.separator = settings.get('CSV', 'separator')
         self.summarize = settings.getboolean('CSV', 'summarize')
@@ -102,7 +103,7 @@ class CsvDatabase(Database):
         
         self.datafile = os.path.join(settings.get('CSV', 'input'), self.file)
         if os.path.isfile(self.datafile):
-            self.read_file(self.datafile, time='2018-08-01 00:00:00')
+            self.read_file(self.datafile, time=start)
             
     def get(self, keys, start, end, interval):
         if interval > 900:
@@ -131,12 +132,19 @@ class CsvDatabase(Database):
         
         return self.get(keys, date, date, interval)
     
-    def persist(self, data):
+    def persist(self, system, control):
+        f_prediction = system.interval
+        data = pd.DataFrame({'unixtimestamp': system.databases['CSV'].data.index[-f_prediction:],
+                           'bi': system.databases['CSV'].data.loc[:]['bi'][-f_prediction:],
+                           'forecast': (system.forecast[:f_prediction] * 2) - 1,
+                           'IO': control.history[-f_prediction:]})
+        data = data.set_index('unixtimestamp')
+        
         if data is not None:
             path = self.output
             self.concat_file(path, data)
 
-    def read_file(self, path, time, index_column='unixtimestamp', unix=True):
+    def read_file(self, path, time, index_column='time', unix=True):
         """
         Reads the content of a specified CSV file.
         
@@ -163,22 +171,23 @@ class CsvDatabase(Database):
         """
         
         csv = pd.read_csv(path, sep=self.separator, decimal=self.decimal, parse_dates=[0])
-        
+         
         if not csv.empty:  
-            csv = csv.set_index('time')
+            csv = csv.set_index(index_column)
             csv = csv[csv.index <= time]         
             self.data = csv
-        
+         
 #         csv = pd.read_csv(path, sep=self.separator, decimal=self.decimal,
 #                           index_col=index_column, parse_dates=[index_column])
-# 
+#  
 #         if not csv.empty:
 #             if unix:
 #                 csv.index = pd.to_datetime(csv.index, unit='ms')
-#                 
+#                  
 #             csv.index = csv.index.tz_localize(tz.timezone('UTC')).tz_convert(self.timezone)
-#         
+#             
 #         csv.index.name = 'time'
+#         self.data = csv[csv.index <= time] 
 
     def read_nearest_file(self, date, path, index_column='time'):
         """
@@ -247,7 +256,8 @@ class CsvDatabase(Database):
 
     def concat_file(self, path, data):
 #         filename = data.index[0].astimezone(self.timezone).strftime('%Y') + '_sim.csv'
-        filename = data.index[0].strftime('%Y') + '_sim.csv'
+#         filename = data.index[0].strftime('%Y') + '_log.csv'
+        filename = self.output_filename.strftime('%Y%m%d_%H%M%S') + '_log.csv'
         filepath = os.path.join(path, filename)
         
         data.index.name = 'time'
