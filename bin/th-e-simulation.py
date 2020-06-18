@@ -108,8 +108,9 @@ def _simulate(settings, system, features, lock=None, **kwargs):
     time = features.index[0] + system.forecast._model.time_prior
     end = features.index[-1] - system.forecast._model.time_horizon
     
-    training_online = settings.getboolean('Training', 'online', fallback=True)
-    training_last = time
+    training_recursive = settings.getboolean('Training', 'recursive', fallback=True)
+    #training_interval = settings.getint('Training', 'interval')
+    #training_last = time
     
     while time <= end:
         try:
@@ -133,16 +134,14 @@ def _simulate(settings, system, features, lock=None, **kwargs):
                 step_features.loc[i, system.forecast._model.features['target']] = result
                 step_result.append(result)
             
-            if training_online:
-                system.forecast._model.train(features[time-system.forecast._model.time_prior:
-                                                      time+system.forecast._model.time_horizon])
+            if training_recursive:
+                training_features = features[time-system.forecast._model.time_prior:
+                                             time+system.forecast._model.time_horizon]
                 if lock is not None:
-                    lock.acquire()
-                
-                system.forecast._model._save_model()
-                
-                if lock is not None:
-                    lock.release()
+                    with lock:
+                        system.forecast._model._train(training_features)
+                else:
+                    system.forecast._model._train(training_features)
             
             result = pd.DataFrame(step_result, index, columns=['prediction'])
             result['reference'] = features.loc[index, system.forecast._model.features['target']]
@@ -181,7 +180,7 @@ def _result_boxplot(system, results, index, label):
         import matplotlib.pyplot as plt
         
         plt.figure()
-        plot = sns.boxplot(x=index, y='error', data=results, palette='Blues_d', showfliers=False)
+        plot = sns.boxplot(x=index, y='error', data=results, palette='Blues', showfliers=False)
         plot.set(xlabel=label, ylabel='Error [W]')
         plot.figure.savefig(os.path.join(database.dir, 'results_{}.png'.format(label)))
     

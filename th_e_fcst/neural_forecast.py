@@ -91,7 +91,7 @@ class NeuralForecast(NeuralNetwork):
             return model
 
     def _save_model(self):
-        logger.info("Saving model to file")
+        logger.debug("Saving model to file")
         
         # Serialize model to JSON
         with open(os.path.join(self.dir, 'model.json'), 'w') as f:
@@ -143,16 +143,18 @@ class NeuralForecast(NeuralNetwork):
 
     def train(self, data):
         features = self._parse_features(data)
+        return self._train(features)
+
+    def _train(self, features):
         X, y = self._parse_data(features)
         logger.debug("Built input of %s, %s", X.shape, y.shape)
         
-        self._train(X, y)
-        self._save_model()
-
-    def _train(self, X, y):
         split = int(len(y) / 10.0)
-        self.model.fit(X[split:], y[split:], batch_size=self.batch, epochs=self.epochs, callbacks=self.callbacks, 
-                       validation_data=(X[:split], y[:split]), verbose=LOG_VERBOSE)
+        result = self.model.fit(X[split:], y[split:], batch_size=self.batch, epochs=self.epochs, callbacks=self.callbacks, 
+                                validation_data=(X[:split], y[:split]), verbose=LOG_VERBOSE)
+        
+        self._save_model()
+        return result
 
     def _parse_data(self, features, X=list(), y=list()):
         end = features.index[-1]
