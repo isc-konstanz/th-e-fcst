@@ -3,9 +3,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# C extensions
-*.so
-
 # Distribution / packaging
 .Python
 env/
@@ -15,7 +12,6 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
 lib64/
 parts/
 sdist/
@@ -93,5 +89,18 @@ ENV/
 *.project
 *.pydevproject
 *.settings/
-*.png
-*.csv
+
+# Package specific
+core*
+gmon.out
+*~
+build/
+*.pyc
+
+# Configurations except for default files
+conf/*
+!conf/*.default.cfg
+
+# Generated output and optional input
+data
+lib

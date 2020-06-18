@@ -1,8 +1,13 @@
-'''
-Created on 12.07.2019
+# -*- coding: utf-8 -*-
+"""
+    th-e-fcst.prediction
+    ~~~~~~~~~~~~~~~~~~~~
+    
+    
+"""
+import logging
+logger = logging.getLogger(__name__)
 
-@author: sf
-'''
 import os
 from configparser import ConfigParser
 import keras

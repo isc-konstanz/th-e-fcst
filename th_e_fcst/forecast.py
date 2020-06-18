@@ -1,78 +1,67 @@
 # -*- coding: utf-8 -*-
 """
-    th_e_forecast.forecast
+    th-e-fcst.forecast
     ~~~~~
     
     
 """
-from collections import OrderedDict
-from configparser import ConfigParser
 import logging
-import os
-from theforecast import neuralnetwork
-from theforecast.neuralnetwork import NeuralNetwork
-from th_e_forecast import CsvDatabase
-import numpy as np
-import matplotlib.pyplot as plt
-from keras.models import load_model
-import time
-from scipy import signal
-
 logger = logging.getLogger(__name__)
 
+import pandas as pd
+import datetime as dt
 
-class Forecast:
+from configparser import ConfigParser
+from th_e_core import Forecast as ForecastCore
+from th_e_fcst import NeuralNetwork, NeuralForecast #, NeuralPrediction
 
-    def __init__(self, configs):
-        self.databases = self.__init_databases__(configs)
-        self.neuralnetwork = self.__init_neuralnetwork__(configs)
-        self.forecast = []
-        self.forecast_unfiltered = []
-        settingsfile = os.path.join(configs, 'settings.cfg')
-        settings = ConfigParser()
-        settings.read(settingsfile)
-        
-        self.interval = settings.getint('General', 'interval') * 60
 
-    def __init_databases__(self, configs):
-        # Read the systems database settings
-        settingsfile = os.path.join(configs, 'database.cfg')
-        settings = ConfigParser()
-        settings.read(settingsfile)
-        
-        timezone = settings.get('General', 'timezone')
-        
-        enabled = OrderedDict()
-        for database in settings.get('General', 'enabled').split(','):
-            if database.lower() == 'csv':
-                enabled[database] = CsvDatabase(configs, timezone)
-        
-        return enabled
+class Forecast(ForecastCore):
 
-    def __init_neuralnetwork__(self, configs):
-        return NeuralNetwork(configs)
-        
-    def execute(self):
-        logger.info("Starting th-e-forecast")
-        data = self.databases['CSV'].data
-#         retrain model        
-#         if k % 200 == 180:
-#             X_train, Y_train = self.neuralnetwork.getInputVector(data, training=True)
-#             self.neuralnetwork.train(X_train, Y_train[:, 0, :], epochs = 1)
-#             self.neuralnetwork.model.save(logging + '\myModel')
-        
-        # prediction     
-        data_input_pred = [data[0][-1440 * 4:],
-                           data[1][-1440 * 4:]]
-        y = self.neuralnetwork.predict_recursive(data_input_pred)
-        self.forecast_unfiltered = y
-        b, a = signal.butter(8, 0.022)
-        self.forecast = signal.filtfilt(b, a, y, method='pad', padtype='even', padlen=150)
-        
+    @staticmethod
+    def from_configs(context, configs, **kwargs):
+        return Forecast(configs, context, **kwargs)
 
-class ForecastException(Exception):
-    """
-    Raise if any error occurred during the forecast.
-    
-    """
+    def __init__(self, configs, context, **kwargs):
+        if not isinstance(configs, ConfigParser):
+            raise ValueError('Invalid configuration type: {}'.format(type(configs)))
+        
+        self._context = context
+        self._activate(context, configs, **kwargs)
+
+    def _activate(self, context, configs, **kwargs): #@UnusedVariable
+        type = configs.get('General', 'type', fallback='default').lower() #@ReservedAssignment
+        if type == 'none':
+            self._weather = None
+            #self._model = NeuralPrediction.from_forecast(self, configs, **kwargs)
+        else:
+            config_weather = ConfigParser()
+            config_weather.read_dict(configs)
+            for section in NeuralNetwork.SECTIONS + ['Import']:
+                config_weather.remove_section(section)
+            
+            self._weather = ForecastCore.from_configs(context, config_weather, **kwargs)
+            self._model = NeuralForecast.from_forecast(context, configs, **kwargs)
+            
+        self._context = context
+
+    def _get(self, *args, **kwargs):
+        data = self._get_data(*args, **kwargs)
+        return self._get_range(self._model.run(data, **kwargs), 
+                               kwargs.get('start', None), 
+                               kwargs.get('end', None))
+
+    def _get_data(self, start, end=None, **kwargs):
+        prior_start = start - self._model.time_prior
+        prior_end = start - dt.timedelta(minutes=self._model.resolution)
+        
+        data = self._system._database.get(prior_start, prior_end, **kwargs)
+        
+        if self._weather is not None:
+            database = self._weather._database
+            weather = self._weather.get(start, end, **kwargs)
+            weather.combine_first(database.get(prior_start, prior_end, **kwargs))
+            data = pd.concat([data, weather], axis=1)
+        
+        return data
 
