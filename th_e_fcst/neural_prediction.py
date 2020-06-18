@@ -9,25 +9,25 @@ import logging
 logger = logging.getLogger(__name__)
 
 import os
-from configparser import ConfigParser
 import keras
-import logging
 import numpy as np
-import pandas as pd
-import th_e_forecast.processing as processing
-from datetime import datetime
-from datetime import timedelta 
-import matplotlib.pyplot as plt
+
 from scipy import signal
+from configparser import ConfigParser
+from th_e_fcst.model import NeuralNetwork
 
-logger = logging.getLogger(__name__)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+LOG_VERBOSE = 0
 
 
-class NeuralNetwork:
-    
-    def __init__(self, configs):
+class NeuralPrediction(NeuralNetwork):
+
+    def _configure(self, configs, **kwargs):
+        super()._configure(configs, **kwargs)
+        
         # get NN configurations:
-        neuralnetworkfile = os.path.join(configs, 'neuralnetwork.cfg')
+        neuralnetworkfile = os.path.join(configs.get('General', 'config_dir'), 'neuralnetwork.cfg')
         settings = ConfigParser()
         settings.read(neuralnetworkfile)
         self.fMin = settings.getint('Input vector', 'fMin')
@@ -43,7 +43,7 @@ class NeuralNetwork:
         self.epochs_init = settings.getint('General', 'epochs_init')
         self.n_samples_retrain = settings.getint('Prediction', 'training samples')
         self.model = self.create_model()
-    
+
     def create_model(self):
         mode_training = False
         inputs = keras.layers.Input(shape=(self.dimension, self.look_back))
@@ -55,13 +55,16 @@ class NeuralNetwork:
         model = keras.Model(inputs, outputs)
         model.compile(loss='mean_squared_error', optimizer='adam', metrics=['mae', 'mse']) 
         return model
-    
+
+    def run(self, date, data, *args):
+        pass
+
     def train(self, X, Y, epochs=1):
         try: 
             self.model.fit(X, Y, epochs=epochs, batch_size=64, verbose=2)
         except(ImportError) as e:
             logger.error('Trainig error : %s', str(e)) 
-    
+
     def load(self, path, name):
         modelfile = os.path.join(path, name)
         if os.path.isfile(modelfile):
@@ -69,8 +72,39 @@ class NeuralNetwork:
         else: 
             # TODO: logger info: no modelfile found in directory
             print('logger info: no model-file found in directory.')
-    
-    def getInputVector(self, data, training=False):
+
+    def predict_recursive(self, data):
+        '''Description: recursiveley predicts the BI over 1 Day.
+        :param data: raw Data '''
+        n_predictions = int(1440 / self.look_ahead)
+        predStack = np.zeros(1440)  # predStack = np.zeros([self.dimension, 1440])
+        
+        for z in range(n_predictions):
+            inputVectorTemp = self._get_input_vector(data, training=False)
+            pred = self.model.predict(inputVectorTemp)
+            
+            data = [np.roll(data[0], -self.look_ahead, axis=0),
+                    np.roll(data[1], -self.look_ahead, axis=0)]
+            
+            data[0][-self.look_ahead:] = pred * 2 - 1
+            
+            I = data[0].shape[0]
+            ts = data[1][I - 1] 
+            for k in range(self.look_ahead):
+                data[1][I - self.look_ahead + k] = ts + np.timedelta64(k + 1, 'm')
+                
+            predStack[z * self.look_ahead : (z + 1) * self.look_ahead] = pred
+            
+        return predStack
+
+    def _get_day_time(self, data):
+        """ returns the normalized Daytime [0,1]"""
+        seconds = np.zeros([len(data), 1])
+        for z in range(0, len(data)):
+            seconds[z, 0] = data[z].hour * 3600 + data[z].minute * 60 + data[z].second
+        return seconds / (24 * 60 * 60)
+
+    def _get_input_vector(self, data, training=False):
         """ Description: input data will be normalized and shaped into specified form 
         :param data: 
             data which is loaded from the database
@@ -85,7 +119,7 @@ class NeuralNetwork:
         b, a = signal.butter(8, 0.022)  # lowpass filter of order = 8 and critical frequency = 0.01 (-3dB)
          
         dataBiNorm = signal.filtfilt(b, a, dataBiNorm, method='pad', padtype='even', padlen=150)
-        dataDTNorm = processing.getDaytime(data[1]) 
+        dataDTNorm = self._get_day_time(data[1]) 
 
         # even, constant
         hourOfYear = np.zeros([len(dataDTNorm)])
@@ -102,12 +136,12 @@ class NeuralNetwork:
             length = int(len(data[0]) - 4 * 24 * 60 - self.look_ahead)
         elif training == False:
             length = 1 
-        X_bi = processing.create_input_vector(dataBiNorm, self, length)
-        X_dt = processing.create_input_vector(dataDTNorm, self, length)
+        X_bi = self._create_input_vector(dataBiNorm, self, length)
+        X_dt = self._create_input_vector(dataDTNorm, self, length)
         if training == True:
-            Y_bi = processing.create_output_vector(dataBiNorm, self, length)
-            Y_dt = processing.create_output_vector(dataDTNorm, self, length)
-#             Y_dt = processing.create_output_vector(dataDTNorm, self, training)
+            Y_bi = self._create_output_vector(dataBiNorm, self, length)
+            Y_dt = self._create_output_vector(dataDTNorm, self, length)
+#             Y_dt = self._create_output_vector(dataDTNorm, self, training)
 
         # reshape input to be [samples, time steps, features]
         X_bi = np.reshape(X_bi, (X_bi.shape[0], 1, X_bi.shape[1]))
@@ -126,28 +160,27 @@ class NeuralNetwork:
             return Xconcat, Yconcat
         elif training == False:     
             return Xconcat
-        
-    def predict_recursive(self, data):
-        '''Description: recursiveley predicts the BI over 1 Day.
-        :param data: raw Data '''
-        n_predictions = int(1440 / self.look_ahead)
-        predStack = np.zeros(1440)  # predStack = np.zeros([self.dimension, 1440])
-        
-        for z in range(n_predictions):
-            inputVectorTemp = self.getInputVector(data, training=False)
-            pred = self.model.predict(inputVectorTemp)
+    
+    def _create_input_vector(self, data, theNN, l):
+        dataX = np.zeros([l, theNN.look_back]) 
+        i1 = 24 * 2 * 60
+        i2 = 46 * 60  # 15 min interval      ~ 46h
+        i3 = 2 * 60  # fMin min interval     ~ 2h
             
-            data = [np.roll(data[0], -self.look_ahead, axis=0),
-                    np.roll(data[1], -self.look_ahead, axis=0)]
+        for z in range(l):
+            section1 = data[z:z + i1, 0][int(60 / 2)::60]
+            section2 = data[z + i1: z + i1 + i2, 0][int(15 / 2)::15]
+            section3 = data[z + i1 + i2: z + i1 + i2 + i3, 0][int(theNN.fMin / 2)::theNN.fMin]
+            dataX[z, :] = np.concatenate([section1, section2, section3])
+    
+        return dataX
+    
+    def _create_output_vector(self, data, theNN, l):
+        dataY = np.zeros([l, theNN.look_ahead])  
             
-            data[0][-self.look_ahead:] = pred * 2 - 1
-            
-            I = data[0].shape[0]
-            ts = data[1][I - 1] 
-            for k in range(self.look_ahead):
-                data[1][I - self.look_ahead + k] = ts + np.timedelta64(k + 1, 'm')
-                
-            predStack[z * self.look_ahead : (z + 1) * self.look_ahead] = pred
-            
-        return predStack
-        
+        i_start = 4 * 24 * 60  
+        for z in range(l):
+            section1 = data[z + i_start:z + i_start + theNN.look_ahead, 0]
+            dataY[z, :] = section1
+    
+        return dataY

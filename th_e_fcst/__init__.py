@@ -13,6 +13,9 @@ from th_e_fcst.model import NeuralNetwork
 from th_e_fcst import neural_forecast
 from th_e_fcst.neural_forecast import NeuralForecast
 
+from th_e_fcst import neural_prediction
+from th_e_fcst.neural_prediction import NeuralPrediction
+
 from th_e_fcst import forecast
 from th_e_fcst.forecast import Forecast
 

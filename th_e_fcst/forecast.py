@@ -13,7 +13,7 @@ import datetime as dt
 
 from configparser import ConfigParser
 from th_e_core import Forecast as ForecastCore
-from th_e_fcst import NeuralNetwork, NeuralForecast #, NeuralPrediction
+from th_e_fcst import NeuralNetwork, NeuralForecast, NeuralPrediction
 
 
 class Forecast(ForecastCore):
@@ -30,10 +30,10 @@ class Forecast(ForecastCore):
         self._activate(context, configs, **kwargs)
 
     def _activate(self, context, configs, **kwargs): #@UnusedVariable
-        type = configs.get('General', 'type', fallback='default').lower() #@ReservedAssignment
+        type = configs.get('General', 'type', fallback='none').lower() #@ReservedAssignment
         if type == 'none':
             self._weather = None
-            #self._model = NeuralPrediction.from_forecast(self, configs, **kwargs)
+            self._model = NeuralPrediction.from_forecast(self, configs, **kwargs)
         else:
             config_weather = ConfigParser()
             config_weather.read_dict(configs)
