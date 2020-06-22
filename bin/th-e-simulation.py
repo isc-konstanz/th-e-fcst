@@ -20,6 +20,7 @@ import pytz as tz
 import numpy as np
 import pandas as pd
 import datetime as dt
+import matplotlib.pyplot as plt
 
 import multiprocessing as process
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -58,7 +59,7 @@ def main(args):
         weather = system.forecast._weather.get(start, end)
         features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
         
-        if settings.getboolean('General', 'threading', fallback=False):
+        if settings.getboolean('General', 'threading', fallback=True):
             split = os.cpu_count() or 1
             
             results = list()
@@ -85,10 +86,25 @@ def main(args):
             results = results[(results['error'] < results['error'].quantile(1-tolerance/100)) & \
                               (results['error'] > results['error'].quantile(tolerance/100))]
         
-        _result_boxplot(system, results, results.index.hour, 'hours')
+        results_horizon1 = results[results['horizon'] == 1].assign(horizon=1)
+        results_horizon3 = results[results['horizon'] == 3].assign(horizon=3)
+        results_horizon24 = results[results['horizon'] == 24].assign(horizon=24)
+        results_horizons = pd.concat([results_horizon1, results_horizon3, results_horizon24])
         
-        results = results[abs(results['error']) > 0]
-        _result_boxplot(system, results, results['horizon'], 'horizon')
+        _result_describe(system, results, results.index.hour, name='hours')
+        _result_boxplot(system, results, results.index.hour, name='hours', label='Hours')
+        _result_describe(system, results_horizon1, results_horizon1.index.hour, 'h1')
+        _result_describe(system, results_horizon3, results_horizon3.index.hour, 'h3')
+        _result_describe(system, results_horizon24, results_horizon24.index.hour, 'h24')
+        _result_boxplot(system, results_horizons, results_horizons.index.hour, label='Hours', name='horizons', hue='horizon', colors=5)
+        
+        interval = settings.getint('General', 'interval')/60
+        results = results[results['horizon'] <= interval].sort_index()
+        del results['horizon']
+        _result_write(system, results)
+        _result_boxplot(system, results, results.index.hour, label='Hours')
+        
+        logger.info('Finished TH-E Simulation')
 
 def _simulate(settings, system, features, lock=None, **kwargs):
     results = pd.DataFrame()
@@ -108,11 +124,18 @@ def _simulate(settings, system, features, lock=None, **kwargs):
     time = features.index[0] + system.forecast._model.time_prior
     end = features.index[-1] - system.forecast._model.time_horizon
     
-    training_recursive = settings.getboolean('Training', 'recursive', fallback=True)
+    training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
     #training_interval = settings.getint('Training', 'interval')
     #training_last = time
     
     while time <= end:
+        if database.exists(time, subdir='results'):
+            result = database.get(time, subdir='results')
+            results = pd.concat([results, result], axis=0)
+            
+            time += dt.timedelta(minutes=interval)
+            continue
+        
         try:
             step_result = list()
             step_features = copy.deepcopy(features[time-system.forecast._model.time_prior:
@@ -142,15 +165,17 @@ def _simulate(settings, system, features, lock=None, **kwargs):
                         system.forecast._model._train(training_features)
                 else:
                     system.forecast._model._train(training_features)
+                
+                system.forecast._model._save_model()
             
             result = pd.DataFrame(step_result, index, columns=['prediction'])
+            result.index.name = 'time'
             result['reference'] = features.loc[index, system.forecast._model.features['target']]
             result['error'] = result['prediction'] - result['reference']
             result['horizon'] = pd.Series(range(1, len(index)+1), index)
             result = result[['horizon', 'reference', 'prediction', 'error']]
             database.persist(result, subdir='results')
             
-            #result = result[abs(result['error']) > 0]
             results = pd.concat([results, result], axis=0)
             
         except ValueError as e:
@@ -160,29 +185,46 @@ def _simulate(settings, system, features, lock=None, **kwargs):
     
     return results
 
-def _result_boxplot(system, results, index, label):
+def _result_describe(system, results, index, name=None):
+    median = results['error'].groupby([index]).median()
+    median.name = 'median'
+    desc = pd.concat([median, results.loc[:,'error'].groupby([index]).describe()], axis=1)
+    _result_write(system, desc, name=name)
+
+def _result_write(system, results, name=None):
     system_dir = system._configs['General']['data_dir']
     database = copy.deepcopy(system._database)
     database.dir = system_dir
     #database.format = '%Y%m%d'
     database.enabled = True
     
-    median = results['error'].groupby([index]).median()
-    median.name = 'median'
-    eval = pd.concat([median, results.loc[:,'error'].groupby([index]).describe()], axis=1)
-    eval.to_csv(os.path.join(database.dir, 'results_{}.csv'.format(label)), 
-                sep=database.separator, 
-                decimal=database.decimal, 
-                encoding='utf-8')
+    csv_name = 'results'
+    if name is not None:
+        csv_name += '_{}'.format(name)
+    csv_file = os.path.join(database.dir, csv_name+'.csv')
     
+    results.to_csv(csv_file, 
+                   sep=database.separator, 
+                   decimal=database.decimal, 
+                   encoding='utf-8')
+
+def _result_boxplot(system, results, index, label='', name=None, colors=None, **kwargs):
     try:
         import seaborn as sns
-        import matplotlib.pyplot as plt
+        
+        plot_name = 'results'
+        if name is not None:
+            plot_name += '_{}'.format(name)
+        plot_file = os.path.join(system._configs['General']['data_dir'], plot_name+'.png')
         
         plt.figure()
-        plot = sns.boxplot(x=index, y='error', data=results, palette='Blues', showfliers=False)
+        plot_fliers = dict(marker='o', markersize=3, markerfacecolor='none', markeredgecolor='lightgrey')
+        plot_colors = colors if colors is not None else index.nunique()
+        plot_palette = sns.light_palette('#0069B4', n_colors=plot_colors, reverse=True)
+        plot = sns.boxplot(x=index, y='error', data=results, palette=plot_palette, flierprops=plot_fliers, **kwargs) #, showfliers=False)
         plot.set(xlabel=label, ylabel='Error [W]')
-        plot.figure.savefig(os.path.join(database.dir, 'results_{}.png'.format(label)))
+        plot.figure.savefig(plot_file)
+        plt.show(block=False)
     
     except ImportError:
         pass

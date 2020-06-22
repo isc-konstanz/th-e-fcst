@@ -81,12 +81,15 @@ class NeuralForecast(NeuralNetwork):
         
         return model
 
-    def _load_model(self):
-        logger.info("Loading model from file")
+    def _load_model(self, inplace=False):
+        logger.debug("Loading model from file")
         
         with open(os.path.join(self.dir, 'model.json'), 'r') as f:
             model = model_from_json(f.read())
             model.load_weights(os.path.join(self.dir, 'model.h5'))
+            
+            if inplace:
+                self.model = model
             
             return model
 
