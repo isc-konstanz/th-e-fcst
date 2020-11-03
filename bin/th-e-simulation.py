@@ -386,7 +386,7 @@ def _prepare_system(system):
                        skipinitialspace=True, low_memory=False, sep=',',
                        index_col=[index], parse_dates=[index])
     
-    data = data.filter(regex=(system.id)).dropna()
+    data = data.filter(regex=(system.id)).dropna(how='all')
     for column in data.columns:
         column_name = column.split(system.id+'_', 1)[1] + '_energy'
         data.rename(columns={column: column_name}, inplace=True)
@@ -450,6 +450,7 @@ def _prepare_system(system):
         time = time + dt.timedelta(hours=24)
 
 def _process_energy(energy):
+    energy = energy.fillna(0)
     return energy - energy[0]
 
 def _process_power(energy, filter=True):
