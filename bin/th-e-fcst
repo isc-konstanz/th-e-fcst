@@ -7,14 +7,9 @@
     To learn how to configure the prediction of timeseries, see "th-e-fcst --help"
 
 """
-import logging.config
-
-import sys
+import logging #@UnusedImport
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
 
-import inspect
-import pytz as tz
 import datetime as dt
 
 from argparse import ArgumentParser, RawTextHelpFormatter
@@ -34,59 +29,47 @@ def main(args):
     kwargs = vars(args)
     kwargs.update(dict(settings.items('General')))
     
-    interval = settings.getint('General', 'interval')
-    
     systems = System.read(**kwargs)
     if args.action == 'run':
-        time = _get_time(dt.datetime.now(), interval)
-        systems.run(time)
+        systems.run()
     
     elif args.action == 'start':
-        for system in systems:
-            start(system, interval)
+        start(systems, **kwargs)
 
-def start(system, interval):
+def start(systems, interval=1, **kwargs):
     import sched, time
     
     logger.info('Starting th-e-fcst')
     
     scheduler = sched.scheduler(time.time, time.sleep)
-    schedule_first, _ = schedule_time(system, interval)
-    schedule_first -= dt.timedelta(seconds=system._forecast.interval)
-    schedule_run(system, scheduler, schedule_first, interval)
+    schedule_first, _ = schedule_time(interval, **kwargs)
+    schedule_first -= dt.timedelta(seconds=int(interval))
+    schedule_run(systems, scheduler, schedule_first, interval)
     scheduler.run()
 
-def schedule_run(system, scheduler, time, interval):
-    system.run(time)
+def schedule_run(systems, scheduler, time, interval, **kwargs):
+    logger.info("Running th-e-fcst for {0} systems".format(len(systems)))
     
-    time, delay = schedule_time(system, interval)
+    for system in systems:
+        system.run(start=time)
+    
+    time, delay = schedule_time(interval, **kwargs)
     scheduler.enter(delay, 1, schedule_run,
-                    (system, scheduler, time, interval))
-
-def schedule_time(system, interval):
-    now = dt.datetime.now(system._location.pytz)
-    time = _get_time(now)
-    return time, (time + dt.timedelta(minutes=interval) - now).total_seconds() + system._forecast.delay
-
-def _get_time(time, interval):
-    interval_mins = interval % 60
-    interval_hour = int((interval - interval_mins)/60)
+                    (systems, scheduler, time, interval))
     
-    time = time.replace(second=0, microsecond=0)
-    if interval_mins > 0:
-        if time.minute % interval_mins != 0:
-            time = time + dt.timedelta(minutes=interval_mins) - dt.timedelta(minutes=time.minute % (interval_mins))
-    else:
-        time = time.replace(minute=0)
+    logger.info("Schedule next execution in {0} seconds: {1}".format(round(delay), time))
+
+def schedule_time(interval, delay=0, **_):
+    if isinstance(interval, str) :
+        interval = int(interval)
     
-    if interval_hour > 0:
-        if time.hour % interval_hour != 0:
-            time = time + dt.timedelta(hours=interval_hour) - dt.timedelta(hours=time.hour % interval_hour)
+    now = dt.datetime.now()
+    time = now + ((dt.datetime.min - now) % dt.timedelta(seconds=interval))
     
-    return time
+    return time, (time - now).total_seconds() + int(delay)
 
 
-def _get_parser(root_dir, config_dir):
+def _get_parser(root_dir):
     from th_e_fcst import __version__
     
     parser = ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
@@ -108,24 +91,32 @@ def _get_parser(root_dir, config_dir):
     parser.add_argument('-c','--config-directory',
                         dest='config_dir',
                         help="directory to expect configuration files",
-                        default=config_dir,
+                        default='conf',
+                        metavar='DIR')
+    
+    parser.add_argument('-d','--data-directory',
+                        dest='data_dir',
+                        help="directory to expect and write result files to",
+                        default='data',
                         metavar='DIR')
     
     return parser
 
 if __name__ == "__main__":
-    root_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(main)))
+    root_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.realpath(__file__))))
     if os.path.basename(root_dir) == 'bin':
         root_dir = os.path.dirname(root_dir)
     
     os.chdir(root_dir)
     
-    config_dir = os.path.join(root_dir, 'conf')
+    if not os.path.exists('log'):
+        os.makedirs('log')
     
     # Load the logging configuration
-    loggingfile = os.path.join(config_dir, 'logging.cfg')
-    logging.config.fileConfig(loggingfile)
-    logger = logging.getLogger('th_e_fcst')
+    import logging.config
+    logging_file = os.path.join(os.path.join(root_dir, 'conf'), 'logging.cfg')
+    logging.config.fileConfig(logging_file)
+    logger = logging.getLogger('th-e-fcst')
     
-    main(_get_parser(root_dir, config_dir).parse_args())
+    main(_get_parser(root_dir).parse_args())
 

@@ -55,13 +55,27 @@ class Forecast(ForecastCore):
         prior_start = start - self._model.time_prior
         prior_end = start - dt.timedelta(minutes=self._model.resolution)
         
-        data = self._system._database.get(prior_start, prior_end, **kwargs)
+        data = self._get_history(prior_start, prior_end, **kwargs)
         
         if self._weather is not None:
-            database = self._weather._database
             weather = self._weather.get(start, end, **kwargs)
-            weather.combine_first(database.get(prior_start, prior_end, **kwargs))
+            data = pd.concat([data, weather], axis=0)
+        
+        return data
+
+    def _get_history(self, start, end, **kwargs):
+        data = self._system._database.get(start, end, **kwargs)
+        data = data[data.columns.drop(list(data.filter(regex='_energy')))]
+        
+        if self._weather is not None:
+            weather = self._weather._database.get(start, end, **kwargs)
             data = pd.concat([data, weather], axis=1)
+        
+        # TODO: Pass resample type to database
+        resolution = self._model.resolution*60
+        if resolution > 1:
+            offset = (start - start.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() % resolution
+            data = data.resample(str(int(resolution))+'s', offset=str(int(offset))+'s').mean()
         
         return data
 

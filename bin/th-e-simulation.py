@@ -47,7 +47,7 @@ def main(args):
     kwargs.update(dict(settings.items('General')))
     
     start = _get_time(settings['General']['start'])
-    end = _get_time(settings['General']['end'])
+    end = _get_time(settings['General']['end']) + dt.timedelta(hours=23, minutes=59)
     
     systems = System.read(**kwargs)
     for system in systems:
@@ -55,8 +55,9 @@ def main(args):
         _prepare_system(system)
         
         if not system.forecast._model.exists():
-            system.forecast._model.train(system.forecast._get_data(_get_time(settings['Training']['start']), 
-                                                                   _get_time(settings['Training']['end'])))
+            system.forecast._model.train(system.forecast._get_history(_get_time(settings['Training']['start']), 
+                                                                      _get_time(settings['Training']['end']) \
+                                                                      +dt.timedelta(hours=23, minutes=59)))
         
         data = system._database.get(start, end)
         weather = system.forecast._weather.get(start, end)
@@ -386,6 +387,7 @@ def _prepare_system(system):
                        skipinitialspace=True, low_memory=False, sep=',',
                        index_col=[index], parse_dates=[index])
     
+    data.index.rename('time', inplace=True)
     data = data.filter(regex=(system.id)).dropna(how='all')
     for column in data.columns:
         column_name = column.split(system.id+'_', 1)[1] + '_energy'
@@ -422,10 +424,11 @@ def _prepare_system(system):
         data['hp_energy'] = _process_energy(data['heat_pump_energy'])
         data['hp_power'] = _process_power(data['heat_pump_energy'])
         
-        # TODO: Make COP more sophisticated and add a reverse lowpass filter
+        # TODO: Make COP more sophisticated
         # Maybe try to differentiate between heating and warm water
         cop = 3.5
         data['th_power'] = _process_power(data['heat_pump_energy'])*cop #, filter=False)
+        data['th_power'] = data['th_power'].iloc[::-1].rolling(window=30).mean().iloc[::-1].ffill()
         
         data['th_energy'] = 0
         for i in range(1, len(data.index)):
@@ -434,8 +437,6 @@ def _prepare_system(system):
             data.loc[index, 'th_energy'] += data['th_energy'][i-1]/1000*hours
     
     data = data[columns_power + columns_energy]
-    data.index.rename('time', inplace=True)
-    
     time = data.index[0]
     time = time.replace(hour=0, minute=0) + dt.timedelta(hours=24)
     while time <= data.index[-1]:
@@ -458,13 +459,13 @@ def _process_power(energy, filter=True):
     delta_index = pd.Series(energy.index, index=energy.index)
     delta_index = (delta_index - delta_index.shift(1))/np.timedelta64(1, 'h')
     
-    column_power = (delta_energy/delta_index).fillna(0)
+    column_power = (delta_energy/delta_index).fillna(0)*1000
     
     if filter:
         from scipy import signal
         b, a = signal.butter(1, 0.25)
         column_power = signal.filtfilt(b, a, column_power, method='pad', padtype='even', padlen=15)
-        column_power[column_power < 0.001] = 0
+        column_power[column_power < 0.1] = 0
     
     return column_power
 
