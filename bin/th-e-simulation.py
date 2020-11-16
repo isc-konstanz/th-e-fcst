@@ -90,17 +90,20 @@ def main(args):
             results = results[(results['error'] < results['error'].quantile(1-tolerance/100)) & \
                               (results['error'] > results['error'].quantile(tolerance/100))]
         
-        results_horizon1 = results[results['horizon'] == 1].assign(horizon=1)
-        results_horizon3 = results[results['horizon'] == 3].assign(horizon=3)
-        results_horizon24 = results[results['horizon'] == 24].assign(horizon=24)
-        results_horizons = pd.concat([results_horizon1, results_horizon3, results_horizon24])
+        # Do not evaluate horizon, if forecast is done in a daily or higher interval
+        if settings.getint('General', 'interval') <= 1440:
+            results_horizon1 = results[results['horizon'] == 1].assign(horizon=1)
+            results_horizon3 = results[results['horizon'] == 3].assign(horizon=3)
+            results_horizon24 = results[results['horizon'] == 24].assign(horizon=24)
+            results_horizons = pd.concat([results_horizon1, results_horizon3, results_horizon24])
+             
+            _result_describe(system, results_horizon1, results_horizon1.index.hour, 'h1')
+            _result_describe(system, results_horizon3, results_horizon3.index.hour, 'h3')
+            _result_describe(system, results_horizon24, results_horizon24.index.hour, 'h24')
+            _result_boxplot(system, results_horizons, results_horizons['horizon'], label='Hours', name='horizons', hue='horizon', colors=5)
         
         _result_describe(system, results, results.index.hour, name='hours')
         _result_boxplot(system, results, results.index.hour, name='hours', label='Hours')
-        _result_describe(system, results_horizon1, results_horizon1.index.hour, 'h1')
-        _result_describe(system, results_horizon3, results_horizon3.index.hour, 'h3')
-        _result_describe(system, results_horizon24, results_horizon24.index.hour, 'h24')
-        _result_boxplot(system, results_horizons, results_horizons.index.hour, label='Hours', name='horizons', hue='horizon', colors=5)
         
         interval = settings.getint('General', 'interval')/60
         results = results[results['horizon'] <= interval].sort_index()
