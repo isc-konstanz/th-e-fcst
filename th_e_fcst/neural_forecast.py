@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import datetime as dt
 
+from pandas.tseries.frequencies import to_offset
 from pvlib.solarposition import get_solarposition
 from keras.models import Sequential, model_from_json
 from keras.layers import LSTM, Dense, LeakyReLU
@@ -180,16 +181,22 @@ class NeuralForecast(NeuralNetwork):
 
     def _parse_inputs(self, features, time):
         inputs = self._extract_inputs(features, time)
-        return np.squeeze(inputs.fillna(0).values)
+        
+        # TODO: Replace interpolation with prediction of ANN
+        inputs.interpolate(method='linear', inplace=True)
+        #inputs.interpolate(method='akima', inplace=True)
+        #inputs.interpolate(method='nearest', fill_value='extrapolate', inplace=True)
+        
+        return np.squeeze(inputs.values)
 
     def _extract_inputs(self, features, time):
         start = time - self.time_prior
         end = time - dt.timedelta(minutes=self.resolution)
+        
         data = features.loc[start:end, self.features['target'] + self.features['input']]
         if data.isnull().values.any():
             raise ValueError("Input data incomplete for %s" % time)
         
-        # TODO: evaluate NaN=0 value effect
         data.loc[time] = np.append([np.NaN]*len(self.features['target']), features.loc[end, self.features['input']].values)
         return data
 
@@ -213,7 +220,8 @@ class NeuralForecast(NeuralNetwork):
                                   self._system.location.longitude, 
                                   altitude=self._system.location.altitude)
         solar = solar.loc[:, ['azimuth', 'apparent_zenith', 'apparent_elevation']] \
-                     .resample('{}min'.format(self.resolution), closed='right', loffset='{}min'.format(self.resolution)).mean()
+                     .resample('{}min'.format(self.resolution), closed='right').mean()
+        solar.index += to_offset('{}min'.format(self.resolution))
         solar.columns = ['solar_azimuth', 'solar_zenith', 'solar_elevation']
         
         data['doy'] = data.index.dayofyear
