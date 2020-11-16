@@ -5,20 +5,16 @@
     
     
 """
-import logging
-logger = logging.getLogger(__name__)
-
 import os
-import keras
+import logging
 import numpy as np
+import keras
 
 from scipy import signal
 from configparser import ConfigParser
 from th_e_fcst.model import NeuralNetwork
 
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
-LOG_VERBOSE = 0
+logger = logging.getLogger(__name__)
 
 
 class NeuralPrediction(NeuralNetwork):
@@ -34,6 +30,7 @@ class NeuralPrediction(NeuralNetwork):
         self.look_back = int(settings.getint('Input vector', 'interval 1') / 60) + \
                         int(settings.getint('Input vector', 'interval 2') / 15) + \
                         int(settings.getint('Input vector', 'interval 3') / self.fMin)
+        
         self.dropout = settings.getfloat('General', 'dropout')
         self.layers = settings.getint('General', 'layers')
         self.neurons = settings.getint('General', 'neurons')

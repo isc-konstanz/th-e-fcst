@@ -60,7 +60,7 @@ def main(args):
                                                                       +dt.timedelta(hours=23, minutes=59)))
         
         data = system._database.get(start, end)
-        weather = system.forecast._weather.get(start, end)
+        weather = system.forecast._weather._database.get(start, end)
         features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
         
         if settings.getboolean('General', 'threading', fallback=True):
