@@ -106,7 +106,7 @@ class NeuralForecast(NeuralNetwork):
 
     def exists(self):
         if not os.path.isdir(self.dir):
-            os.mkdir(self.dir)
+            os.makedirs(self.dir, exist_ok=True)
             return False
         
         return os.path.isfile(os.path.join(self.dir, 'model.json')) and \
