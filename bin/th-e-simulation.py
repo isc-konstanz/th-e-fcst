@@ -22,11 +22,8 @@ import numpy as np
 import pandas as pd
 import datetime as dt
 import dateutil.relativedelta as rd
-
 import matplotlib.pyplot as plt
 
-import multiprocessing as process
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from argparse import ArgumentParser, RawTextHelpFormatter
 from configparser import ConfigParser
 
@@ -62,45 +59,23 @@ def main(args):
         data = system._database.get(start, end)
         weather = system.forecast._weather._database.get(start, end)
         features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
-        
-        if settings.getboolean('General', 'threading', fallback=True):
-            split = os.cpu_count() or 1
-            
-            results = list()
-            futures = list()
-            with ProcessPoolExecutor() as executor:
-                manager = process.Manager()
-                lock = manager.Lock()
-                
-                features_days = pd.Series(features.index.date, index=features.index)
-                for features_range in np.array_split(sorted(set(features.index.date)), split):
-                    features_split = features.loc[features_days.isin(features_range)]
-                    futures.append(executor.submit(_simulate, 
-                                                   settings, system, features_split, lock=lock))
-                
-                for future in as_completed(futures):
-                    results.append(future.result())
-            
-            results = pd.concat(results, axis=0)
-        else:
-            results = _simulate(settings, system, features)
-        
-        if 'tolerance' in settings['General']:
-            tolerance = float(settings['General']['tolerance'])
-            results = results[(results['error'] < results['error'].quantile(1-tolerance/100)) & \
-                              (results['error'] > results['error'].quantile(tolerance/100))]
+        results = _simulate(settings, system, features)
         
         # Do not evaluate horizon, if forecast is done in a daily or higher interval
-        if settings.getint('General', 'interval') <= 1440:
+        if settings.getint('General', 'interval') < 1440:
             results_horizon1 = results[results['horizon'] == 1].assign(horizon=1)
             results_horizon3 = results[results['horizon'] == 3].assign(horizon=3)
+            results_horizon6 = results[results['horizon'] == 6].assign(horizon=6)
+            results_horizon12 = results[results['horizon'] == 12].assign(horizon=12)
             results_horizon24 = results[results['horizon'] == 24].assign(horizon=24)
-            results_horizons = pd.concat([results_horizon1, results_horizon3, results_horizon24])
-             
-            _result_describe(system, results_horizon1, results_horizon1.index.hour, 'h1')
-            _result_describe(system, results_horizon3, results_horizon3.index.hour, 'h3')
-            _result_describe(system, results_horizon24, results_horizon24.index.hour, 'h24')
-            _result_boxplot(system, results_horizons, results_horizons['horizon'], label='Hours', name='horizons', hue='horizon', colors=5)
+            results_horizons = pd.concat([results_horizon1, results_horizon3, results_horizon6, results_horizon12, results_horizon24])
+            
+            _result_describe(system, results_horizon1, results_horizon1.index.hour, name='horizon1')
+            _result_describe(system, results_horizon3, results_horizon3.index.hour, name='horizon3')
+            _result_describe(system, results_horizon6, results_horizon6.index.hour, name='horizon6')
+            _result_describe(system, results_horizon12, results_horizon12.index.hour, name='horizon12')
+            _result_describe(system, results_horizon24, results_horizon24.index.hour, name='horizon24')
+            _result_boxplot(system, results_horizons, results_horizons['horizon'], name='horizons', label='Hours', hue='horizon', colors=5)
         
         _result_describe(system, results, results.index.hour, name='hours')
         _result_boxplot(system, results, results.index.hour, name='hours', label='Hours')
@@ -109,12 +84,15 @@ def main(args):
         results = results[results['horizon'] <= interval].sort_index()
         del results['horizon']
         _result_write(system, results)
-        _result_boxplot(system, results, results.index.hour, label='Hours')
         
         logger.info('Finished TH-E Simulation')
 
-def _simulate(settings, system, features, lock=None, **kwargs):
+def _simulate(settings, system, features, **kwargs):
+    forecast = system.forecast._model
     results = pd.DataFrame()
+    
+    resolution = forecast._resolutions[0]
+    resolution_data = resolution.resample(features)
     
     system_dir = system._configs['General']['data_dir']
     database = copy.deepcopy(system._database)
@@ -122,22 +100,24 @@ def _simulate(settings, system, features, lock=None, **kwargs):
     #database.format = '%Y%m%d'
     database.enabled = True
     
-    global logger
-    if process.current_process().name != 'MainProcess':
-        logger = process.get_logger()
+    #Reactivate this, when multiprocessing will be implemented
+    #global logger
+    #if process.current_process().name != 'MainProcess':
+    #    logger = process.get_logger()
     
     verbose = settings.getboolean('General', 'verbose', fallback=False)
     interval = settings.getint('General', 'interval')
-    time = features.index[0] + system.forecast._model.time_prior
-    end = features.index[-1] - system.forecast._model.time_horizon
+    time = features.index[0] + forecast._resolutions[0].time_prior
+    end = features.index[-1] - forecast._resolutions[0].time_horizon
     
     training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
     #training_interval = settings.getint('Training', 'interval')
     #training_last = time
     
     while time <= end:
-        if database.exists(time, subdir='results'):
-            result = database.get(time, subdir='results')
+        # Check if this step was simulated already and load the results, if so
+        if database.exists(time, subdir='outputs'):
+            result = database.get(time, subdir='outputs')
             results = pd.concat([results, result], axis=0)
             
             time += dt.timedelta(minutes=interval)
@@ -145,43 +125,47 @@ def _simulate(settings, system, features, lock=None, **kwargs):
         
         try:
             step_result = list()
-            step_features = copy.deepcopy(features[time-system.forecast._model.time_prior:
-                                                   time+system.forecast._model.time_horizon])
+            step_features = copy.deepcopy(features[time - resolution.time_prior\
+                                                        - resolution.time_step\
+                                                        + dt.timedelta(seconds=1):
+                                                   time + resolution.time_horizon])
             
-            index = step_features[time:].index
-            for i in index:
-                step_inputs = system.forecast._model._extract_inputs(step_features, i)
+            step_index = step_features[time:].index
+            step = step_index[0]
+            while step in step_index:
+                step_inputs = forecast._extract_inputs(step_features, step)
                 
                 if verbose:
                     database.persist(step_inputs, 
                                      subdir='inputs', 
-                                     file=i.strftime('%Y%m%d_%H%M%S')+'.csv')
+                                     file=step.strftime('%Y%m%d_%H%M%S')+'.csv')
                 
                 inputs = np.squeeze(step_inputs.fillna(0).values)
-                result = system.forecast._model._run_step(inputs)
+                result = forecast._run_step(inputs)
                 
                 # Add predicted output to features of next iteration
-                step_features.loc[i, system.forecast._model.features['target']] = result
+                step_features.loc[step, forecast.features['target']] = result
                 step_result.append(result)
+                step += dt.timedelta(minutes=resolution.minutes)
             
             if training_recursive:
-                training_features = features[time-system.forecast._model.time_prior:
-                                             time+system.forecast._model.time_horizon]
-                if lock is not None:
-                    with lock:
-                        system.forecast._model._train(training_features)
-                else:
-                    system.forecast._model._train(training_features)
+                training_features = step_features
                 
-                system.forecast._model._save_model()
+                forecast._train(training_features)
+                forecast._save_model()
             
-            result = pd.DataFrame(step_result, index, columns=['prediction'])
+            target = forecast.features['target']
+            result = resolution_data.loc[step_index[0]:step_index[-1], target]
+            result = pd.concat([result[target], pd.DataFrame(step_result, result.index, 
+                                                     columns=[t + '_est' for t in target])], axis=1)
+            
+            for target in forecast.features['target']:
+                result[target + '_err'] = result[target + '_est'] - result[target]
+            
+            result['horizon'] = pd.Series(range(1, len(result.index)+1), result.index)
             result.index.name = 'time'
-            result['reference'] = features.loc[index, system.forecast._model.features['target']]
-            result['error'] = result['prediction'] - result['reference']
-            result['horizon'] = pd.Series(range(1, len(index)+1), index)
-            result = result[['horizon', 'reference', 'prediction', 'error']]
-            database.persist(result, subdir='results')
+            
+            database.persist(result, subdir='outputs')
             
             results = pd.concat([results, result], axis=0)
             
@@ -193,24 +177,28 @@ def _simulate(settings, system, features, lock=None, **kwargs):
     return results
 
 def _result_describe(system, results, index, name=None):
-    median = results['error'].groupby([index]).median()
-    median.name = 'median'
-    desc = pd.concat([median, results.loc[:,'error'].groupby([index]).describe()], axis=1)
-    _result_write(system, desc, name=name)
+    for error in [c for c in results.columns if c.endswith('_err')]:
+        result = results[error]
+        median = result.groupby([index]).median()
+        median.name = 'median'
+        desc = pd.concat([median, result.groupby([index]).describe()], axis=1)
+        _result_write(system, desc, error.split('_err')[0], 'results', name)
 
-def _result_write(system, results, name=None):
+def _result_write(system, results, results_name='results', results_dir='', postfix=None):
     system_dir = system._configs['General']['data_dir']
     database = copy.deepcopy(system._database)
     database.dir = system_dir
     #database.format = '%Y%m%d'
     database.enabled = True
+    database_dir = os.path.join(database.dir, results_dir)
     
-    csv_name = 'results'
-    if name is not None:
-        csv_name += '_{}'.format(name)
-    csv_file = os.path.join(database.dir, csv_name+'.csv')
+    if not os.path.isdir(database_dir):
+        os.makedirs(database_dir, exist_ok=True)
     
-    results.to_csv(csv_file, 
+    if postfix is not None:
+        results_name += '_{}'.format(postfix)
+    
+    results.to_csv(os.path.join(database_dir, results_name+'.csv'), 
                    sep=database.separator, 
                    decimal=database.decimal, 
                    encoding='utf-8')
@@ -219,19 +207,21 @@ def _result_boxplot(system, results, index, label='', name=None, colors=None, **
     try:
         import seaborn as sns
         
-        plot_name = 'results'
-        if name is not None:
-            plot_name += '_{}'.format(name)
-        plot_file = os.path.join(system._configs['General']['data_dir'], plot_name+'.png')
-        
-        plt.figure()
-        plot_fliers = dict(marker='o', markersize=3, markerfacecolor='none', markeredgecolor='lightgrey')
-        plot_colors = colors if colors is not None else index.nunique()
-        plot_palette = sns.light_palette('#0069B4', n_colors=plot_colors, reverse=True)
-        plot = sns.boxplot(x=index, y='error', data=results, palette=plot_palette, flierprops=plot_fliers, **kwargs) #, showfliers=False)
-        plot.set(xlabel=label, ylabel='Error [W]')
-        plot.figure.savefig(plot_file)
-        plt.show(block=False)
+        for error in [c for c in results.columns if c.endswith('_err')]:
+            plot_name = error.split('_err')[0]
+            if name is not None:
+                plot_name += '_{}'.format(name)
+            
+            plot_file = os.path.join(system._configs['General']['data_dir'], 'results', plot_name+'.png')
+            
+            plt.figure()
+            plot_fliers = dict(marker='o', markersize=3, markerfacecolor='none', markeredgecolor='lightgrey')
+            plot_colors = colors if colors is not None else index.nunique()
+            plot_palette = sns.light_palette('#0069B4', n_colors=plot_colors, reverse=True)
+            plot = sns.boxplot(x=index, y=error, data=results, palette=plot_palette, flierprops=plot_fliers, **kwargs) #, showfliers=False)
+            plot.set(xlabel=label, ylabel='Error [W]')
+            plot.figure.savefig(plot_file)
+            plt.show(block=False)
     
     except ImportError:
         pass

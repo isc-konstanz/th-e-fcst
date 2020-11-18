@@ -18,6 +18,9 @@ from configparser import ConfigParser
 from pandas.tseries.frequencies import to_offset
 from pvlib.solarposition import get_solarposition
 from keras.callbacks import History, EarlyStopping
+from keras.models import Sequential
+from keras.layers import LSTM, Dense, LeakyReLU
+from keras.layers.convolutional import Conv1D, MaxPooling1D
 from keras.models import model_from_json
 from th_e_core import Model
 from abc import abstractmethod
@@ -29,7 +32,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 class NeuralNetwork(Model):
 
-    SECTIONS = ['NeuralNetwork', 'Model', 'Features']
+    SECTIONS = ['Resolution', 'Model', 'Features']
 
     @classmethod
     def from_forecast(cls, context, forecast_configs, **kwargs):
@@ -51,12 +54,12 @@ class NeuralNetwork(Model):
         configs.set('General', 'config_dir', forecast_configs.get('General', 'config_dir'))
         configs.set('General', 'config_file', forecast_configs.get('General', 'config_file'))
         
-        if forecast_configs.has_section('NeuralNetwork'):
-            for key, value in forecast_configs.items('NeuralNetwork'):
+        if forecast_configs.has_section(cls.__name__):
+            for key, value in forecast_configs.items(cls.__name__):
                 configs.set('General', key, value)
         
         for section in forecast_configs.sections():
-            if section in NeuralNetwork.SECTIONS and not section == 'NeuralNetwork':
+            if (section.startswith(tuple(NeuralNetwork.SECTIONS))):
                 if not configs.has_section(section):
                     configs.add_section(section)
                 for key, value in forecast_configs.items(section):
@@ -74,12 +77,15 @@ class NeuralNetwork(Model):
         
         self.dir = os.path.join(configs['General']['lib_dir'], 'model')
         
-        self.resolution = configs.getint('General', 'resolution')
-        self.steps_prior = configs.getint('General', 'steps_prior')
-        self.steps_horizon = configs.getint('General', 'steps_horizon', fallback=None)
-        
         self.epochs = configs.getint('General', 'epochs')
         self.batch = configs.getint('General', 'batch')
+        
+        self._resolutions = list()
+        for resolution in [s for s in configs.sections() if s.lower().startswith('resolution')]:
+            self._resolutions.append(Resolution(**dict(configs.items(resolution))))
+        
+        if len(self._resolutions) < 1:
+            raise ValueError("Invalid control configurations without specified step resolutions")
         
         self.features = {}
         for (key, value) in configs.items('Features'):
@@ -93,20 +99,20 @@ class NeuralNetwork(Model):
         
         #TODO: implement date based backups and naming scheme
         if self.exists():
-            self.model = self._load_model()
+            self.model = self._load()
         
         else:
-            self.model = self._build_model(configs['Model'])
+            self.model = self.build(configs['Model'])
         
         self.model.compile(optimizer=configs.get('Model', 'optimizer'), 
                            loss=configs.get('Model', 'loss'), 
                            metrics=configs.get('Model', 'metrics', fallback=[]))
 
     @abstractmethod
-    def _build_model(self, configs):
+    def build(self, configs):
         pass
 
-    def _load_model(self, inplace=False):
+    def _load(self, inplace=False):
         logger.debug("Loading model from file")
         
         with open(os.path.join(self.dir, 'model.json'), 'r') as f:
@@ -118,7 +124,7 @@ class NeuralNetwork(Model):
             
             return model
 
-    def _save_model(self):
+    def _save(self):
         logger.debug("Saving model to file")
         
         # Serialize model to JSON
@@ -181,12 +187,12 @@ class NeuralNetwork(Model):
         result = self.model.fit(X[split:], y[split:], batch_size=self.batch, epochs=self.epochs, callbacks=self.callbacks, 
                                 validation_data=(X[:split], y[:split]), verbose=LOG_VERBOSE)
         
-        self._save_model()
+        self._save()
         return result
 
     def _parse_data(self, features, X=list(), y=list()):
         end = features.index[-1]
-        time = features.index[0] + self.time_prior
+        time = features.index[0] + self._resolutions[0].time_prior
         while time <= end:
             try:
                 inputs = self._parse_inputs(features, time)
@@ -199,28 +205,45 @@ class NeuralNetwork(Model):
             except ValueError:
                 logger.debug("Skipping %s", time)
                 
-            time += dt.timedelta(minutes=self.resolution)
+            time += dt.timedelta(minutes=self._resolutions[-1].minutes)
         
         return np.array(X), np.array(y)
 
-    @abstractmethod
     def _parse_inputs(self, features, time):
-        pass
+        inputs = self._extract_inputs(features, time)
+        return np.squeeze(inputs.values)
 
-    @abstractmethod
-    def _parse_target(self, features, time):
-        pass
-
-    @property
-    def time_prior(self):
-        return dt.timedelta(minutes=self.resolution*self.steps_prior)
-
-    @property
-    def time_horizon(self):
-        if self.steps_horizon is None:
-            return None
+    def _extract_inputs(self, features, time):
+        data = pd.DataFrame()
+        data.index.name = 'time'
+        for resolution in self._resolutions:
+            resolution_end = time - resolution.time_step
+            resolution_start = time - resolution.time_prior
+            resolution_data = features.loc[(resolution_start - resolution.time_step + dt.timedelta(seconds=1)):resolution_end, 
+                                           self.features['target'] + self.features['input']]
+            
+            data = resolution.resample(resolution_data).combine_first(data[:resolution_start])
         
-        return dt.timedelta(minutes=self.resolution*(self.steps_horizon-1))
+        if data.isnull().values.any():
+            raise ValueError("Input data incomplete for %s" % time)
+        
+        return data
+
+    def _parse_target(self, features, time):
+        #return np.squeeze(self._extract_target(features, time).values)
+        return float(self._extract_target(features, time))
+
+    def _extract_target(self, features, time):
+        # TODO: Implement horizon resolutions
+        resolution = self._resolutions[-1]
+        resolution_target = resolution.resample(features.loc[time - resolution.time_step + dt.timedelta(seconds=1): time, 
+                                                             self.features['target']])
+        
+        data = resolution_target.loc[time,:]
+        if data.isnull().values.any():
+            raise ValueError("Target data incomplete for %s" % time)
+        
+        return data
 
     def _parse_features(self, data):
         columns = self.features['target'] + self.features['input']
@@ -234,19 +257,18 @@ class NeuralNetwork(Model):
         solar.columns = ['solar_azimuth', 'solar_zenith', 'solar_elevation']
         
         data = data[np.intersect1d(data.columns, columns)]
-        data.loc[:, 'doy'] = data.index.dayofyear
+        data.loc[data.index, 'doy'] = data.index.dayofyear
         
-        features = pd.concat([data, solar], axis=1).resample('{}min'.format(self.resolution), closed='right').mean()
-        features.index += to_offset('{}min'.format(self.resolution))
-        
+        features = pd.concat([data, solar], axis=1)
         features = self._parse_horizon(features)
         features = self._parse_cyclic(features)
         
         return features
 
     def _parse_horizon(self, data):
-        if self.steps_horizon is not None:
-            data['horizon'] = (data.index - data.index[0]) / np.timedelta64(1, 'm') % (self.resolution*self.steps_horizon)
+        resolution = self._resolutions[0]
+        if resolution.steps_horizon is not None:
+            data['horizon'] = (data.index - data.index[0]) / np.timedelta64(1, 'm') % (resolution.minutes*resolution.steps_horizon)
         else:
             data['horizon'] = self.resolution*range(data.index)
         
@@ -259,90 +281,113 @@ class NeuralNetwork(Model):
         
         return data
 
-# class BasicModel(Model):
-# 
-#     def load(self, start, earliest, latest, interval):
-#         gen_pv = self.load_generation(earliest, latest, interval)
-#         cons_el = self.load_consumption_electrical(earliest, latest, interval)
-#         cons_th = self.load_consumption_thermal(earliest, latest, interval)
-#         data = pd.concat([gen_pv, cons_el, cons_th], axis=1)
-#         
-#         if len(data) > 1:
-#             data = self._correction(earliest, start, interval, data)
-#         
-#         return data
-# 
-# 
-#     def load_generation(self, start, end, interval):
-#         keys = [FORECAST_GENERATION_PV]
-#         
-#         # Get historic data of the last day and extrapolate it for the coming days
-#         end_day = start + dt.timedelta(days=1)
-#         if end_day > end:
-#             end_day = end
-#         
-#         data = self._weighted_mean(keys, start, end_day, interval, step=1)
-#         
-#         while data.index[-1] < end:
-#             tmp = data.copy()
-#             tmp.index = tmp.index + dt.timedelta(days=1)
-#             data = pd.concat([data, tmp[data.index[-1]+dt.timedelta(seconds=interval):end]], axis=0)
-#         
-#         return data
-# 
-# 
-#     def load_consumption_electrical(self, start, end, interval):
-#         keys = [FORECAST_CONSUMPTION_ELECTRICAL]
-#         data = self._weighted_mean(keys, start, end, interval, step=7)
-#         
-#         return data
-# 
-# 
-#     def load_consumption_thermal(self, start, end, interval):
-#         keys = [STORAGE_THERMAL_TEMPERATURE, HEAT_PUMP_THERMAL, COGENERATOR_THERMAL]
-#         data = self._weighted_mean(keys, start, end, interval, step=7)
-#         
-#         # Calculate thermal energy consumption from the storages temperature, minus known generation
-#         storage_th_delta = (data[STORAGE_THERMAL_TEMPERATURE] - data[STORAGE_THERMAL_TEMPERATURE].shift(1)).fillna(0)
-#         storage_th_loss = data[STORAGE_THERMAL_TEMPERATURE] - data[STORAGE_THERMAL_TEMPERATURE]*self.components.storage_thermal.loss(interval)
-#         data[FORECAST_CONSUMPTION_THERMAL] = - ((storage_th_delta - storage_th_loss)*self.components.storage_thermal.capacity() \
-#                                              - data[HEAT_PUMP_THERMAL] - data[COGENERATOR_THERMAL])
-#         
-#         return data.loc[:,[FORECAST_CONSUMPTION_THERMAL]]
-# 
-# 
-#     def _weighted_mean(self, keys, start, end, interval, step=1):
-#         historic = pd.DataFrame(columns=keys)
-#         h = 3
-#         
-#         # Create weighted consumption average of the three last timesteps
-#         for i in range(h):
-#             data = self.server.get(keys, start-dt.timedelta(days=1+i*step), end-dt.timedelta(days=1+i*step), interval)
-#             data.index = data.index + dt.timedelta(days=1+i*step)
-#             data = data[start:end]
-#             
-#             historic = historic.add(data.astype(float).multiply(h-i), fill_value=0)
-#         
-#         return historic/6
-# 
-# 
-#     def _correction(self, start, end, interval, data):
-#         keys = data.columns
-#         
-#         if end - start < dt.timedelta(seconds=2*interval):
-#             end = end - dt.timedelta(seconds=2*interval)
-#         
-#         result = self.server.get(keys, start, end, interval)
-#         data = result.combine_first(data)
-#         last = result.iloc[-1,:]
-#         
-#         offset = data.index.get_loc(end) - 1
-#         for i in range(len(keys)):
-#             key = keys[i]
-#             
-#             # TODO: calculate factor through e-(j/x)
-#             for j in range(1, 4):
-#                 data.iloc[j+offset, i] = (data.iloc[j+offset, i]*j/4 + last[key]*(1-j/4))/2
-#         
-#         return data
+
+class StackedLSTM(NeuralNetwork):
+
+    def build(self, configs):
+        steps = 0
+        for resolution in self._resolutions:
+            steps += resolution.steps_prior
+        
+        model = Sequential()
+        model.add(LSTM(int(configs['layers_hidden']), 
+                       input_shape=(steps, len(self.features['target'] + self.features['input'])), 
+                       activation=configs['activation']))
+        
+        for _ in range(int(configs['layers_lstm'])-1):
+            model.add(LSTM(int(configs['layers_hidden']), 
+                           activation=configs['activation']))
+        
+        neurons = int(configs['neurons'])
+        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+        model.add(Dense(len(self.features['target'])))
+        model.add(LeakyReLU(alpha=0.001))
+        
+        return model
+
+
+class ConvLSTM(NeuralNetwork):
+
+    def build(self, configs):
+        steps = 1
+        for resolution in self._resolutions:
+            steps += resolution.steps_prior
+        
+        model = Sequential()
+        model.add(Conv1D(int(configs['filter_size']), 
+                         int(configs['kernel_size']), 
+                         input_shape=(steps, len(self.features['target'] + self.features['input'])), 
+                         activation=configs['activation'],  
+                         dilation_rate=1, 
+                         padding='causal', 
+                         kernel_initializer='he_uniform'))
+        
+        for n in range(int(configs['layers_conv'])-1):
+            model.add(Conv1D(int(configs['filter_size']), 
+                             int(configs['kernel_size']), 
+                             activation=configs['activation'], 
+                             dilation_rate=2**(n+1), 
+                             padding='causal', 
+                             kernel_initializer='he_uniform'))
+        
+        model.add(MaxPooling1D(int(configs['pool_size'])))
+        model.add(LSTM(int(configs['layers_hidden']), activation=configs['activation']))
+        
+        neurons = int(configs['neurons'])
+        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+        model.add(Dense(len(self.features['target'])))
+        model.add(LeakyReLU(alpha=0.001))
+        
+        return model
+
+    def _extract_inputs(self, features, time):
+        resolution = self._resolutions[-1]
+        resolution_inputs = resolution.resample(features.loc[(time - resolution.time_step + dt.timedelta(seconds=1)):time, 
+                                                             self.features['input']])
+        
+        data = super()._extract_inputs(features, time)
+        data.loc[time] = np.append([np.NaN]*len(self.features['target']), resolution_inputs.values)
+        
+        # TODO: Replace interpolation with prediction of ANN
+        data.interpolate(method='linear', inplace=True)
+        #data.interpolate(method='akima', inplace=True)
+        #data.interpolate(method='nearest', fill_value='extrapolate', inplace=True)
+        
+        return data
+
+
+class Resolution:
+
+    def __init__(self, minutes, steps_prior=None, steps_horizon=None):
+        self.minutes = int(minutes)
+        self.steps_prior = int(steps_prior) if steps_prior else None
+        self.steps_horizon = int(steps_horizon) if steps_horizon else None
+
+    @property
+    def time_step(self):
+        return dt.timedelta(minutes=self.minutes)
+
+    @property
+    def time_prior(self):
+        if self.steps_prior is None:
+            return None
+        
+        return dt.timedelta(minutes=self.minutes*self.steps_prior)
+
+    @property
+    def time_horizon(self):
+        if self.steps_horizon is None:
+            return None
+        
+        return dt.timedelta(minutes=self.minutes*(self.steps_horizon-1))
+
+    def resample(self, features):
+        data = features.resample('{}min'.format(self.minutes), closed='right').mean()
+        data.index += to_offset('{}min'.format(self.minutes))
+        
+        return data
 

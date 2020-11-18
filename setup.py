@@ -15,7 +15,7 @@ except ImportError:
 
 here = path.abspath(path.dirname(__file__))
 info = {}
-with open(path.join("th_e_core", "_version.py")) as f: exec(f.read(), info)
+with open(path.join("th_e_fcst", "_version.py")) as f: exec(f.read(), info)
 
 VERSION = info['__version__']
 
@@ -32,7 +32,9 @@ MAINTAINER_EMAIL = 'steffen.friedriszik@isc-konstanz.de'
 URL = 'http://gitlab.isc-konstanz.de/systems/systems/th-e-fcst'
 
 INSTALL_REQUIRES = ['numpy',
-                    'pandas']
+                    'pandas',
+                    'pvlib',
+                    'th_e_core >= 0.1.5']
 
 SCRIPTS = ['bin/th-e-fcst']
 
