@@ -63,22 +63,17 @@ def main(args):
         
         # Do not evaluate horizon, if forecast is done in a daily or higher interval
         if settings.getint('General', 'interval') < 1440:
-            results_horizon1 = results[results['horizon'] == 1].assign(horizon=1)
-            results_horizon3 = results[results['horizon'] == 3].assign(horizon=3)
-            results_horizon6 = results[results['horizon'] == 6].assign(horizon=6)
-            results_horizon12 = results[results['horizon'] == 12].assign(horizon=12)
-            results_horizon24 = results[results['horizon'] == 24].assign(horizon=24)
-            results_horizons = pd.concat([results_horizon1, results_horizon3, results_horizon6, results_horizon12, results_horizon24])
+            results_horizon1 = _result_horizon(system, results, 1)
+            results_horizon3 = _result_horizon(system, results, 3)
+            results_horizon6 = _result_horizon(system, results, 6)
+            results_horizon12 = _result_horizon(system, results, 12)
+            results_horizon24 = _result_horizon(system, results, 24)
             
-            _result_describe(system, results_horizon1, results_horizon1.index.hour, name='horizon1')
-            _result_describe(system, results_horizon3, results_horizon3.index.hour, name='horizon3')
-            _result_describe(system, results_horizon6, results_horizon6.index.hour, name='horizon6')
-            _result_describe(system, results_horizon12, results_horizon12.index.hour, name='horizon12')
-            _result_describe(system, results_horizon24, results_horizon24.index.hour, name='horizon24')
-            _result_boxplot(system, results_horizons, results_horizons['horizon'], name='horizons', label='Hours', hue='horizon', colors=5)
+            #results_horizons = pd.concat([results_horizon1, results_horizon3, results_horizon6, results_horizon12, results_horizon24])
+            results_horizons = pd.concat([results_horizon1, results_horizon6, results_horizon24])
+            _result_boxplot(system, results_horizons, results_horizons.index.hour, name='horizons', label='Hours', hue='horizon', colors=5)
         
-        _result_describe(system, results, results.index.hour, name='hours')
-        _result_boxplot(system, results, results.index.hour, name='hours', label='Hours')
+        _result_hours(system, results, name='hours')
         
         interval = settings.getint('General', 'interval')/60
         results = results[results['horizon'] <= interval].sort_index()
@@ -176,13 +171,24 @@ def _simulate(settings, system, features, **kwargs):
     
     return results
 
-def _result_describe(system, results, index, name=None):
+def _result_horizon(system, results, hour):
+    results_dir = os.path.join('results', 'horizons')
+    results_horizon = results[results['horizon'] == hour].assign(horizon=hour)
+    _result_hours(system, results_horizon, name='horizon{}'.format(hour), dir=results_dir)
+    
+    return results_horizon
+
+def _result_hours(system, results, dir='results', name=None):
+    _result_describe(system, results, results.index.hour, dir=dir, name=name)
+    _result_boxplot(system, results, results.index.hour, dir=dir, name=name, label='Hours')
+
+def _result_describe(system, results, index, name=None, dir='results'):
     for error in [c for c in results.columns if c.endswith('_err')]:
         result = results[error]
         median = result.groupby([index]).median()
         median.name = 'median'
         desc = pd.concat([median, result.groupby([index]).describe()], axis=1)
-        _result_write(system, desc, error.split('_err')[0], 'results', name)
+        _result_write(system, desc, error.split('_err')[0], dir, name)
 
 def _result_write(system, results, results_name='results', results_dir='', postfix=None):
     system_dir = system._configs['General']['data_dir']
@@ -203,7 +209,7 @@ def _result_write(system, results, results_name='results', results_dir='', postf
                    decimal=database.decimal, 
                    encoding='utf-8')
 
-def _result_boxplot(system, results, index, label='', name=None, colors=None, **kwargs):
+def _result_boxplot(system, results, index, label='', name=None, colors=None, dir='results', **kwargs):
     try:
         import seaborn as sns
         
@@ -212,7 +218,7 @@ def _result_boxplot(system, results, index, label='', name=None, colors=None, **
             if name is not None:
                 plot_name += '_{}'.format(name)
             
-            plot_file = os.path.join(system._configs['General']['data_dir'], 'results', plot_name+'.png')
+            plot_file = os.path.join(system._configs['General']['data_dir'], dir, plot_name+'.png')
             
             plt.figure()
             plot_fliers = dict(marker='o', markersize=3, markerfacecolor='none', markeredgecolor='lightgrey')

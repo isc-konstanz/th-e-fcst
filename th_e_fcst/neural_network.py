@@ -89,7 +89,11 @@ class NeuralNetwork(Model):
         
         self.features = {}
         for (key, value) in configs.items('Features'):
-            self.features[key] = json.loads(value)
+            try:
+                self.features[key] = json.loads(value)
+                
+            except json.decoder.JSONDecodeError:
+                pass
 
     def _build(self, context, configs, **kwargs):
         super()._build(context, configs, **kwargs)
@@ -257,7 +261,8 @@ class NeuralNetwork(Model):
         solar.columns = ['solar_azimuth', 'solar_zenith', 'solar_elevation']
         
         data = data[np.intersect1d(data.columns, columns)]
-        data.loc[data.index, 'doy'] = data.index.dayofyear
+        data['day_of_year'] = data.index.dayofyear
+        data['day_of_week'] = data.index.dayofweek
         
         features = pd.concat([data, solar], axis=1)
         features = self._parse_horizon(features)
@@ -282,36 +287,19 @@ class NeuralNetwork(Model):
         return data
 
 
-class StackedLSTM(NeuralNetwork):
-
-    def build(self, configs):
-        steps = 0
-        for resolution in self._resolutions:
-            steps += resolution.steps_prior
-        
-        model = Sequential()
-        model.add(LSTM(int(configs['layers_hidden']), 
-                       input_shape=(steps, len(self.features['target'] + self.features['input'])), 
-                       activation=configs['activation']))
-        
-        for _ in range(int(configs['layers_lstm'])-1):
-            model.add(LSTM(int(configs['layers_hidden']), 
-                           activation=configs['activation']))
-        
-        neurons = int(configs['neurons'])
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
-        model.add(Dense(len(self.features['target'])))
-        model.add(LeakyReLU(alpha=0.001))
-        
-        return model
-
-
 class ConvLSTM(NeuralNetwork):
 
+    def _configure(self, configs, **kwargs):
+        super()._configure(configs, **kwargs)
+        self._estimate = kwargs.get('estimate') if 'estimate' in kwargs else \
+                         configs.get('Features', 'estimate', fallback='true').lower == 'true'
+
     def build(self, configs):
-        steps = 1
+        if not self._estimate:
+            steps = 0
+        else:
+            steps = 1
+        
         for resolution in self._resolutions:
             steps += resolution.steps_prior
         
@@ -319,18 +307,18 @@ class ConvLSTM(NeuralNetwork):
         model.add(Conv1D(int(configs['filter_size']), 
                          int(configs['kernel_size']), 
                          input_shape=(steps, len(self.features['target'] + self.features['input'])), 
-                         activation=configs['activation'],  
+                         activation=configs['activation'], 
+                         kernel_initializer='he_uniform',  
                          dilation_rate=1, 
-                         padding='causal', 
-                         kernel_initializer='he_uniform'))
+                         padding='causal'))
         
         for n in range(int(configs['layers_conv'])-1):
             model.add(Conv1D(int(configs['filter_size']), 
                              int(configs['kernel_size']), 
                              activation=configs['activation'], 
+                             kernel_initializer='he_uniform', 
                              dilation_rate=2**(n+1), 
-                             padding='causal', 
-                             kernel_initializer='he_uniform'))
+                             padding='causal'))
         
         model.add(MaxPooling1D(int(configs['pool_size'])))
         model.add(LSTM(int(configs['layers_hidden']), activation=configs['activation']))
@@ -345,19 +333,64 @@ class ConvLSTM(NeuralNetwork):
         return model
 
     def _extract_inputs(self, features, time):
-        resolution = self._resolutions[-1]
-        resolution_inputs = resolution.resample(features.loc[(time - resolution.time_step + dt.timedelta(seconds=1)):time, 
-                                                             self.features['input']])
+        inputs = super()._extract_inputs(features, time)
         
-        data = super()._extract_inputs(features, time)
-        data.loc[time] = np.append([np.NaN]*len(self.features['target']), resolution_inputs.values)
+        if self._estimate:
+            resolution = self._resolutions[-1]
+            resolution_inputs = resolution.resample(features.loc[(time - resolution.time_step + dt.timedelta(seconds=1)):time, 
+                                                                 self.features['input']])
+            
+            inputs.loc[time] = np.append([np.NaN]*len(self.features['target']), resolution_inputs.values)
+            
+            # TODO: Replace interpolation with prediction of ANN
+            inputs.interpolate(method='linear', inplace=True)
+            #inputs.interpolate(method='akima', inplace=True)
+            #inputs.interpolate(method='nearest', fill_value='extrapolate', inplace=True)
         
-        # TODO: Replace interpolation with prediction of ANN
-        data.interpolate(method='linear', inplace=True)
-        #data.interpolate(method='akima', inplace=True)
-        #data.interpolate(method='nearest', fill_value='extrapolate', inplace=True)
+        return inputs
+
+
+class StackedLSTM(NeuralNetwork):
+
+    def build(self, configs):
+        steps = 0
+        for resolution in self._resolutions:
+            steps += resolution.steps_prior
         
-        return data
+        model = Sequential()
+        
+        hidden = int(configs['layers_hidden'])
+        layers = int(configs['layers_lstm'])
+        if layers > 1:
+            model.add(LSTM(hidden, 
+                           input_shape=(steps, len(self.features['target'] + self.features['input'])), 
+                           activation=configs['activation'], 
+                           kernel_initializer='he_uniform', 
+                           return_sequences=True))
+            
+            for _ in range(1, layers-1):
+                model.add(LSTM(hidden, 
+                           activation=configs['activation'], 
+                           kernel_initializer='he_uniform', 
+                           return_sequences=True))
+            
+            model.add(LSTM(hidden, 
+                       activation=configs['activation'], 
+                       kernel_initializer='he_uniform'))
+        else:
+            model.add(LSTM(hidden, 
+                           input_shape=(steps, len(self.features['target'] + self.features['input'])), 
+                           activation=configs['activation'], 
+                           kernel_initializer='he_uniform'))
+        
+        neurons = int(configs['neurons'])
+        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+        model.add(Dense(len(self.features['target'])))
+        model.add(LeakyReLU(alpha=0.001))
+        
+        return model
 
 
 class Resolution:
