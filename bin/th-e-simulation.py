@@ -80,7 +80,7 @@ def main(args):
         del results['horizon']
         _result_write(system, results)
         
-        logger.info('Finished TH-E Simulation')
+    logger.info('Finished TH-E Simulation')
 
 def _simulate(settings, system, features, **kwargs):
     forecast = system.forecast._model
@@ -426,14 +426,18 @@ def _prepare_system(system):
         # TODO: Make COP more sophisticated
         # Maybe try to differentiate between heating and warm water
         cop = 3.5
-        data['th_power'] = _process_power(data['heat_pump_energy'])*cop #, filter=False)
-        data['th_power'] = data['th_power'].iloc[::-1].rolling(window=30).mean().iloc[::-1].ffill()
+        data['th_power'] = _process_power(data['heat_pump_energy']) * cop  # , filter=False)
+        data_back = data['th_power'].iloc[::-1]
+        data_back = data_back.rolling(window=200).mean()  # offset and widening of thermal power from heat pump power
+        data_front = data_back.rolling(window=50, win_type="gaussian", center=True).mean(std=15).iloc[::-1]  # smoothen
+        data['th_power'] = data_front.rolling(window=150).mean().ffill().bfill()  # reduce offset, smooth out
         
         data['th_energy'] = 0
         for i in range(1, len(data.index)):
             index = data.index[i]
             hours = (index - data.index[i-1])/np.timedelta64(1, 'h')
-            data.loc[index, 'th_energy'] += data['th_energy'][i-1]/1000*hours
+            data.loc[index, 'th_energy'] = data['th_energy'][i - 1] \
+                                           + data['th_power'][i] / 1000 * hours
     
     data = data[columns_power + columns_energy]
     time = data.index[0]
