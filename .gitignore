@@ -84,6 +84,9 @@ ENV/
 # Rope project settings
 .ropeproject
 
+# PyCharm project settings
+.idea/*
+
 # Eclipse project files
 *.classpath
 *.project
