@@ -75,7 +75,7 @@ class NeuralNetwork(Model):
     def _configure(self, configs, **kwargs):
         super()._configure(configs, **kwargs)
         
-        self.dir = os.path.join(configs['General']['lib_dir'], 'model')
+        self.dir = os.path.join(configs['General']['data_dir'], 'model')
         
         self.epochs = configs.getint('General', 'epochs')
         self.batch = configs.getint('General', 'batch')
@@ -99,7 +99,9 @@ class NeuralNetwork(Model):
         super()._build(context, configs, **kwargs)
         
         self.history = History()
-        self.callbacks = [self.history, EarlyStopping(patience=32, restore_best_weights=True)]
+        self.callbacks = [self.history,
+                          TensorBoard(log_dir=self.dir, histogram_freq=1),
+                          EarlyStopping(patience=32, restore_best_weights=True)]
         
         #TODO: implement date based backups and naming scheme
         if self.exists():
@@ -186,10 +188,9 @@ class NeuralNetwork(Model):
     def _train(self, features):
         X, y = self._parse_data(features)
         logger.debug("Built input of %s, %s", X.shape, y.shape)
-        
+
         split = int(len(y) / 10.0)
-        result = self.model.fit(X[split:], y[split:], batch_size=self.batch, epochs=self.epochs, callbacks=self.callbacks, 
-                                validation_data=(X[:split], y[:split]), verbose=LOG_VERBOSE)
+        result = self.model.fit(X[split:], y[split:], batch_size=self.batch, epochs=self.epochs, callbacks=self.callbacks)
         
         self._save()
         return result

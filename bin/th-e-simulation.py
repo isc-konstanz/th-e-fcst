@@ -483,7 +483,7 @@ def _get_parser(root_dir):
                          action='version',
                          version='%(prog)s {version}'.format(version=__version__))
     
-    parser.add_argument('-r','--root-directory',
+    parser.add_argument('-r', '--root-directory',
                         dest='root_dir',
                         help="directory where the package and related libraries are located",
                         default=root_dir,
