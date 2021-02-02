@@ -174,8 +174,8 @@ class NeuralNetwork(Model):
             X = X.reshape(1, X.shape[0], X.shape[1])
             
         result = float(self.model.predict(X, verbose=LOG_VERBOSE))
-        if result < 1e-3:
-            result = 0
+        #if result < 1e-3:
+        #    result = 0
         
         return result
 
@@ -267,8 +267,89 @@ class NeuralNetwork(Model):
         features = pd.concat([data, solar], axis=1)
         features = self._parse_horizon(features)
         features = self._parse_cyclic(features)
-        
+
+        self.avg = {}
+        self.std = {}
+
+    #ToDo replace with function
+        self.data_distributions(features, scale=False)
+
+        features = self.rescale(features, scale=True)
+
+        self.data_distributions(features, scale=True)
         return features
+
+    def rescale(self, data, scale=True): #ToDo generalize to multiple scaling trafos
+        assert isinstance(scale, bool)
+        if scale == False: #unscale
+            for column in data.columns:
+                match = 0 #safeguard against multimatches and thus multiscale
+                for key in self.features['scaling']:
+
+                    if column.startswith(key) and match == 0:
+                        match += 1
+                        data[column] = data[column] * self.std[key] + self.avg[key]
+
+                    elif column.startswith(key) and match != 0:
+                        raise Exception('MultiMatch:{} matched with multiple keys from scaling'.format(column))
+
+                    else:
+                        continue
+
+        elif scale == True: #scale
+            for column in data.columns:
+                match = 0
+                for key in self.features['scaling']:
+
+                    if column.startswith(key) and match == 0:
+                        self.avg[key] = data[key].mean()
+                        self.std[key] = data[key].std()
+                        data[key] = (data[key] - self.avg[key]) / self.std[key]
+
+                    elif column.startswith(key) and match != 0:
+                        raise Exception('MultiMatch:{} matched with multiple keys from scaling'.format(column))
+                    else:
+                        continue
+
+        return data
+
+    def data_distributions(self, features, scale=False): #ToDo change path to generalize to multiple scaling trafos
+        assert isinstance(scale, bool)
+        import matplotlib.pyplot as plt
+        bin_num = 100 #desired number of bins in each plot
+        for feature in features.columns: #create 100 equal space bin vals per feat.
+            bins = []
+            domain = features[feature].max()-features[feature].min()
+            bin_step = domain/bin_num
+            counter = features[feature].min()
+            for i in range(bin_num):
+                bins.append(counter)
+                counter = counter + bin_step
+            bins.append(counter) #for the last value of counter
+
+            plt_info = plt.hist(features[feature], bins=bins)
+            bin_values, bins = plt_info[0], plt_info[1]
+            count_range = max(bin_values)-min(bin_values)
+            sorted_values = list(bin_values)
+            sorted_values.sort(reverse=True)
+
+            for i in range(len(sorted_values)-1): #scale plots by step through sorted bins
+
+                if abs(sorted_values[i]-sorted_values[i+1])/count_range < 0.80:
+                    continue
+                else:
+                    plt.ylim([0, sorted_values[i+1]+10])
+                    break
+
+            if scale == False: #save histogram to appropriate folder.
+                path = os.path.join(self.dir, 'distributions/raw/{}.png'.format(feature))
+                plt.savefig(path)
+                plt.clf()
+
+            if scale == True:
+                path = os.path.join(self.dir, 'distributions/scale/{}.png'.format(feature))
+                plt.savefig(path)
+                plt.clf()
 
     def _parse_horizon(self, data):
         resolution = self._resolutions[0]
@@ -292,7 +373,7 @@ class ConvLSTM(NeuralNetwork):
     def _configure(self, configs, **kwargs):
         super()._configure(configs, **kwargs)
         self._estimate = kwargs.get('estimate') if 'estimate' in kwargs else \
-                         configs.get('Features', 'estimate', fallback='true').lower == 'true'
+                         configs.get('Features', 'estimate', fallback='true').lower() == 'true'
 
     def build(self, configs):
         if not self._estimate:

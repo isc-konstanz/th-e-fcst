@@ -153,6 +153,7 @@ def _simulate(settings, system, features, **kwargs):
             result = resolution_data.loc[step_index[0]:step_index[-1], target]
             result = pd.concat([result[target], pd.DataFrame(step_result, result.index, 
                                                      columns=[t + '_est' for t in target])], axis=1)
+            result = system.forecast._model.rescale(result, scale=False)
             
             for target in forecast.features['target']:
                 result[target + '_err'] = result[target + '_est'] - result[target]
