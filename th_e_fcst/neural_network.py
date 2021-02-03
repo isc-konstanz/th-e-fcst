@@ -17,7 +17,7 @@ import datetime as dt
 from configparser import ConfigParser
 from pandas.tseries.frequencies import to_offset
 from pvlib.solarposition import get_solarposition
-from keras.callbacks import History, EarlyStopping
+from keras.callbacks import History, EarlyStopping, TensorBoard
 from keras.models import Sequential
 from keras.layers import LSTM, Dense, LeakyReLU
 from keras.layers.convolutional import Conv1D, MaxPooling1D
