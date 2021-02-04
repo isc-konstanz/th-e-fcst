@@ -75,7 +75,7 @@ class NeuralNetwork(Model):
     def _configure(self, configs, **kwargs):
         super()._configure(configs, **kwargs)
         
-        self.dir = os.path.join(configs['General']['lib_dir'], 'model')
+        self.dir = os.path.join(configs['General']['data_dir'], 'model')
         
         self.epochs = configs.getint('General', 'epochs')
         self.batch = configs.getint('General', 'batch')
@@ -268,9 +268,6 @@ class NeuralNetwork(Model):
         features = self._parse_horizon(features)
         features = self._parse_cyclic(features)
 
-        self.avg = {}
-        self.std = {}
-
     #ToDo replace with function
         self.data_distributions(features, scale=False)
 
@@ -279,38 +276,36 @@ class NeuralNetwork(Model):
         self.data_distributions(features, scale=True)
         return features
 
-    def rescale(self, data, scale=True): #ToDo generalize to multiple scaling trafos
+    def gen_trafos(self, data):
+        self.trafos = {}
+        for item in self.features['scaling']:
+            mean = data[item[0]].mean()
+            std = data[item[0]].std()
+
+            def trafo(x, mean=mean, std=std): # force early binding
+                return (x - mean) / std
+
+            def inv_trafo(x, mean=mean, std=std):
+                return x * std + mean
+
+            trafo_tuple = (trafo, inv_trafo)
+            self.trafos[trafo_tuple] = item
+
+    def rescale(self, data, scale=True):
         assert isinstance(scale, bool)
-        if scale == False: #unscale
-            for column in data.columns:
-                match = 0 #safeguard against multimatches and thus multiscale
-                for key in self.features['scaling']:
 
-                    if column.startswith(key) and match == 0:
-                        match += 1
-                        data[column] = data[column] * self.std[key] + self.avg[key]
+        if scale == True:
+            self.gen_trafos(data)  # retrieve trafos for features
+            for trafo_tuple, item in self.trafos.items():
+                for column in item:
+                    if column in data.columns:
+                        data[column] = trafo_tuple[0](data[column])
 
-                    elif column.startswith(key) and match != 0:
-                        raise Exception('MultiMatch:{} matched with multiple keys from scaling'.format(column))
-
-                    else:
-                        continue
-
-        elif scale == True: #scale
-            for column in data.columns:
-                match = 0
-                for key in self.features['scaling']:
-
-                    if column.startswith(key) and match == 0:
-                        self.avg[key] = data[key].mean()
-                        self.std[key] = data[key].std()
-                        data[key] = (data[key] - self.avg[key]) / self.std[key]
-
-                    elif column.startswith(key) and match != 0:
-                        raise Exception('MultiMatch:{} matched with multiple keys from scaling'.format(column))
-                    else:
-                        continue
-
+        if scale == False:
+            for trafo_tuple, item in self.trafos.items():
+                for column in item:
+                    if column in data.columns:
+                        data[column] = trafo_tuple[1](data[column])
         return data
 
     def data_distributions(self, features, scale=False): #ToDo change path to generalize to multiple scaling trafos
@@ -342,12 +337,12 @@ class NeuralNetwork(Model):
                     break
 
             if scale == False: #save histogram to appropriate folder.
-                path = os.path.join(self.dir, 'distributions/raw/{}.png'.format(feature))
+                path = os.path.join(self.dir, '../distributions/raw/{}.png'.format(feature))
                 plt.savefig(path)
                 plt.clf()
 
             if scale == True:
-                path = os.path.join(self.dir, 'distributions/scale/{}.png'.format(feature))
+                path = os.path.join(self.dir, '../distributions/scaled/{}.png'.format(feature))
                 plt.savefig(path)
                 plt.clf()
 
