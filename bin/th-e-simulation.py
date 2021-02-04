@@ -31,7 +31,8 @@ from configparser import ConfigParser
 def main(args):
     from th_e_fcst import System
     
-    logger.info('Starting TH-E Simulation')
+    logger.info("Starting TH-E Simulation")
+    start_simulation = dt.datetime.now()
     
     settings_file = os.path.join(args.config_dir, 'settings.cfg')
     if not os.path.isfile(settings_file):
@@ -52,15 +53,28 @@ def main(args):
         _prepare_system(system)
         
         if not system.forecast._model.exists():
+            logging.info("Beginning network training")
+            start_training = dt.datetime.now()
             system.forecast._model.train(system.forecast._get_history(_get_time(settings['Training']['start']), 
                                                                       _get_time(settings['Training']['end']) \
                                                                       +dt.timedelta(hours=23, minutes=59)))
-        
+            end_training = dt.datetime.now()
+            logging.info("Network training complete")
+            train_time = end_training - start_training
+            logging.info("Network training lasted: {}".format(train_time))
+
         data = system._database.get(start, end)
         weather = system.forecast._weather._database.get(start, end)
         features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
+
+        logging.info("Beginning network predictions")
+        start_prediction = dt.datetime.now()
         results = _simulate(settings, system, features)
-        
+        end_prediction = dt.datetime.now()
+        pred_time = end_prediction - start_prediction
+        logging.info("Network predictions complete")
+        logging.info('Network prediction lasted: {}'.format(pred_time))
+
         # Do not evaluate horizon, if forecast is done in a daily or higher interval
         if settings.getint('General', 'interval') < 1440:
             results_horizon1 = _result_horizon(system, results, 1)
@@ -79,8 +93,11 @@ def main(args):
         results = results[results['horizon'] <= interval].sort_index()
         del results['horizon']
         _result_write(system, results)
-        
-    logger.info('Finished TH-E Simulation')
+
+    end_simulation = dt.datetime.now()
+    logger.info("Finished TH-E Simulation")
+    logger.info("TH-E Simulation lasted: {}".format(end_simulation-start_simulation))
+    sim_time = end_simulation-start_simulation
 
 def _simulate(settings, system, features, **kwargs):
     forecast = system.forecast._model

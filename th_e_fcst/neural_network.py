@@ -293,7 +293,7 @@ class ConvLSTM(NeuralNetwork):
     def _configure(self, configs, **kwargs):
         super()._configure(configs, **kwargs)
         self._estimate = kwargs.get('estimate') if 'estimate' in kwargs else \
-                         configs.get('Features', 'estimate', fallback='true').lower == 'true'
+                         configs.get('Features', 'estimate', fallback='true').lower() == 'true'
 
     def build(self, configs):
         if not self._estimate:
