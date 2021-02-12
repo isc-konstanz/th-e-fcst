@@ -176,8 +176,8 @@ class NeuralNetwork(Model):
             X = X.reshape(1, X.shape[0], X.shape[1])
             
         result = float(self.model.predict(X, verbose=LOG_VERBOSE))
-        if result < 1e-3:
-            result = 0
+        #if result < 1e-3:
+        #    result = 0
         
         return result
 
@@ -268,8 +268,84 @@ class NeuralNetwork(Model):
         features = pd.concat([data, solar], axis=1)
         features = self._parse_horizon(features)
         features = self._parse_cyclic(features)
-        
+
+    #ToDo replace with function
+        self.data_distributions(features, scale=False)
+
+        features = self.rescale(features, scale=True)
+
+        self.data_distributions(features, scale=True)
         return features
+
+    def gen_trafos(self, data):
+        self.trafos = {}
+        for item in self.features['scaling']:
+            mean = data[item[0]].mean()
+            std = data[item[0]].std()
+
+            def trafo(x, mean=mean, std=std): # force early binding
+                return (x - mean) / std
+
+            def inv_trafo(x, mean=mean, std=std):
+                return x * std + mean
+
+            trafo_tuple = (trafo, inv_trafo)
+            self.trafos[trafo_tuple] = item
+
+    def rescale(self, data, scale=True):
+        assert isinstance(scale, bool)
+
+        if scale == True:
+            self.gen_trafos(data)  # retrieve trafos for features
+            for trafo_tuple, item in self.trafos.items():
+                for column in item:
+                    if column in data.columns:
+                        data[column] = trafo_tuple[0](data[column])
+
+        if scale == False:
+            for trafo_tuple, item in self.trafos.items():
+                for column in item:
+                    if column in data.columns:
+                        data[column] = trafo_tuple[1](data[column])
+        return data
+
+    def data_distributions(self, features, scale=False): #ToDo change path to generalize to multiple scaling trafos
+        assert isinstance(scale, bool)
+        import matplotlib.pyplot as plt
+        bin_num = 100 #desired number of bins in each plot
+        for feature in features.columns: #create 100 equal space bin vals per feat.
+            bins = []
+            domain = features[feature].max()-features[feature].min()
+            bin_step = domain/bin_num
+            counter = features[feature].min()
+            for i in range(bin_num):
+                bins.append(counter)
+                counter = counter + bin_step
+            bins.append(counter) #for the last value of counter
+
+            plt_info = plt.hist(features[feature], bins=bins)
+            bin_values, bins = plt_info[0], plt_info[1]
+            count_range = max(bin_values)-min(bin_values)
+            sorted_values = list(bin_values)
+            sorted_values.sort(reverse=True)
+
+            for i in range(len(sorted_values)-1): #scale plots by step through sorted bins
+
+                if abs(sorted_values[i]-sorted_values[i+1])/count_range < 0.80:
+                    continue
+                else:
+                    plt.ylim([0, sorted_values[i+1]+10])
+                    break
+
+            if scale == False: #save histogram to appropriate folder.
+                path = os.path.join(self.dir, '../distributions/raw/{}.png'.format(feature))
+                plt.savefig(path)
+                plt.clf()
+
+            if scale == True:
+                path = os.path.join(self.dir, '../distributions/scaled/{}.png'.format(feature))
+                plt.savefig(path)
+                plt.clf()
 
     def _parse_horizon(self, data):
         resolution = self._resolutions[0]
