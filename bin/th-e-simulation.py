@@ -53,13 +53,13 @@ def main(args):
         _prepare_system(system)
         
         if not system.forecast._model.exists():
-            logging.info("Beginning network training")
+            logging.info("Beginning network training of model {}".format(system.id))
             start_training = dt.datetime.now()
             system.forecast._model.train(system.forecast._get_history(_get_time(settings['Training']['start']), 
                                                                       _get_time(settings['Training']['end']) \
                                                                       +dt.timedelta(hours=23, minutes=59)))
             end_training = dt.datetime.now()
-            logging.info("Network training complete")
+            logging.info("Network training of model {} complete".format(system.id))
             train_time = end_training - start_training
             logging.info("Network training lasted: {}".format(train_time))
 
@@ -67,12 +67,12 @@ def main(args):
         weather = system.forecast._weather._database.get(start, end)
         features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
 
-        logging.info("Beginning network predictions")
+        logging.info("Beginning network predictions of model {}".format(system.id))
         start_prediction = dt.datetime.now()
         results = _simulate(settings, system, features)
         end_prediction = dt.datetime.now()
         pred_time = end_prediction - start_prediction
-        logging.info("Network predictions complete")
+        logging.info("Network predictions of model {} complete".format(system.id))
         logging.info('Network prediction lasted: {}'.format(pred_time))
 
         # Do not evaluate horizon, if forecast is done in a daily or higher interval
@@ -108,9 +108,9 @@ def main(args):
         results = results[results['horizon'] <= interval].sort_index()
         del results['horizon']
         _result_write(system, results)
-        _result_write(system, mae)
-        _result_write(system, mse)
-        _result_write(system, times)
+        _result_write(system, mae, results_name='mae', results_dir='results')
+        _result_write(system, mse, results_name='mse', results_dir='results')
+        _result_write(system, times, results_name='times', results_dir='results')
 
     _result_comparison(systems)
 

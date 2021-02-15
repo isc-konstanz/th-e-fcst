@@ -22,6 +22,7 @@ from keras.models import Sequential
 from keras.layers import LSTM, Dense, LeakyReLU
 from keras.layers.convolutional import Conv1D, MaxPooling1D
 from keras.models import model_from_json
+from tensorflow.summary import create_file_writer, scalar
 from th_e_core import Model
 from abc import abstractmethod
 
@@ -190,8 +191,16 @@ class NeuralNetwork(Model):
         logger.debug("Built input of %s, %s", X.shape, y.shape)
 
         split = int(len(y) / 10.0)
-        result = self.model.fit(X[split:], y[split:], batch_size=self.batch, epochs=self.epochs, callbacks=self.callbacks)
-        
+        result = self.model.fit(X[split:], y[split:], batch_size=self.batch, epochs=self.epochs, callbacks=self.callbacks,
+                                validation_data=(X[:split], y[:split]), verbose=LOG_VERBOSE)
+
+        # write normed loss to tensorboard
+        train_summary_writer = create_file_writer(os.path.join(self.dir, 'custom_metric'))
+        norm_loss = result.history['loss']/features['pv_power'].max()
+        for epoch in range(len(result.history['loss'])):
+            with train_summary_writer.as_default():
+                scalar('norm_loss', norm_loss[epoch], step=epoch)
+
         self._save()
         return result
 
@@ -269,7 +278,6 @@ class NeuralNetwork(Model):
         features = self._parse_horizon(features)
         features = self._parse_cyclic(features)
 
-    #ToDo replace with function
         self.data_distributions(features, scale=False)
 
         features = self.rescale(features, scale=True)
