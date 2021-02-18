@@ -105,5 +105,6 @@ conf/*
 !conf/*.default.cfg
 
 # Generated output and optional input
+queue
 data
 lib

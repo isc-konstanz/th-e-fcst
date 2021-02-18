@@ -19,7 +19,7 @@ from pandas.tseries.frequencies import to_offset
 from pvlib.solarposition import get_solarposition
 from keras.callbacks import History, EarlyStopping, TensorBoard
 from keras.models import Sequential
-from keras.layers import LSTM, Dense, LeakyReLU
+from keras.layers import LSTM, Dense, LeakyReLU, Flatten
 from keras.layers.convolutional import Conv1D, MaxPooling1D
 from keras.models import model_from_json
 from tensorflow.summary import create_file_writer, scalar
@@ -55,12 +55,12 @@ class NeuralNetwork(Model):
         configs.set('General', 'config_dir', forecast_configs.get('General', 'config_dir'))
         configs.set('General', 'config_file', forecast_configs.get('General', 'config_file'))
         
-        if forecast_configs.has_section(cls.__name__):
-            for key, value in forecast_configs.items(cls.__name__):
+        if forecast_configs.has_section('NeuralNetwork'):
+            for key, value in forecast_configs.items('NeuralNetwork'):
                 configs.set('General', key, value)
         
         for section in forecast_configs.sections():
-            if (section.startswith(tuple(NeuralNetwork.SECTIONS))):
+            if section.startswith(tuple(NeuralNetwork.SECTIONS)):
                 if not configs.has_section(section):
                     configs.add_section(section)
                 for key, value in forecast_configs.items(section):
@@ -191,8 +191,9 @@ class NeuralNetwork(Model):
         logger.debug("Built input of %s, %s", X.shape, y.shape)
 
         split = int(len(y) / 10.0)
-        result = self.model.fit(X[split:], y[split:], batch_size=self.batch, epochs=self.epochs, callbacks=self.callbacks,
-                                validation_data=(X[:split], y[:split]), verbose=LOG_VERBOSE)
+        result = self.model.fit(X[split:], y[split:], batch_size=self.batch, epochs=self.epochs,
+                                validation_data=(X[:split], y[:split]), callbacks=self.callbacks,
+                                verbose=LOG_VERBOSE)
 
         # write normed loss to tensorboard
         train_summary_writer = create_file_writer(os.path.join(self.dir, 'custom_metric'))
@@ -433,6 +434,58 @@ class ConvLSTM(NeuralNetwork):
             #inputs.interpolate(method='nearest', fill_value='extrapolate', inplace=True)
         
         return inputs
+
+class MultiLayerPerceptron(NeuralNetwork):
+
+    def _configure(self, configs, **kwargs):
+        super()._configure(configs, **kwargs)
+        self._estimate = kwargs.get('estimate') if 'estimate' in kwargs else \
+                         configs.get('Features', 'estimate', fallback='true').lower() == 'true'
+
+    def _extract_inputs(self, features, time):
+        inputs = super()._extract_inputs(features, time)
+
+        if self._estimate:
+            resolution = self._resolutions[-1]
+            resolution_inputs = resolution.resample(
+                features.loc[(time - resolution.time_step + dt.timedelta(seconds=1)):time,
+                self.features['input']])
+
+            inputs.loc[time] = np.append([np.NaN] * len(self.features['target']), resolution_inputs.values)
+
+            # TODO: Replace interpolation with prediction of ANN
+            inputs.interpolate(method='linear', inplace=True)
+            # inputs.interpolate(method='akima', inplace=True)
+            # inputs.interpolate(method='nearest', fill_value='extrapolate', inplace=True)
+
+        return inputs
+
+    def build(self, configs):
+        if not self._estimate:
+            steps = 0
+        else:
+            steps = 1
+
+        for resolution in self._resolutions:
+            steps += resolution.steps_prior
+
+        model = Sequential()
+        num_channels = len(self.features['target'] + self.features['input'])
+        units = steps*num_channels
+        model.add(Flatten(input_shape=(steps, num_channels)))
+        model.add(Dense(units, activation=configs['activation'],
+                        kernel_initializer='he_uniform'))
+        model.add(Dense(round(units/5)*4, activation=configs['activation'],
+                        kernel_initializer='he_uniform'))
+        model.add(Dense(round(units/5)*2, activation=configs['activation'],
+                        kernel_initializer='he_uniform'))
+        model.add(Dense(round(units/5)*1, activation=configs['activation'],
+                        kernel_initializer='he_uniform'))
+        model.add(Dense(len(self.features['target']), activation=configs['activation'],
+                        kernel_initializer='he_uniform'))
+        model.add(LeakyReLU(alpha=0.001))
+
+        return model
 
 
 class StackedLSTM(NeuralNetwork):
