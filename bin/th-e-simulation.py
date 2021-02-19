@@ -32,7 +32,6 @@ def main(args):
     from th_e_fcst import System
     
     logger.info("Starting TH-E Simulation")
-    start_simulation = dt.datetime.now()
     
     settings_file = os.path.join(args.config_dir, 'settings.cfg')
     if not os.path.isfile(settings_file):
@@ -49,6 +48,8 @@ def main(args):
     
     systems = System.read(**kwargs)
     for system in systems:
+        logger.info('Starting TH-E-Simulation of model {}'.format(system.id))
+        start_simulation = dt.datetime.now()
         _prepare_weather(system)
         _prepare_system(system)
         
@@ -91,7 +92,7 @@ def main(args):
         _result_hours(system, results, name='hours')
 
         end_simulation = dt.datetime.now()
-        logger.info("Finished TH-E Simulation")
+        logger.info("Finished TH-E Simulation of model {}".format(system.id))
         logger.info("TH-E Simulation lasted: {}".format(end_simulation - start_simulation))
         sim_time = end_simulation - start_simulation
 
