@@ -390,31 +390,39 @@ class ConvLSTM(NeuralNetwork):
             steps += resolution.steps_prior
         
         model = Sequential()
-        model.add(Conv1D(int(configs['filter_size']), 
+        model.add(Conv1D(int(configs['filters']),
                          int(configs['kernel_size']), 
                          input_shape=(steps, len(self.features['target'] + self.features['input'])), 
-                         activation=configs['activation'], 
-                         kernel_initializer='he_uniform',  
-                         dilation_rate=1, 
+                         activation=configs['conv_activation'],
+                         kernel_initializer=configs['conv_kernel'],
+                         dilation_rate=int(configs['dilation']),
                          padding='causal'))
         
         for n in range(int(configs['layers_conv'])-1):
-            model.add(Conv1D(int(configs['filter_size']), 
+            model.add(Conv1D(int(configs['filters']),
                              int(configs['kernel_size']), 
-                             activation=configs['activation'], 
-                             kernel_initializer='he_uniform', 
-                             dilation_rate=2**(n+1), 
-                             padding='causal'))
+                             activation=configs['conv_activation'],
+                             kernel_initializer=configs['conv_kernel'],
+                             dilation_rate=2**(n+1), # ToDo consider how to handle dilation in .cfgs
+                             padding='causal')) # ToDo handle padding in configs
         
         model.add(MaxPooling1D(int(configs['pool_size'])))
-        model.add(LSTM(int(configs['layers_hidden']), activation=configs['activation']))
-        
-        neurons = int(configs['neurons'])
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+
+        lstm_units = json.loads(configs['lstm_units'])
+        while lstm_units:
+            model.add(LSTM(lstm_units.pop(0),
+                           activation=configs['lstm_activation']))
+
+        dense_units = json.loads(configs['dense_units'])
+        while dense_units:
+            model.add(Dense(dense_units.pop(0),
+                            activation=configs['dense_activation'],
+                            kernel_initializer=configs['dense_kernel']))
+
         model.add(Dense(len(self.features['target'])))
-        model.add(LeakyReLU(alpha=0.001))
+
+        if configs['dense_activation']=='relu':
+            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
         
         return model
 
@@ -473,17 +481,21 @@ class MultiLayerPerceptron(NeuralNetwork):
         num_channels = len(self.features['target'] + self.features['input'])
         units = steps*num_channels
         model.add(Flatten(input_shape=(steps, num_channels)))
-        model.add(Dense(units, activation=configs['activation'],
-                        kernel_initializer='he_uniform'))
-        model.add(Dense(round(units/5)*4, activation=configs['activation'],
-                        kernel_initializer='he_uniform'))
-        model.add(Dense(round(units/5)*2, activation=configs['activation'],
-                        kernel_initializer='he_uniform'))
-        model.add(Dense(round(units/5)*1, activation=configs['activation'],
-                        kernel_initializer='he_uniform'))
-        model.add(Dense(len(self.features['target']), activation=configs['activation'],
-                        kernel_initializer='he_uniform'))
-        model.add(LeakyReLU(alpha=0.001))
+        model.add(Dense(units, activation=configs['dense_activation'],
+                  kernel_initializer=configs['dense_kernel']))
+
+        dense_units = json.loads(configs['dense_units'])
+        while dense_units:
+            model.add(Dense(dense_units.pop(0),
+                            activation=configs['dense_activation'],
+                            kernel_initializer=configs['dense_kernel']))
+
+        model.add(Dense(len(self.features['target']),
+                        activation=configs['dense_activation'],
+                        kernel_initializer=configs['dense_kernel']))
+
+        if configs['dense_activation'] == 'relu':
+            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
 
         return model
 
@@ -496,37 +508,35 @@ class StackedLSTM(NeuralNetwork):
             steps += resolution.steps_prior
         
         model = Sequential()
-        
-        hidden = int(configs['layers_hidden'])
-        layers = int(configs['layers_lstm'])
-        if layers > 1:
-            model.add(LSTM(hidden, 
-                           input_shape=(steps, len(self.features['target'] + self.features['input'])), 
-                           activation=configs['activation'], 
-                           kernel_initializer='he_uniform', 
+
+        model.add(LSTM(32,
+                       input_shape=(steps, len(self.features['target'] + self.features['input'])),
+                       activation=configs['activation'],
+                       kernel_initializer=configs['lstm_kernel'],
+                       return_sequences=True))
+
+        lstm_units = json.loads(configs['lstm_units'])
+        while lstm_units:
+            model.add(LSTM(lstm_units.pop(0),
+                           activation=configs['lstm_activation'],
+                           kernel_initializer=configs['lstm_kernel'],
                            return_sequences=True))
-            
-            for _ in range(1, layers-1):
-                model.add(LSTM(hidden, 
-                           activation=configs['activation'], 
-                           kernel_initializer='he_uniform', 
-                           return_sequences=True))
-            
-            model.add(LSTM(hidden, 
-                       activation=configs['activation'], 
-                       kernel_initializer='he_uniform'))
-        else:
-            model.add(LSTM(hidden, 
-                           input_shape=(steps, len(self.features['target'] + self.features['input'])), 
-                           activation=configs['activation'], 
-                           kernel_initializer='he_uniform'))
+
+        model.add(LSTM(32,
+                       input_shape=(steps, len(self.features['target'] + self.features['input'])),
+                       activation=configs['lstm_activation'],
+                       kernel_initializer=configs['lstm_kernel']))
         
-        neurons = int(configs['neurons'])
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+        neurons = json.loads(configs['dense_units'])
+        while neurons:
+            model.add(Dense(neurons.pop(0),
+                            activation=configs['dense_activation'],
+                            kernel_initializer=configs['dense_kernel']))
+
         model.add(Dense(len(self.features['target'])))
-        model.add(LeakyReLU(alpha=0.001))
+
+        if configs['dense_activation'] == 'relu':
+            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
         
         return model
 
