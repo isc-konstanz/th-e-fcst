@@ -23,6 +23,7 @@ import pandas as pd
 import datetime as dt
 import dateutil.relativedelta as rd
 import matplotlib.pyplot as plt
+from keras import backend as K
 
 from argparse import ArgumentParser, RawTextHelpFormatter
 from configparser import ConfigParser
@@ -97,13 +98,13 @@ def main(args):
         sim_time = end_simulation - start_simulation
 
         try:
-            times, mse, mae = _result_summary(system, results, sim_time, train_time, pred_time)
+            times, mse, mae, weights = _result_summary(system, results, sim_time, train_time, pred_time)
         except NameError:
             logging.warning('train_time set to {}:'.format(0) +
                             'Training for {}'.format(system.id) +
                             'did not occur due to preexisting model.')
             train_time = 0
-            times, mse, mae = _result_summary(system, results, sim_time, train_time, pred_time)
+            times, mse, mae, weights = _result_summary(system, results, sim_time, train_time, pred_time)
 
         interval = settings.getint('General', 'interval') / 60
         results = results[results['horizon'] <= interval].sort_index()
@@ -112,6 +113,7 @@ def main(args):
         _result_write(system, mae, results_name='mae', results_dir='results')
         _result_write(system, mse, results_name='mse', results_dir='results')
         _result_write(system, times, results_name='times', results_dir='results')
+        _result_write(system, weights, results_name='weights', results_dir='results')
 
     _result_comparison(systems)
 
@@ -232,7 +234,15 @@ def _result_summary(system, results, sim_time, train_time, pred_time):
             mse[target]['err_h{}'.format(i+1)] = (horizon_data[target + '_err'] ** 2).sum() / len(horizon_data[target + '_err'])
             mae[target]['err_h{}'.format(i+1)] = abs(horizon_data[target + '_err']).sum() / len(horizon_data[target + '_err'])
 
-    return times, mse, mae
+    trainable_count = int(
+        np.sum([K.count_params(p) for p in system.forecast._model.model.trainable_weights]))
+    non_trainable_count = int(
+        np.sum([K.count_params(p) for p in system.forecast._model.model.non_trainable_weights]))
+    total_count = trainable_count + non_trainable_count
+
+    weights = pd.DataFrame({'train_weights': trainable_count, 'nontrain_weights': non_trainable_count, 'total_weights': total_count},
+                           index=[0])
+    return times, mse, mae, weights
 
 
 def _result_horizon(system, results, hour):
@@ -431,7 +441,7 @@ def _result_comparison(systems):
     warnings.filterwarnings("error")
 
     def _write_performance_summary(xldoc):
-        metrics = ['mse', 'mae', 'times']
+        metrics = ['mse', 'mae', 'times', 'weights']
 
         def _retrieve_model_data(systems, sheets):
             data = {}
@@ -446,7 +456,7 @@ def _result_comparison(systems):
                 for sheet in sheets:
                     system_data = pd.read_csv(os.path.join(database, sheet + '.csv'), index_col=0)
 
-                    if not sheet == 'times':
+                    if sheet == 'mse' or sheet == 'mae':
                         system_data.columns = [name + '_{}'.format(i) for name in system_data.columns]  # ensure unique column names
                         data[sheet] = pd.concat([data[sheet], system_data], axis=1)
                     else:
@@ -492,6 +502,12 @@ def _result_comparison(systems):
                 worksheet.write(0, i + 1, data.columns[i], bold_format)  # write column labels
                 worksheet.write_column(1, i + 1, data[data.columns[i]])  # write column data
 
+        def _write_weight_table(systems, data):
+            for i in range(len(systems)):
+                worksheet.write(i + 1, 6, systems[i].id, bold_format)
+            for i in range(len(data.columns)):
+                worksheet.write(0, i + 7, data.columns[i], bold_format)  # write column labels
+                worksheet.write_column(1, i + 7, data[data.columns[i]])  # write column data
         # will not work if target sets are different, if this is the case
         # the labeling of the various models in the tables will be incorrect
         targets = systems[0].forecast._model.features['target']
@@ -504,9 +520,10 @@ def _result_comparison(systems):
                 _write_timetable(systems, info)
             elif key == 'mae':
                 _write_MSE_MAE(systems, info, 'mae')
-
             elif key == 'mse':
                 _write_MSE_MAE(systems, info, 'mse')
+            elif key == 'weights':
+                _write_weight_table(systems, info)
 
     workbook = xlsxwriter.Workbook('data\\model_comparison.xlsx')
 
