@@ -107,3 +107,4 @@ conf/*
 # Generated output and optional input
 data
 lib
+queue
