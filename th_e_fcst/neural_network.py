@@ -286,26 +286,40 @@ class NeuralNetwork(Model):
         self.data_distributions(features, scale=True)
         return features
 
-    def gen_trafos(self, data):
-        self.trafos = {}
-        for item in self.features['scaling']:
-            mean = data[item[0]].mean()
-            std = data[item[0]].std()
-
-            def trafo(x, mean=mean, std=std): # force early binding
-                return (x - mean) / std
-
-            def inv_trafo(x, mean=mean, std=std):
-                return x * std + mean
-
-            trafo_tuple = (trafo, inv_trafo)
-            self.trafos[trafo_tuple] = item
-
     def rescale(self, data, scale=True):
         assert isinstance(scale, bool)
 
+        def gen_trafos(data, features):
+            trafos = {}
+            for item in features['scaling']:
+                if features['trafo'].lower() == 'standard':
+                    mean = data[item[0]].mean()
+                    std = data[item[0]].std()
+
+                    def trafo(x, mean=mean, std=std):  # force early binding
+                        return (x - mean) / std
+
+                    def inv_trafo(x, mean=mean, std=std):
+                        return x * std + mean
+
+                elif features['trafo'].lower() == 'norm':
+                    feature_max = data[item[0]].max()
+
+                    def trafo(x, max=feature_max):  # force early binding
+                        return x / max
+
+                    def inv_trafo(x, max=feature_max):
+                        return x * max
+                else:
+                    raise ValueError('The transformation {}'.format(self.features['trafo'])
+                                     + ' is not defined in the function gen_trafos.')
+
+                trafo_tuple = (trafo, inv_trafo)
+                trafos[trafo_tuple] = item
+            return trafos
+
         if scale == True:
-            self.gen_trafos(data)  # retrieve trafos for features
+            self.trafos = gen_trafos(data, self.features)  # retrieve trafos for features
             for trafo_tuple, item in self.trafos.items():
                 for column in item:
                     if column in data.columns:
