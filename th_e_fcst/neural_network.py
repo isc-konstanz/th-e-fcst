@@ -17,11 +17,12 @@ import datetime as dt
 from configparser import ConfigParser
 from pandas.tseries.frequencies import to_offset
 from pvlib.solarposition import get_solarposition
-from keras.callbacks import History, EarlyStopping
+from keras.callbacks import History, EarlyStopping, TensorBoard
 from keras.models import Sequential
-from keras.layers import LSTM, Dense, LeakyReLU
+from keras.layers import LSTM, Dense, LeakyReLU, Flatten
 from keras.layers.convolutional import Conv1D, MaxPooling1D
 from keras.models import model_from_json
+from tensorflow.summary import create_file_writer, scalar
 from th_e_core import Model
 from abc import abstractmethod
 
@@ -54,12 +55,12 @@ class NeuralNetwork(Model):
         configs.set('General', 'config_dir', forecast_configs.get('General', 'config_dir'))
         configs.set('General', 'config_file', forecast_configs.get('General', 'config_file'))
         
-        if forecast_configs.has_section(cls.__name__):
-            for key, value in forecast_configs.items(cls.__name__):
+        if forecast_configs.has_section('NeuralNetwork'):
+            for key, value in forecast_configs.items('NeuralNetwork'):
                 configs.set('General', key, value)
         
         for section in forecast_configs.sections():
-            if (section.startswith(tuple(NeuralNetwork.SECTIONS))):
+            if section.startswith(tuple(NeuralNetwork.SECTIONS)):
                 if not configs.has_section(section):
                     configs.add_section(section)
                 for key, value in forecast_configs.items(section):
@@ -99,7 +100,9 @@ class NeuralNetwork(Model):
         super()._build(context, configs, **kwargs)
         
         self.history = History()
-        self.callbacks = [self.history, EarlyStopping(patience=32, restore_best_weights=True)]
+        self.callbacks = [self.history,
+                          TensorBoard(log_dir=self.dir, histogram_freq=1),
+                          EarlyStopping(patience=32, restore_best_weights=True)]
         
         #TODO: implement date based backups and naming scheme
         if self.exists():
@@ -186,11 +189,19 @@ class NeuralNetwork(Model):
     def _train(self, features):
         X, y = self._parse_data(features)
         logger.debug("Built input of %s, %s", X.shape, y.shape)
-        
+
         split = int(len(y) / 10.0)
-        result = self.model.fit(X[split:], y[split:], batch_size=self.batch, epochs=self.epochs, callbacks=self.callbacks, 
-                                validation_data=(X[:split], y[:split]), verbose=LOG_VERBOSE)
-        
+        result = self.model.fit(X[split:], y[split:], batch_size=self.batch, epochs=self.epochs,
+                                validation_data=(X[:split], y[:split]), callbacks=self.callbacks,
+                                verbose=LOG_VERBOSE)
+
+        # write normed loss to tensorboard
+        train_summary_writer = create_file_writer(os.path.join(self.dir, 'custom_metric'))
+        norm_loss = result.history['loss']/features['pv_power'].max()
+        for epoch in range(len(result.history['loss'])):
+            with train_summary_writer.as_default():
+                scalar('norm_loss', norm_loss[epoch], step=epoch)
+
         self._save()
         return result
 
@@ -268,7 +279,6 @@ class NeuralNetwork(Model):
         features = self._parse_horizon(features)
         features = self._parse_cyclic(features)
 
-    #ToDo replace with function
         self.data_distributions(features, scale=False)
 
         features = self.rescale(features, scale=True)
@@ -380,31 +390,39 @@ class ConvLSTM(NeuralNetwork):
             steps += resolution.steps_prior
         
         model = Sequential()
-        model.add(Conv1D(int(configs['filter_size']), 
+        model.add(Conv1D(int(configs['filters']),
                          int(configs['kernel_size']), 
                          input_shape=(steps, len(self.features['target'] + self.features['input'])), 
-                         activation=configs['activation'], 
-                         kernel_initializer='he_uniform',  
-                         dilation_rate=1, 
+                         activation=configs['conv_activation'],
+                         kernel_initializer=configs['conv_kernel'],
+                         dilation_rate=int(configs['dilation']),
                          padding='causal'))
         
         for n in range(int(configs['layers_conv'])-1):
-            model.add(Conv1D(int(configs['filter_size']), 
+            model.add(Conv1D(int(configs['filters']),
                              int(configs['kernel_size']), 
-                             activation=configs['activation'], 
-                             kernel_initializer='he_uniform', 
-                             dilation_rate=2**(n+1), 
-                             padding='causal'))
+                             activation=configs['conv_activation'],
+                             kernel_initializer=configs['conv_kernel'],
+                             dilation_rate=2**(n+1), # ToDo consider how to handle dilation in .cfgs
+                             padding='causal')) # ToDo handle padding in configs
         
         model.add(MaxPooling1D(int(configs['pool_size'])))
-        model.add(LSTM(int(configs['layers_hidden']), activation=configs['activation']))
-        
-        neurons = int(configs['neurons'])
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+
+        lstm_units = json.loads(configs['lstm_units'])
+        while lstm_units:
+            model.add(LSTM(lstm_units.pop(0),
+                           activation=configs['lstm_activation']))
+
+        dense_units = json.loads(configs['dense_units'])
+        while dense_units:
+            model.add(Dense(dense_units.pop(0),
+                            activation=configs['dense_activation'],
+                            kernel_initializer=configs['dense_kernel']))
+
         model.add(Dense(len(self.features['target'])))
-        model.add(LeakyReLU(alpha=0.001))
+
+        if configs['dense_activation']=='relu':
+            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
         
         return model
 
@@ -425,6 +443,62 @@ class ConvLSTM(NeuralNetwork):
         
         return inputs
 
+class MultiLayerPerceptron(NeuralNetwork):
+
+    def _configure(self, configs, **kwargs):
+        super()._configure(configs, **kwargs)
+        self._estimate = kwargs.get('estimate') if 'estimate' in kwargs else \
+                         configs.get('Features', 'estimate', fallback='true').lower() == 'true'
+
+    def _extract_inputs(self, features, time):
+        inputs = super()._extract_inputs(features, time)
+
+        if self._estimate:
+            resolution = self._resolutions[-1]
+            resolution_inputs = resolution.resample(
+                features.loc[(time - resolution.time_step + dt.timedelta(seconds=1)):time,
+                self.features['input']])
+
+            inputs.loc[time] = np.append([np.NaN] * len(self.features['target']), resolution_inputs.values)
+
+            # TODO: Replace interpolation with prediction of ANN
+            inputs.interpolate(method='linear', inplace=True)
+            # inputs.interpolate(method='akima', inplace=True)
+            # inputs.interpolate(method='nearest', fill_value='extrapolate', inplace=True)
+
+        return inputs
+
+    def build(self, configs):
+        if not self._estimate:
+            steps = 0
+        else:
+            steps = 1
+
+        for resolution in self._resolutions:
+            steps += resolution.steps_prior
+
+        model = Sequential()
+        num_channels = len(self.features['target'] + self.features['input'])
+        units = steps*num_channels
+        model.add(Flatten(input_shape=(steps, num_channels)))
+        model.add(Dense(units, activation=configs['dense_activation'],
+                  kernel_initializer=configs['dense_kernel']))
+
+        dense_units = json.loads(configs['dense_units'])
+        while dense_units:
+            model.add(Dense(dense_units.pop(0),
+                            activation=configs['dense_activation'],
+                            kernel_initializer=configs['dense_kernel']))
+
+        model.add(Dense(len(self.features['target']),
+                        activation=configs['dense_activation'],
+                        kernel_initializer=configs['dense_kernel']))
+
+        if configs['dense_activation'] == 'relu':
+            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
+
+        return model
+
 
 class StackedLSTM(NeuralNetwork):
 
@@ -434,37 +508,35 @@ class StackedLSTM(NeuralNetwork):
             steps += resolution.steps_prior
         
         model = Sequential()
-        
-        hidden = int(configs['layers_hidden'])
-        layers = int(configs['layers_lstm'])
-        if layers > 1:
-            model.add(LSTM(hidden, 
-                           input_shape=(steps, len(self.features['target'] + self.features['input'])), 
-                           activation=configs['activation'], 
-                           kernel_initializer='he_uniform', 
+
+        model.add(LSTM(32,
+                       input_shape=(steps, len(self.features['target'] + self.features['input'])),
+                       activation=configs['activation'],
+                       kernel_initializer=configs['lstm_kernel'],
+                       return_sequences=True))
+
+        lstm_units = json.loads(configs['lstm_units'])
+        while lstm_units:
+            model.add(LSTM(lstm_units.pop(0),
+                           activation=configs['lstm_activation'],
+                           kernel_initializer=configs['lstm_kernel'],
                            return_sequences=True))
-            
-            for _ in range(1, layers-1):
-                model.add(LSTM(hidden, 
-                           activation=configs['activation'], 
-                           kernel_initializer='he_uniform', 
-                           return_sequences=True))
-            
-            model.add(LSTM(hidden, 
-                       activation=configs['activation'], 
-                       kernel_initializer='he_uniform'))
-        else:
-            model.add(LSTM(hidden, 
-                           input_shape=(steps, len(self.features['target'] + self.features['input'])), 
-                           activation=configs['activation'], 
-                           kernel_initializer='he_uniform'))
+
+        model.add(LSTM(32,
+                       input_shape=(steps, len(self.features['target'] + self.features['input'])),
+                       activation=configs['lstm_activation'],
+                       kernel_initializer=configs['lstm_kernel']))
         
-        neurons = int(configs['neurons'])
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
-        model.add(Dense(neurons, activation=configs['activation'], kernel_initializer='he_uniform'))
+        neurons = json.loads(configs['dense_units'])
+        while neurons:
+            model.add(Dense(neurons.pop(0),
+                            activation=configs['dense_activation'],
+                            kernel_initializer=configs['dense_kernel']))
+
         model.add(Dense(len(self.features['target'])))
-        model.add(LeakyReLU(alpha=0.001))
+
+        if configs['dense_activation'] == 'relu':
+            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
         
         return model
 
