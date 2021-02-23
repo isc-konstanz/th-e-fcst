@@ -383,7 +383,7 @@ class NeuralNetwork(Model):
         for feature, bound in self.features['cyclic'].items():
             data[feature + '_sin'] = np.sin(2.0*np.pi*data[feature] / bound)
             data[feature + '_cos'] = np.cos(2.0*np.pi*data[feature] / bound)
-        
+            data = data.drop(columns=[feature])
         return data
 
 
