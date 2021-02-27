@@ -52,6 +52,11 @@ class Forecast(ForecastCore):
         elif model == 'mlp':
             from th_e_fcst.neural_network import MultiLayerPerceptron
             self._model = MultiLayerPerceptron.from_forecast(context, configs, **kwargs)
+
+        elif model == 'cnn':
+            from th_e_fcst.neural_network import CNN
+            self._model = CNN.from_forecast(context, configs, **kwargs)
+
         else:
             raise ValueError('Unknown ANN model : '+model)
 

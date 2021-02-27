@@ -443,6 +443,71 @@ class ConvLSTM(NeuralNetwork):
         
         return inputs
 
+class CNN(NeuralNetwork):
+    def _configure(self, configs, **kwargs):
+        super()._configure(configs, **kwargs)
+        self._estimate = kwargs.get('estimate') if 'estimate' in kwargs else \
+            configs.get('Features', 'estimate', fallback='true').lower() == 'true'
+
+    def build(self, configs):
+        if not self._estimate:
+            steps = 0
+        else:
+            steps = 1
+
+        for resolution in self._resolutions:
+            steps += resolution.steps_prior
+
+        model = Sequential()
+        model.add(Conv1D(int(configs['filters']),
+                         int(configs['kernel_size']),
+                         input_shape=(steps, len(self.features['target'] + self.features['input'])),
+                         activation=configs['conv_activation'],
+                         kernel_initializer=configs['conv_kernel'],
+                         dilation_rate=int(configs['dilation']),
+                         padding='causal'))
+
+        for n in range(int(configs['layers_conv']) - 1):
+            model.add(Conv1D(int(configs['filters']),
+                             int(configs['kernel_size']),
+                             activation=configs['conv_activation'],
+                             kernel_initializer=configs['conv_kernel'],
+                             dilation_rate=2 ** (n + 1),  # ToDo consider how to handle dilation in .cfgs
+                             padding='causal'))  # ToDo handle padding in configs
+
+        model.add(MaxPooling1D(int(configs['pool_size'])))
+        model.add(Flatten())
+        dense_units = json.loads(configs['dense_units'])
+        while dense_units:
+            model.add(Dense(dense_units.pop(0),
+                            activation=configs['dense_activation'],
+                            kernel_initializer=configs['dense_kernel']))
+
+        model.add(Dense(len(self.features['target'])))
+
+        if configs['dense_activation'] == 'relu':
+            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
+
+        return model
+
+    def _extract_inputs(self, features, time):
+        inputs = super()._extract_inputs(features, time)
+
+        if self._estimate:
+            resolution = self._resolutions[-1]
+            resolution_inputs = resolution.resample(
+                features.loc[(time - resolution.time_step + dt.timedelta(seconds=1)):time,
+                self.features['input']])
+
+            inputs.loc[time] = np.append([np.NaN] * len(self.features['target']), resolution_inputs.values)
+
+            # TODO: Replace interpolation with prediction of ANN
+            inputs.interpolate(method='linear', inplace=True)
+            # inputs.interpolate(method='akima', inplace=True)
+            # inputs.interpolate(method='nearest', fill_value='extrapolate', inplace=True)
+
+        return inputs
+
 class MultiLayerPerceptron(NeuralNetwork):
 
     def _configure(self, configs, **kwargs):
@@ -499,11 +564,18 @@ class MultiLayerPerceptron(NeuralNetwork):
 
         return model
 
-
 class StackedLSTM(NeuralNetwork):
+    def _configure(self, configs, **kwargs):
+        super()._configure(configs, **kwargs)
+        self._estimate = kwargs.get('estimate') if 'estimate' in kwargs else \
+                         configs.get('Features', 'estimate', fallback='true').lower() == 'true'
 
     def build(self, configs):
-        steps = 0
+        if not self._estimate:
+            steps = 0
+        else:
+            steps = 1
+
         for resolution in self._resolutions:
             steps += resolution.steps_prior
         
@@ -511,7 +583,7 @@ class StackedLSTM(NeuralNetwork):
 
         model.add(LSTM(32,
                        input_shape=(steps, len(self.features['target'] + self.features['input'])),
-                       activation=configs['activation'],
+                       activation=configs['lstm_activation'],
                        kernel_initializer=configs['lstm_kernel'],
                        return_sequences=True))
 
@@ -540,6 +612,23 @@ class StackedLSTM(NeuralNetwork):
         
         return model
 
+    def _extract_inputs(self, features, time):
+        inputs = super()._extract_inputs(features, time)
+
+        if self._estimate:
+            resolution = self._resolutions[-1]
+            resolution_inputs = resolution.resample(
+                features.loc[(time - resolution.time_step + dt.timedelta(seconds=1)):time,
+                self.features['input']])
+
+            inputs.loc[time] = np.append([np.NaN] * len(self.features['target']), resolution_inputs.values)
+
+            # TODO: Replace interpolation with prediction of ANN
+            inputs.interpolate(method='linear', inplace=True)
+            # inputs.interpolate(method='akima', inplace=True)
+            # inputs.interpolate(method='nearest', fill_value='extrapolate', inplace=True)
+
+        return inputs
 
 class Resolution:
 
