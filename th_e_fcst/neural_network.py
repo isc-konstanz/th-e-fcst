@@ -184,6 +184,7 @@ class NeuralNetwork(Model):
 
     def train(self, data):
         features = self._parse_features(data)
+        self.data_distributions(features, train=True)
         return self._train(features)
 
     def _train(self, features):
@@ -279,11 +280,7 @@ class NeuralNetwork(Model):
         features = self._parse_horizon(features)
         features = self._parse_cyclic(features)
 
-        self.data_distributions(features, scale=False)
-
         features = self.rescale(features, scale=True)
-
-        self.data_distributions(features, scale=True)
         return features
 
     def rescale(self, data, scale=True):
@@ -332,8 +329,8 @@ class NeuralNetwork(Model):
                         data[column] = trafo_tuple[1](data[column])
         return data
 
-    def data_distributions(self, features, scale=False): #ToDo change path to generalize to multiple scaling trafos
-        assert isinstance(scale, bool)
+    def data_distributions(self, features, train=True): #ToDo change path to generalize to multiple scaling trafos
+        assert isinstance(train, bool)
         import matplotlib.pyplot as plt
         bin_num = 100 #desired number of bins in each plot
         for feature in features.columns: #create 100 equal space bin vals per feat.
@@ -360,15 +357,16 @@ class NeuralNetwork(Model):
                     plt.ylim([0, sorted_values[i+1]+10])
                     break
 
-            if scale == False: #save histogram to appropriate folder.
-                path = os.path.join(self.dir, '../distributions/raw/{}.png'.format(feature))
+            if train is True: #save histogram to appropriate folder.
+                path = os.path.join(self.dir, '../distributions/train/{}.png'.format(feature))
                 plt.savefig(path)
                 plt.clf()
 
-            if scale == True:
-                path = os.path.join(self.dir, '../distributions/scaled/{}.png'.format(feature))
+            elif train is False:
+                path = os.path.join(self.dir, '../distributions/test/{}.png'.format(feature))
                 plt.savefig(path)
                 plt.clf()
+
 
     def _parse_horizon(self, data):
         resolution = self._resolutions[0]

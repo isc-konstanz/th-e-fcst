@@ -69,6 +69,7 @@ def main(args):
         weather = system.forecast._weather._database.get(start, end)
         features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
 
+        system.forecast._model.data_distributions(features, train=False) #prediction distributions
         logging.info("Beginning network predictions of model {}".format(system.id))
         start_prediction = dt.datetime.now()
         results = _simulate(settings, system, features)
