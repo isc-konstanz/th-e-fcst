@@ -232,7 +232,7 @@ class NeuralNetwork(Model):
         inputs = np.array(inputs)
         targets = np.array(targets)
 
-        if not shuffle:
+        if shuffle:
             return self._shuffle_data(inputs, targets)
 
         return inputs, targets
