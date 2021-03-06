@@ -98,13 +98,13 @@ def main(args):
         sim_time = end_simulation - start_simulation
 
         try:
-            times, mse, mae, weights = _result_summary(system, results, sim_time, train_time, pred_time)
+            times, mse, mae, weights, apollo = _result_summary(system, results, sim_time, train_time, pred_time)
         except NameError:
             logging.warning('train_time set to {}:'.format(0) +
                             'Training for {}'.format(system.id) +
                             'did not occur due to preexisting model.')
             train_time = 0
-            times, mse, mae, weights = _result_summary(system, results, sim_time, train_time, pred_time)
+            times, mse, mae, weights, apollo = _result_summary(system, results, sim_time, train_time, pred_time)
 
         interval = settings.getint('General', 'interval') / 60
         results = results[results['horizon'] <= interval].sort_index()
@@ -114,6 +114,7 @@ def main(args):
         _result_write(system, mse, results_name='mse', results_dir='results')
         _result_write(system, times, results_name='times', results_dir='results')
         _result_write(system, weights, results_name='weights', results_dir='results')
+        _result_write(system, apollo, results_name='apollo', results_dir='results')
 
     _result_comparison(systems)
 
@@ -242,7 +243,12 @@ def _result_summary(system, results, sim_time, train_time, pred_time):
 
     weights = pd.DataFrame({'train_weights': trainable_count, 'nontrain_weights': non_trainable_count, 'total_weights': total_count},
                            index=[0])
-    return times, mse, mae, weights
+
+    hourly_max = results['pv_power_err'].groupby([results.index.hour]).max()
+    median = results['pv_power_err'].groupby([results.index.hour]).median()
+    apollo = pd.DataFrame({'apollo': ((median/hourly_max)).sum() / 24}, index=[0])
+
+    return times, mse, mae, weights, apollo
 
 
 def _result_horizon(system, results, hour):
@@ -441,7 +447,7 @@ def _result_comparison(systems):
     warnings.filterwarnings("error")
 
     def _write_performance_summary(xldoc):
-        metrics = ['mse', 'mae', 'times', 'weights']
+        metrics = ['mse', 'mae', 'times', 'weights', 'apollo']
 
         def _retrieve_model_data(systems, sheets):
             data = {}
@@ -494,20 +500,15 @@ def _result_comparison(systems):
                 worksheet.write(len(systems) + 3, i + 1 + offset, data.columns[i])
                 worksheet.write_column(len(systems) + 4, i + 1 + offset, data[data.columns[i]])
 
-
-        def _write_timetable(systems, data):
+        def _write_summary_table(systems, data, offset):
             for i in range(len(systems)):
-                worksheet.write(i + 1, 0, systems[i].id, bold_format)
+                worksheet.write(i + 1, offset, systems[i].id, bold_format)
             for i in range(len(data.columns)):
-                worksheet.write(0, i + 1, data.columns[i], bold_format)  # write column labels
-                worksheet.write_column(1, i + 1, data[data.columns[i]])  # write column data
+                worksheet.write(0, i + offset + 1, data.columns[i], bold_format)  # write column labels
+                worksheet.write_column(1, i + offset + 1, data[data.columns[i]])  # write column data
 
-        def _write_weight_table(systems, data):
-            for i in range(len(systems)):
-                worksheet.write(i + 1, 6, systems[i].id, bold_format)
-            for i in range(len(data.columns)):
-                worksheet.write(0, i + 7, data.columns[i], bold_format)  # write column labels
-                worksheet.write_column(1, i + 7, data[data.columns[i]])  # write column data
+            return len(data.columns) + offset + 2  # next offset
+
         # will not work if target sets are different, if this is the case
         # the labeling of the various models in the tables will be incorrect
         targets = systems[0].forecast._model.features['target']
@@ -515,15 +516,24 @@ def _result_comparison(systems):
 
         worksheet = workbook.add_worksheet('performance_summary')
 
+        left_col = 0
         for key, info in data.items():
-            if key == 'times': # write table for times df
-                _write_timetable(systems, info)
-            elif key == 'mae':
+            if key == 'mae':
                 _write_MSE_MAE(systems, info, 'mae')
             elif key == 'mse':
                 _write_MSE_MAE(systems, info, 'mse')
-            elif key == 'weights':
-                _write_weight_table(systems, info)
+            else:
+                left_col = _write_summary_table(systems, info, left_col)
+            #if key == 'times': # write table for times df
+             #   _write_timetable(systems, info)
+            #elif key == 'mae':
+               # _write_MSE_MAE(systems, info, 'mae')
+            #elif key == 'mse':
+             #   _write_MSE_MAE(systems, info, 'mse')
+            #elif key == 'weights':
+             #   _write_weight_table(systems, info)
+            #elif key == 'apollo':
+             #   _write_apollo_table(systems, info)
 
     workbook = xlsxwriter.Workbook('data\\model_comparison.xlsx')
 
