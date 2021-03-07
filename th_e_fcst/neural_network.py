@@ -231,13 +231,8 @@ class NeuralNetwork(Model):
     def _extract_inputs(self, features, time):
         data = pd.DataFrame()
         data.index.name = 'time'
-        for resolution in self._resolutions:
-            resolution_end = time - resolution.time_step
-            resolution_start = time - resolution.time_prior
-            resolution_data = features.loc[(resolution_start - resolution.time_step + dt.timedelta(seconds=1)):resolution_end, 
-                                           self.features['target'] + self.features['input']]
-            
-            data = resolution.resample(resolution_data).combine_first(data[:resolution_start])
+        resolution_start = time - self._resolutions[-1].time_prior
+        data = features.loc[resolution_start:time - dt.timedelta(hours=1), self.features['target'] + self.features['input']]
         
         if data.isnull().values.any():
             raise ValueError("Input data incomplete for %s" % time)
@@ -250,11 +245,8 @@ class NeuralNetwork(Model):
 
     def _extract_target(self, features, time):
         # TODO: Implement horizon resolutions
-        resolution = self._resolutions[-1]
-        resolution_target = resolution.resample(features.loc[time - resolution.time_step + dt.timedelta(seconds=1): time, 
-                                                             self.features['target']])
-        
-        data = resolution_target.loc[time,:]
+        data = features.loc[time, self.features['target']]
+
         if data.isnull().values.any():
             raise ValueError("Target data incomplete for %s" % time)
         
@@ -279,12 +271,49 @@ class NeuralNetwork(Model):
         features = self._parse_horizon(features)
         features = self._parse_cyclic(features)
 
-        self.data_distributions(features, scale=False)
+        res_data = self._resolutions[-1].resample(features)
+        res_data = self.rescale(res_data, scale=True)
 
-        features = self.rescale(features, scale=True)
+        if 'faith' in self.features['input']:
+            res_data = self.cov('pv_power', 'dni', res_data)
 
         self.data_distributions(features, scale=True)
+
+        return res_data
+
+    def cov(self, f1, f2, features):
+        isinstance(f1, str)
+        isinstance(f2, str)
+        # population estimate of cov
+        m1 = features[f1].mean()
+        m2 = features[f2].mean()
+        self.covariance = ((features[f1]-m1)*(features[f2]-m2)).sum() / (len(features[f1])-1)
+
+        # sample estimates of cov
+        for time in features.index:
+            if time - features.index[0] < dt.timedelta(hours=24):
+                continue
+            else:
+                # calculate sample means
+                sm1 = features.loc[time-dt.timedelta(hours=23):time, f1].mean()
+                sm2 = features.loc[time-dt.timedelta(hours=23):time, f2].mean()
+
+                # extract features of sample
+                sf1 = features.loc[time-dt.timedelta(hours=23):time, f1]
+                sf2 = features.loc[time-dt.timedelta(hours=23):time, f2]
+
+                #sample cov
+                features.loc[time, 'cov'] = ((sf1-sm1)*(sf2-sm2)).sum() / len(sf1)
+
+        # std of sample cov from population cov estimate
+        self.cov_std = np.sqrt(((features['cov'] - self.covariance)**2).sum() / len(features['cov'].dropna()))
+
+        # faith value
+        features['faith'] = abs(features['cov']-self.covariance) / self.cov_std
+        features.drop(columns=['cov'])
+
         return features
+
 
     def rescale(self, data, scale=True):
         assert isinstance(scale, bool)
@@ -444,9 +473,7 @@ class ConvLSTM(NeuralNetwork):
         inputs = super()._extract_inputs(features, time)
         
         if self._estimate:
-            resolution = self._resolutions[-1]
-            resolution_inputs = resolution.resample(features.loc[(time - resolution.time_step + dt.timedelta(seconds=1)):time, 
-                                                                 self.features['input']])
+            resolution_inputs = features.loc[time, self.features['input']]
             
             inputs.loc[time] = np.append([np.NaN]*len(self.features['target']), resolution_inputs.values)
             
@@ -468,10 +495,7 @@ class MultiLayerPerceptron(NeuralNetwork):
         inputs = super()._extract_inputs(features, time)
 
         if self._estimate:
-            resolution = self._resolutions[-1]
-            resolution_inputs = resolution.resample(
-                features.loc[(time - resolution.time_step + dt.timedelta(seconds=1)):time,
-                self.features['input']])
+            resolution_inputs = features.loc[time, self.features['input']]
 
             inputs.loc[time] = np.append([np.NaN] * len(self.features['target']), resolution_inputs.values)
 

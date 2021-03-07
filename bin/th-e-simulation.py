@@ -123,9 +123,6 @@ def _simulate(settings, system, features, **kwargs):
     forecast = system.forecast._model
     results = pd.DataFrame()
 
-    resolution = forecast._resolutions[0]
-    resolution_data = resolution.resample(features)
-
     system_dir = system._configs['General']['data_dir']
     database = copy.deepcopy(system._database)
     database.dir = system_dir
@@ -139,8 +136,8 @@ def _simulate(settings, system, features, **kwargs):
 
     verbose = settings.getboolean('General', 'verbose', fallback=False)
     interval = settings.getint('General', 'interval')
-    time = features.index[0] + forecast._resolutions[0].time_prior
-    end = features.index[-1] - forecast._resolutions[0].time_horizon
+    time = features.index[0] + forecast._resolutions[-1].time_prior
+    end = features.index[-1] - forecast._resolutions[-1].time_horizon
 
     training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
     # training_interval = settings.getint('Training', 'interval')
@@ -157,10 +154,8 @@ def _simulate(settings, system, features, **kwargs):
 
         try:
             step_result = list()
-            step_features = copy.deepcopy(features[time - resolution.time_prior \
-                                                   - resolution.time_step \
-                                                   + dt.timedelta(seconds=1):
-                                                   time + resolution.time_horizon])
+            step_features = copy.deepcopy(features[time - forecast._resolutions[-1].time_prior:
+                                                   time + forecast._resolutions[-1].time_horizon])
 
             step_index = step_features[time:].index
             step = step_index[0]
@@ -178,7 +173,7 @@ def _simulate(settings, system, features, **kwargs):
                 # Add predicted output to features of next iteration
                 step_features.loc[step, forecast.features['target']] = result
                 step_result.append(result)
-                step += dt.timedelta(minutes=resolution.minutes)
+                step += dt.timedelta(minutes=forecast._resolutions[-1].minutes)
 
             if training_recursive:
                 training_features = step_features
@@ -187,7 +182,7 @@ def _simulate(settings, system, features, **kwargs):
                 forecast._save_model()
 
             target = forecast.features['target']
-            result = resolution_data.loc[step_index[0]:step_index[-1], target]
+            result = features.loc[step_index[0]:step_index[-1], target]
 
             result = pd.concat([result[target], pd.DataFrame(step_result, result.index, 
                                 columns=[t + '_est' for t in target])], axis=1)
