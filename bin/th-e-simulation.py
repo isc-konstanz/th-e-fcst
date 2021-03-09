@@ -98,23 +98,26 @@ def main(args):
         sim_time = end_simulation - start_simulation
 
         try:
-            times, mse, mae, weights, apollo = _result_summary(system, results, sim_time, train_time, pred_time)
+            times, mse, mae, mse_cor, mae_cor, weights, apollo, horizon_doubt = _result_summary(system, results, sim_time, train_time, pred_time)
         except NameError:
             logging.warning('train_time set to {}:'.format(0) +
                             'Training for {}'.format(system.id) +
                             'did not occur due to preexisting model.')
             train_time = 0
-            times, mse, mae, weights, apollo = _result_summary(system, results, sim_time, train_time, pred_time)
+            times, mse, mae, mse_cor, mae_cor, weights, apollo, horizon_doubt = _result_summary(system, results, sim_time, train_time, pred_time)
 
         interval = settings.getint('General', 'interval') / 60
         results = results[results['horizon'] <= interval].sort_index()
         del results['horizon']
         _result_write(system, results)
         _result_write(system, mae, results_name='mae', results_dir='results')
+        _result_write(system, mae_cor, results_name='mae_cor', results_dir='results')
         _result_write(system, mse, results_name='mse', results_dir='results')
+        _result_write(system, mse_cor, results_name='mse_cor', results_dir='results')
         _result_write(system, times, results_name='times', results_dir='results')
         _result_write(system, weights, results_name='weights', results_dir='results')
         _result_write(system, apollo, results_name='apollo', results_dir='results')
+        _result_write(system, horizon_doubt, results_name='horizon_doubt', results_dir='results')
 
     _result_comparison(systems)
 
@@ -154,6 +157,7 @@ def _simulate(settings, system, features, **kwargs):
 
         try:
             step_result = list()
+            step_doubt = list()
             step_features = copy.deepcopy(features[time - forecast._resolutions[-1].time_prior:
                                                    time + forecast._resolutions[-1].time_horizon])
 
@@ -170,9 +174,27 @@ def _simulate(settings, system, features, **kwargs):
                 inputs = np.squeeze(step_inputs.fillna(0).values)
                 result = forecast._run_step(inputs)
 
+                #retrieve prediction doubt (assumes doubt is last column in inputs)
+                if forecast._estimate == True:
+                    doubt = inputs[-2, -1]
+                elif forecast._estimate == False:
+                    doubt = inputs[-1, -1]
+
                 # Add predicted output to features of next iteration
                 step_features.loc[step, forecast.features['target']] = result
+
+                # recalculate doubt for target hour
+                sm1 = step_features.loc[step-dt.timedelta(hours=23):step, 'pv_power'].mean()
+                sm2 = step_features.loc[step-dt.timedelta(hours=23):step, 'dni'].mean()
+
+                sf1 = step_features.loc[step-dt.timedelta(hours=23):step, 'pv_power']
+                sf2 = step_features.loc[step-dt.timedelta(hours=23):step, 'dni']
+
+                cov = ((sf1 - sm1) * (sf2 - sm2)).mean()
+                step_features.loc[step, 'doubt'] = abs(cov-forecast.covariance) / forecast.cov_std
+
                 step_result.append(result)
+                step_doubt.append(doubt)
                 step += dt.timedelta(minutes=forecast._resolutions[-1].minutes)
 
             if training_recursive:
@@ -182,10 +204,16 @@ def _simulate(settings, system, features, **kwargs):
                 forecast._save_model()
 
             target = forecast.features['target']
-            result = features.loc[step_index[0]:step_index[-1], target]
 
-            result = pd.concat([result[target], pd.DataFrame(step_result, result.index, 
-                                columns=[t + '_est' for t in target])], axis=1)
+            if 'doubt' in forecast.features['input']:
+                result = features.loc[step_index[0]:step_index[-1], ['doubt'] + target]
+            else:
+                result = features.loc[step_index[0]:step_index[-1], target]
+
+            result = pd.concat([result, pd.DataFrame(step_result, result.index,
+                                columns=[t + '_est' for t in target]),
+                                pd.DataFrame(step_doubt, result.index, columns=['true_doubt'])],
+                                axis=1)
             result = system.forecast._model.rescale(result, scale=False)
 
             for target in forecast.features['target']:
@@ -217,18 +245,38 @@ def _result_summary(system, results, sim_time, train_time, pred_time):
     for i in range(24):
         err_names.append('err_h{}'.format(i + 1))
 
+    #retrieve mean horizonwise doubt
+    horizon_doubt = pd.Series(index=err_names[1:], name='horizon_doubt')
+
+    for i in range(24):
+        horizon_data = results.loc[results['horizon'] == i + 1]
+        horizon_doubt['err_h{}'.format(i+1)] = horizon_data['true_doubt'].mean()
+
     # retrieve total and 'horizon_wise' mae and mse of sim targets
     targets = system.forecast._model.features['target']
     mse = pd.DataFrame(index=err_names, columns=targets)
+    mse_cor = pd.DataFrame(index=err_names, columns=targets)
     mae = pd.DataFrame(index=err_names, columns=targets)
-
+    mae_cor = pd.DataFrame(index=err_names, columns=targets)
     for target in targets:
-        mse[target]['err_hs'] = (results[target + '_err'] ** 2).sum() / len(results[target + '_err'])
-        mae[target]['err_hs'] = abs(results[target + '_err']).sum() / len(results[target + '_err'])
+        #noise corrected error
+        err_cor = results[target + '_err'] - results['true_doubt'] * results[target + '_err']
+        err_cor.loc[err_cor < 0] = 0
+
+        mse[target]['err_hs'] = (results[target + '_err'] ** 2).mean()
+        mse_cor[target]['err_hs'] = (err_cor ** 2).mean()
+        mae[target]['err_hs'] = abs(results[target + '_err']).mean()
+        mae_cor[target]['err_hs'] = abs(err_cor).mean()
         for i in range(24):
+            #parse horizon data
             horizon_data = results.loc[results['horizon'] == i + 1]
-            mse[target]['err_h{}'.format(i+1)] = (horizon_data[target + '_err'] ** 2).sum() / len(horizon_data[target + '_err'])
-            mae[target]['err_h{}'.format(i+1)] = abs(horizon_data[target + '_err']).sum() / len(horizon_data[target + '_err'])
+            err_cor = horizon_data[target + '_err'] - horizon_data['true_doubt'] * horizon_data[target + '_err']
+            err_cor.loc[err_cor < 0] = 0
+
+            mse[target]['err_h{}'.format(i+1)] = (horizon_data[target + '_err'] ** 2).mean()
+            mse_cor[target]['err_h{}'.format(i + 1)] = ((err_cor) ** 2).mean()
+            mae[target]['err_h{}'.format(i+1)] = abs(horizon_data[target + '_err']).mean()
+            mae_cor[target]['err_h{}'.format(i + 1)] = abs(err_cor).mean()
 
     trainable_count = int(
         np.sum([K.count_params(p) for p in system.forecast._model.model.trainable_weights]))
@@ -243,7 +291,7 @@ def _result_summary(system, results, sim_time, train_time, pred_time):
     median = results['pv_power_err'].groupby([results.index.hour]).median()
     apollo = pd.DataFrame({'apollo': ((median/hourly_max)).sum() / 24}, index=[0])
 
-    return times, mse, mae, weights, apollo
+    return times, mse, mae, mse_cor, mae_cor, weights, apollo, horizon_doubt
 
 
 def _result_horizon(system, results, hour):
@@ -442,7 +490,7 @@ def _result_comparison(systems):
     warnings.filterwarnings("error")
 
     def _write_performance_summary(xldoc):
-        metrics = ['mse', 'mae', 'times', 'weights', 'apollo']
+        metrics = ['mse', 'mae', 'mse_cor', 'mae_cor', 'times', 'weights', 'apollo', 'horizon_doubt', 'hourly_doubt']
 
         def _retrieve_model_data(systems, sheets):
             data = {}
@@ -457,7 +505,7 @@ def _result_comparison(systems):
                 for sheet in sheets:
                     system_data = pd.read_csv(os.path.join(database, sheet + '.csv'), index_col=0)
 
-                    if sheet == 'mse' or sheet == 'mae':
+                    if sheet in ['mae', 'mae_cor', 'mse', 'mae_corr', 'horizon_doubt', 'hourly_doubt']:
                         system_data.columns = [name + '_{}'.format(i) for name in system_data.columns]  # ensure unique column names
                         data[sheet] = pd.concat([data[sheet], system_data], axis=1)
                     else:
@@ -465,21 +513,23 @@ def _result_comparison(systems):
                 i += 1
             return data
 
-        # ToDo: the writing of future kpi's to xl should be integrated into this function
         def _write_MSE_MAE(systems, data, kpi):
             if kpi.lower() not in metrics:
                 print('Valid metrics include:')
                 for kpi in metrics:
                     print(kpi)
                 raise ValueError('The chosen kpi does not belong to the list metrics used.')
+            col_num = len(targets) * len(systems)
+            offset = {'mae': 0, 'mae_cor': col_num + 2, 'mse': 2*(col_num + 2),
+                      'mse_cor': 3*(col_num + 2), 'horizon_doubt': 4*(col_num+2),
+                      'hourly_doubt': 5*(col_num+2)}
 
-            offset = {'mse': len(targets) * len(systems) + 2, 'mae': 0}
             offset = offset[kpi.lower()]
 
             worksheet.merge_range(len(systems) + 2, offset, len(systems) + 3, offset, kpi.upper(), bold_format)
-            worksheet.write(len(systems) + 4, offset, 'err_hs', bold_format)
-            for i in range(24):
-                worksheet.write(len(systems) + 5 + i, offset, 'err_h{}'.format(i + 1), bold_format)
+            #worksheet.write(len(systems) + 4, offset, 'err_hs', bold_format)
+            for i in range(len(data.index)):
+                worksheet.write(len(systems) + 4 + i, offset, data.index[i], bold_format)
 
             multiple = 0
             for i in range(len(data.columns)):
@@ -511,24 +561,23 @@ def _result_comparison(systems):
 
         worksheet = workbook.add_worksheet('performance_summary')
 
+    #ToDo this seems like fairly ugly code, can be simplified (551-567)
         left_col = 0
         for key, info in data.items():
             if key == 'mae':
                 _write_MSE_MAE(systems, info, 'mae')
+            elif key == 'mae_cor':
+                _write_MSE_MAE(systems, info, 'mae_cor')
             elif key == 'mse':
                 _write_MSE_MAE(systems, info, 'mse')
+            elif key == 'mse_cor':
+                _write_MSE_MAE(systems, info, 'mse_cor')
+            elif key == 'horizon_doubt':
+                _write_MSE_MAE(systems, info, 'horizon_doubt')
+            elif key == 'hourly_doubt':
+                _write_MSE_MAE(systems, info, 'hourly_doubt')
             else:
                 left_col = _write_summary_table(systems, info, left_col)
-            #if key == 'times': # write table for times df
-             #   _write_timetable(systems, info)
-            #elif key == 'mae':
-               # _write_MSE_MAE(systems, info, 'mae')
-            #elif key == 'mse':
-             #   _write_MSE_MAE(systems, info, 'mse')
-            #elif key == 'weights':
-             #   _write_weight_table(systems, info)
-            #elif key == 'apollo':
-             #   _write_apollo_table(systems, info)
 
     workbook = xlsxwriter.Workbook('data\\model_comparison.xlsx')
 

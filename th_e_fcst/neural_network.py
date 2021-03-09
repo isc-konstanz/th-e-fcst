@@ -274,11 +274,10 @@ class NeuralNetwork(Model):
         res_data = self._resolutions[-1].resample(features)
         res_data = self.rescale(res_data, scale=True)
 
-        if 'faith' in self.features['input']:
+        if 'doubt' in self.features['input']:
             res_data = self.cov('pv_power', 'dni', res_data)
 
-        self.data_distributions(features, scale=True)
-
+        self.hourly_doubt(res_data['doubt'])
         return res_data
 
     def cov(self, f1, f2, features):
@@ -303,13 +302,13 @@ class NeuralNetwork(Model):
                 sf2 = features.loc[time-dt.timedelta(hours=23):time, f2]
 
                 #sample cov
-                features.loc[time, 'cov'] = ((sf1-sm1)*(sf2-sm2)).sum() / len(sf1)
+                features.loc[time, 'cov'] = ((sf1-sm1)*(sf2-sm2)).mean()
 
         # std of sample cov from population cov estimate
-        self.cov_std = np.sqrt(((features['cov'] - self.covariance)**2).sum() / len(features['cov'].dropna()))
+        self.cov_std = np.sqrt(((features['cov'] - self.covariance)**2).sum() / (len(features['cov'].dropna())-1))
 
         # faith value
-        features['faith'] = abs(features['cov']-self.covariance) / self.cov_std
+        features['doubt'] = abs(features['cov']-self.covariance) / self.cov_std
         features.drop(columns=['cov'])
 
         return features
@@ -398,6 +397,10 @@ class NeuralNetwork(Model):
                 path = os.path.join(self.dir, '../distributions/scaled/{}.png'.format(feature))
                 plt.savefig(path)
                 plt.clf()
+
+    def hourly_doubt(self, doubt):
+        hourly_doubt = doubt.groupby(doubt.index.hour).mean()
+        hourly_doubt.to_csv(os.path.join(self.dir, '..', 'results', 'hourly_doubt.csv'))
 
     def _parse_horizon(self, data):
         resolution = self._resolutions[0]
