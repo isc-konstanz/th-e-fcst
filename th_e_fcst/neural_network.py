@@ -276,8 +276,7 @@ class NeuralNetwork(Model):
 
         if 'doubt' in self.features['input']:
             res_data = self.cov('pv_power', 'dni', res_data)
-
-        self.hourly_doubt(res_data['doubt'])
+            self.hourly_doubt(res_data['doubt'])
         return res_data
 
     def cov(self, f1, f2, features):

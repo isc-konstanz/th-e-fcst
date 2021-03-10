@@ -98,26 +98,21 @@ def main(args):
         sim_time = end_simulation - start_simulation
 
         try:
-            times, mse, mae, mse_cor, mae_cor, weights, apollo, horizon_doubt = _result_summary(system, results, sim_time, train_time, pred_time)
+            kpi = _result_summary(system, results, sim_time, train_time, pred_time)
         except NameError:
             logging.warning('train_time set to {}:'.format(0) +
                             'Training for {}'.format(system.id) +
                             'did not occur due to preexisting model.')
             train_time = 0
-            times, mse, mae, mse_cor, mae_cor, weights, apollo, horizon_doubt = _result_summary(system, results, sim_time, train_time, pred_time)
+            kpi = _result_summary(system, results, sim_time, train_time, pred_time)
 
         interval = settings.getint('General', 'interval') / 60
         results = results[results['horizon'] <= interval].sort_index()
         del results['horizon']
         _result_write(system, results)
-        _result_write(system, mae, results_name='mae', results_dir='results')
-        _result_write(system, mae_cor, results_name='mae_cor', results_dir='results')
-        _result_write(system, mse, results_name='mse', results_dir='results')
-        _result_write(system, mse_cor, results_name='mse_cor', results_dir='results')
-        _result_write(system, times, results_name='times', results_dir='results')
-        _result_write(system, weights, results_name='weights', results_dir='results')
-        _result_write(system, apollo, results_name='apollo', results_dir='results')
-        _result_write(system, horizon_doubt, results_name='horizon_doubt', results_dir='results')
+
+        for key, info in kpi.items():
+            _result_write(system, info, results_name=key, results_dir='results')
 
     _result_comparison(systems)
 
@@ -157,7 +152,10 @@ def _simulate(settings, system, features, **kwargs):
 
         try:
             step_result = list()
-            step_doubt = list()
+
+            if 'doubt' in forecast.features['input']:
+                step_doubt = list()
+
             step_features = copy.deepcopy(features[time - forecast._resolutions[-1].time_prior:
                                                    time + forecast._resolutions[-1].time_horizon])
 
@@ -174,27 +172,30 @@ def _simulate(settings, system, features, **kwargs):
                 inputs = np.squeeze(step_inputs.fillna(0).values)
                 result = forecast._run_step(inputs)
 
-                #retrieve prediction doubt (assumes doubt is last column in inputs)
-                if forecast._estimate == True:
-                    doubt = inputs[-2, -1]
-                elif forecast._estimate == False:
-                    doubt = inputs[-1, -1]
+
+                if 'doubt' in forecast.features['input']:
+                    # retrieve prediction doubt (assumes doubt is last column in inputs)
+                    if forecast._estimate == True:
+                        doubt = inputs[-2, -1]
+                    elif forecast._estimate == False:
+                        doubt = inputs[-1, -1]
+
+                    step_doubt.append(doubt)
+
+                    # recalculate doubt for target hour (this value will be utilized in next prediction)
+                    sm1 = step_features.loc[step - dt.timedelta(hours=23):step, 'pv_power'].mean()
+                    sm2 = step_features.loc[step - dt.timedelta(hours=23):step, 'dni'].mean()
+
+                    sf1 = step_features.loc[step - dt.timedelta(hours=23):step, 'pv_power']
+                    sf2 = step_features.loc[step - dt.timedelta(hours=23):step, 'dni']
+
+                    cov = ((sf1 - sm1) * (sf2 - sm2)).mean()
+                    step_features.loc[step, 'doubt'] = abs(cov - forecast.covariance) / forecast.cov_std
 
                 # Add predicted output to features of next iteration
                 step_features.loc[step, forecast.features['target']] = result
 
-                # recalculate doubt for target hour
-                sm1 = step_features.loc[step-dt.timedelta(hours=23):step, 'pv_power'].mean()
-                sm2 = step_features.loc[step-dt.timedelta(hours=23):step, 'dni'].mean()
-
-                sf1 = step_features.loc[step-dt.timedelta(hours=23):step, 'pv_power']
-                sf2 = step_features.loc[step-dt.timedelta(hours=23):step, 'dni']
-
-                cov = ((sf1 - sm1) * (sf2 - sm2)).mean()
-                step_features.loc[step, 'doubt'] = abs(cov-forecast.covariance) / forecast.cov_std
-
                 step_result.append(result)
-                step_doubt.append(doubt)
                 step += dt.timedelta(minutes=forecast._resolutions[-1].minutes)
 
             if training_recursive:
@@ -207,13 +208,16 @@ def _simulate(settings, system, features, **kwargs):
 
             if 'doubt' in forecast.features['input']:
                 result = features.loc[step_index[0]:step_index[-1], ['doubt'] + target]
+                result = pd.concat([result, pd.DataFrame(step_result, result.index, columns=[t + '_est' for t in target]),
+                                    pd.DataFrame(step_doubt, result.index, columns=['true_doubt'])],
+                                   axis=1)
             else:
                 result = features.loc[step_index[0]:step_index[-1], target]
+                result = pd.concat([result, pd.DataFrame(step_result, result.index, columns=[t + '_est' for t in target])],
+                                   axis=1)
 
-            result = pd.concat([result, pd.DataFrame(step_result, result.index,
-                                columns=[t + '_est' for t in target]),
-                                pd.DataFrame(step_doubt, result.index, columns=['true_doubt'])],
-                                axis=1)
+
+
             result = system.forecast._model.rescale(result, scale=False)
 
             for target in forecast.features['target']:
@@ -234,49 +238,66 @@ def _simulate(settings, system, features, **kwargs):
     return results
 
 
-def _result_summary(system, results, sim_time, train_time, pred_time):
-    # retrieve duration of various process durations and compile in np.array
-    times = pd.DataFrame()
-    times['sim_time'] = [sim_time]
-    times['train_time'] = [train_time]
-    times['pred_time'] = [pred_time]
+def _result_summary(system, results, sim_time, train_time, pred_time, doubt=False):
 
     err_names = ['err_hs']
     for i in range(24):
         err_names.append('err_h{}'.format(i + 1))
 
-    #retrieve mean horizonwise doubt
-    horizon_doubt = pd.Series(index=err_names[1:], name='horizon_doubt')
-
-    for i in range(24):
-        horizon_data = results.loc[results['horizon'] == i + 1]
-        horizon_doubt['err_h{}'.format(i+1)] = horizon_data['true_doubt'].mean()
-
     # retrieve total and 'horizon_wise' mae and mse of sim targets
     targets = system.forecast._model.features['target']
-    mse = pd.DataFrame(index=err_names, columns=targets)
-    mse_cor = pd.DataFrame(index=err_names, columns=targets)
-    mae = pd.DataFrame(index=err_names, columns=targets)
-    mae_cor = pd.DataFrame(index=err_names, columns=targets)
-    for target in targets:
-        #noise corrected error
-        err_cor = results[target + '_err'] - results['true_doubt'] * results[target + '_err']
-        err_cor.loc[err_cor < 0] = 0
 
-        mse[target]['err_hs'] = (results[target + '_err'] ** 2).mean()
-        mse_cor[target]['err_hs'] = (err_cor ** 2).mean()
-        mae[target]['err_hs'] = abs(results[target + '_err']).mean()
-        mae_cor[target]['err_hs'] = abs(err_cor).mean()
+    if doubt is True:
+        kpi = {'times': pd.DataFrame(),
+               'mse': pd.DataFrame(index=err_names, columns=targets),
+               'mae': pd.DataFrame(index=err_names, columns=targets),
+               'mse_cor': pd.DataFrame(index=err_names, columns=targets),
+               'mae_cor': pd.DataFrame(index=err_names, columns=targets),
+               'weights': pd.DataFrame({'train_weights': 1, 'nontrain_weights': 1, 'total_weights': 1}, index=[0]),
+               'apollo': pd.DataFrame({'apollo': 1}, index=[0]),
+               'horizon_doubt': pd.Series(index=err_names[1:], name='horizon_doubt')}
+    else:
+        kpi = {'times': pd.DataFrame(),
+               'mse': pd.DataFrame(index=err_names, columns=targets),
+               'mae': pd.DataFrame(index=err_names, columns=targets),
+               'mse_cor': pd.DataFrame(index=err_names, columns=targets),
+               'mae_cor': pd.DataFrame(index=err_names, columns=targets),
+               'weights': pd.DataFrame({'train_weights': 1, 'nontrain_weights': 1, 'total_weights': 1}, index=[0]),
+               'apollo': pd.DataFrame({'apollo': 1}, index=[0])}
+
+    # retrieve duration of various process durations and compile in np.array
+    kpi['times']['sim_time'] = [sim_time]
+    kpi['times']['train_time'] = [train_time]
+    kpi['times']['pred_time'] = [pred_time]
+
+    if doubt is True:
+        for i in range(24):
+            horizon_data = results.loc[results['horizon'] == i + 1]
+            kpi['horizon_doubt']['err_h{}'.format(i+1)] = horizon_data['true_doubt'].mean()
+
+    for target in targets:
+        kpi['mse'][target]['err_hs'] = (results[target + '_err'] ** 2).mean()
+        kpi['mae'][target]['err_hs'] = abs(results[target + '_err']).mean()
+
+        if doubt is True:
+            # noise corrected error
+            err_cor = results[target + '_err'] - results['true_doubt'] * results[target + '_err']
+            err_cor.loc[err_cor < 0] = 0
+            kpi['mse_cor'][target]['err_hs'] = (err_cor ** 2).mean()
+            kpi['mae_cor'][target]['err_hs'] = abs(err_cor).mean()
+
         for i in range(24):
             #parse horizon data
             horizon_data = results.loc[results['horizon'] == i + 1]
-            err_cor = horizon_data[target + '_err'] - horizon_data['true_doubt'] * horizon_data[target + '_err']
-            err_cor.loc[err_cor < 0] = 0
 
-            mse[target]['err_h{}'.format(i+1)] = (horizon_data[target + '_err'] ** 2).mean()
-            mse_cor[target]['err_h{}'.format(i + 1)] = ((err_cor) ** 2).mean()
-            mae[target]['err_h{}'.format(i+1)] = abs(horizon_data[target + '_err']).mean()
-            mae_cor[target]['err_h{}'.format(i + 1)] = abs(err_cor).mean()
+            kpi['mse'][target]['err_h{}'.format(i+1)] = (horizon_data[target + '_err'] ** 2).mean()
+            kpi['mae'][target]['err_h{}'.format(i+1)] = abs(horizon_data[target + '_err']).mean()
+
+            if doubt is True:
+                err_cor = horizon_data[target + '_err'] - horizon_data['true_doubt'] * horizon_data[target + '_err']
+                err_cor.loc[err_cor < 0] = 0
+                kpi['mse_cor'][target]['err_h{}'.format(i + 1)] = (err_cor ** 2).mean()
+                kpi['mae_cor'][target]['err_h{}'.format(i + 1)] = abs(err_cor).mean()
 
     trainable_count = int(
         np.sum([K.count_params(p) for p in system.forecast._model.model.trainable_weights]))
@@ -284,14 +305,15 @@ def _result_summary(system, results, sim_time, train_time, pred_time):
         np.sum([K.count_params(p) for p in system.forecast._model.model.non_trainable_weights]))
     total_count = trainable_count + non_trainable_count
 
-    weights = pd.DataFrame({'train_weights': trainable_count, 'nontrain_weights': non_trainable_count, 'total_weights': total_count},
-                           index=[0])
+    kpi['weights']['train_weights'] = trainable_count
+    kpi['weights']['nontrain_weights'] = non_trainable_count
+    kpi['weights']['total_weights'] = total_count
 
     hourly_max = results['pv_power_err'].groupby([results.index.hour]).max()
     median = results['pv_power_err'].groupby([results.index.hour]).median()
-    apollo = pd.DataFrame({'apollo': ((median/hourly_max)).sum() / 24}, index=[0])
+    kpi['apollo']['apollo'] = (median[5:23]/hourly_max).mean()
 
-    return times, mse, mae, mse_cor, mae_cor, weights, apollo, horizon_doubt
+    return kpi
 
 
 def _result_horizon(system, results, hour):
