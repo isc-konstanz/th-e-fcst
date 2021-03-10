@@ -207,7 +207,7 @@ class NeuralNetwork(Model):
 
     def _parse_data(self, features, X=list(), y=list()):
         end = features.index[-1]
-        time = features.index[0] + self._resolutions[0].time_prior
+        time = features.index[0] + self._resolutions[-1].time_prior
         while time <= end:
             try:
                 inputs = self._parse_inputs(features, time)
