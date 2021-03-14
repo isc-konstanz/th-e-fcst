@@ -260,8 +260,6 @@ def _result_summary(system, results, sim_time, train_time, pred_time, doubt=Fals
         kpi = {'times': pd.DataFrame(),
                'mse': pd.DataFrame(index=err_names, columns=targets),
                'mae': pd.DataFrame(index=err_names, columns=targets),
-               'mse_cor': pd.DataFrame(index=err_names, columns=targets),
-               'mae_cor': pd.DataFrame(index=err_names, columns=targets),
                'weights': pd.DataFrame({'train_weights': 1, 'nontrain_weights': 1, 'total_weights': 1}, index=[0]),
                'apollo': pd.DataFrame({'apollo': 1}, index=[0])}
 
@@ -281,7 +279,7 @@ def _result_summary(system, results, sim_time, train_time, pred_time, doubt=Fals
 
         if doubt is True:
             # noise corrected error
-            err_cor = results[target + '_err'] - results['true_doubt'] * results[target + '_err']
+            err_cor = results[target + '_err'] - results['doubt'] * results[target + '_err']
             err_cor.loc[err_cor < 0] = 0
             kpi['mse_cor'][target]['err_hs'] = (err_cor ** 2).mean()
             kpi['mae_cor'][target]['err_hs'] = abs(err_cor).mean()
@@ -294,7 +292,7 @@ def _result_summary(system, results, sim_time, train_time, pred_time, doubt=Fals
             kpi['mae'][target]['err_h{}'.format(i+1)] = abs(horizon_data[target + '_err']).mean()
 
             if doubt is True:
-                err_cor = horizon_data[target + '_err'] - horizon_data['true_doubt'] * horizon_data[target + '_err']
+                err_cor = horizon_data[target + '_err'] - horizon_data['doubt'] * horizon_data[target + '_err']
                 err_cor.loc[err_cor < 0] = 0
                 kpi['mse_cor'][target]['err_h{}'.format(i + 1)] = (err_cor ** 2).mean()
                 kpi['mae_cor'][target]['err_h{}'.format(i + 1)] = abs(err_cor).mean()
@@ -508,11 +506,9 @@ def _prepare_weather(system):
 
 def _result_comparison(systems):
     import xlsxwriter
-    import warnings
-    warnings.filterwarnings("error")
 
     def _write_performance_summary(xldoc):
-        metrics = ['mse', 'mae', 'mse_cor', 'mae_cor', 'times', 'weights', 'apollo', 'horizon_doubt', 'hourly_doubt']
+        metrics = ['mse', 'mae', 'mse_cor', 'mae_cor', 'times', 'weights', 'apollo', 'horizon_doubt']
 
         def _retrieve_model_data(systems, sheets):
             data = {}
@@ -525,47 +521,55 @@ def _result_comparison(systems):
                 data_dir = system._configs['General']['data_dir']
                 database = os.path.join(data_dir, 'results')
                 for sheet in sheets:
-                    system_data = pd.read_csv(os.path.join(database, sheet + '.csv'), index_col=0)
+                    csv = os.path.join(database, sheet + '.csv')
+                    if os.path.isfile(csv):
+                        system_data = pd.read_csv(os.path.join(database, sheet + '.csv'), index_col=0)
 
-                    if sheet in ['mae', 'mae_cor', 'mse', 'mae_corr', 'horizon_doubt', 'hourly_doubt']:
-                        system_data.columns = [name + '_{}'.format(i) for name in system_data.columns]  # ensure unique column names
-                        data[sheet] = pd.concat([data[sheet], system_data], axis=1)
-                    else:
-                        data[sheet] = pd.concat([data[sheet], system_data])
+                        if sheet in ['mae', 'mae_cor', 'mse', 'mae_corr', 'horizon_doubt', 'hourly_doubt']:
+                            system_data.columns = [name + '_{}'.format(i) for name in system_data.columns]  # ensure unique column names
+                            data[sheet] = pd.concat([data[sheet], system_data], axis=1)
+                        else:
+                            data[sheet] = pd.concat([data[sheet], system_data])
                 i += 1
+
+            # delete keys for which no info was extracted
+            for sheet in sheets:
+                if data[sheet].shape == (0, 0):
+                    del data[sheet]
             return data
 
-        def _write_MSE_MAE(systems, data, kpi):
+        def _write_MSE_MAE(systems, data, kpi, offset):
             if kpi.lower() not in metrics:
                 print('Valid metrics include:')
                 for kpi in metrics:
                     print(kpi)
                 raise ValueError('The chosen kpi does not belong to the list metrics used.')
-            col_num = len(targets) * len(systems)
-            offset = {'mae': 0, 'mae_cor': col_num + 2, 'mse': 2*(col_num + 2),
-                      'mse_cor': 3*(col_num + 2), 'horizon_doubt': 4*(col_num+2),
-                      'hourly_doubt': 5*(col_num+2)}
-
-            offset = offset[kpi.lower()]
 
             worksheet.merge_range(len(systems) + 2, offset, len(systems) + 3, offset, kpi.upper(), bold_format)
-            #worksheet.write(len(systems) + 4, offset, 'err_hs', bold_format)
-            for i in range(len(data.index)):
-                worksheet.write(len(systems) + 4 + i, offset, data.index[i], bold_format)
 
-            multiple = 0
-            for i in range(len(data.columns)):
-                if i % len(targets) == 0:
-                    try:
-                        worksheet.merge_range(len(systems) + 2, multiple * len(targets) + offset,
-                                              len(systems) + 2, (multiple + 1) * len(targets) - 1 + offset,
-                                              systems[multiple].id, merge_format)
-                    except UserWarning:  # occurs when len(targets) == 1
-                        worksheet.write(len(systems) + 2, i + 1 + offset, systems[multiple].id, merge_format)
+            worksheet.write_column(len(systems) + 4, offset, list(data.index), bold_format)
+            offset += 1
 
-                    multiple += 1
-                worksheet.write(len(systems) + 3, i + 1 + offset, data.columns[i])
-                worksheet.write_column(len(systems) + 4, i + 1 + offset, data[data.columns[i]])
+            # write system ids above data
+            if len(systems) != len(data.columns):
+                step = int(len(data.columns) / len(systems))
+                n = 0
+                for system in systems:
+                    worksheet.merge_range(len(systems) + 2, offset + n*step,
+                                          len(systems)+2, offset + (n+1)*step - 1,
+                                          system.id, merge_format)
+                    n += 1
+            else:
+                for i in range(len(systems)):
+                    worksheet.write(len(systems)+2, offset + i, systems[i].id, merge_format)
+
+            # write data
+            for column in data.columns:
+                worksheet.write(len(systems)+3, offset, column)
+                worksheet.write_column(len(systems) + 4, offset, data[column])
+                offset += 1
+
+            return offset + 1
 
         def _write_summary_table(systems, data, offset):
             for i in range(len(systems)):
@@ -576,30 +580,21 @@ def _result_comparison(systems):
 
             return len(data.columns) + offset + 2  # next offset
 
-        # will not work if target sets are different, if this is the case
-        # the labeling of the various models in the tables will be incorrect
-        targets = systems[0].forecast._model.features['target']
+        if len(systems) == 25:
+            raise TypeError('This methods formatting relies on the fact that len(systems) does not' +
+                            ' equal 25.')
+
         data = _retrieve_model_data(systems, metrics)
 
         worksheet = workbook.add_worksheet('performance_summary')
 
-    #ToDo this seems like fairly ugly code, can be simplified (551-567)
         left_col = 0
+        offset = 0
         for key, info in data.items():
-            if key == 'mae':
-                _write_MSE_MAE(systems, info, 'mae')
-            elif key == 'mae_cor':
-                _write_MSE_MAE(systems, info, 'mae_cor')
-            elif key == 'mse':
-                _write_MSE_MAE(systems, info, 'mse')
-            elif key == 'mse_cor':
-                _write_MSE_MAE(systems, info, 'mse_cor')
-            elif key == 'horizon_doubt':
-                _write_MSE_MAE(systems, info, 'horizon_doubt')
-            elif key == 'hourly_doubt':
-                _write_MSE_MAE(systems, info, 'hourly_doubt')
-            else:
+            if len(info.index) == len(systems): #ToDo results in err if len(systems) = 25
                 left_col = _write_summary_table(systems, info, left_col)
+            else:
+                offset = _write_MSE_MAE(systems, info, key, offset)
 
     workbook = xlsxwriter.Workbook('data\\model_comparison.xlsx')
 
