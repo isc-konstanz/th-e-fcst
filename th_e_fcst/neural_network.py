@@ -172,19 +172,14 @@ class NeuralNetwork(Model):
         
         return results
 
-    def _run_step(self, X):
-        if len(X.shape) < 3:
-            X = X.reshape(1, X.shape[0], X.shape[1])
-            
-        result = float(self.model.predict(X, verbose=LOG_VERBOSE))
-        #if result < 1e-3:
-        #    result = 0
+    def _run_step(self, inputs):
+        if len(inputs.shape) < 3:
+            inputs = inputs.reshape(1, inputs.shape[0], inputs.shape[1])
         
-        return result
+        return float(self.model.predict(inputs, verbose=LOG_VERBOSE))
 
     def train(self, data):
         features = self._parse_features(data)
-        self.data_distributions(features, train=True)
         return self._train(features)
 
     def _train(self, features):
@@ -203,6 +198,7 @@ class NeuralNetwork(Model):
             with train_summary_writer.as_default():
                 scalar('norm_loss', norm_loss[epoch], step=epoch)
         
+        self._print_distributions(features)
         self._save()
         return result
 
@@ -223,7 +219,12 @@ class NeuralNetwork(Model):
 
         return inputs, targets
 
-    def _parse_data(self, features, inputs, targets, shuffle=True):
+    def _parse_data(self, features, inputs=None, targets=None, shuffle=True):
+        if inputs is None:
+            inputs = list()
+        if targets is None:
+            targets = list()
+        
         end = features.index[-1]
         time = features.index[0] + self._resolutions[0].time_prior
         while time <= end:
@@ -240,13 +241,11 @@ class NeuralNetwork(Model):
                 
             time += dt.timedelta(minutes=self._resolutions[-1].minutes)
 
-        inputs = np.array(inputs)
-        targets = np.array(targets)
-
         if shuffle:
-            return self._shuffle_data(inputs, targets)
+            inputs, 
+            targets = self._shuffle_data(inputs, targets)
 
-        return inputs, targets
+        return np.array(inputs), np.array(targets)
 
     def _parse_inputs(self, features, time):
         inputs = self._extract_inputs(features, time)
@@ -300,96 +299,51 @@ class NeuralNetwork(Model):
         data['day_of_week'] = data.index.dayofweek
         
         features = pd.concat([data, solar], axis=1)
-        features = self._parse_horizon(features)
         features = self._parse_cyclic(features)
-
-        features = self.rescale(features, scale=True)
+        features = self._parse_horizon(features)
+        features = self._scale_features(features)
+        
         return features
 
-    def rescale(self, data, scale=True):
-        assert isinstance(scale, bool)
+    def _scale_features(self, data):
 
-        def gen_trafos(data, features):
+        def _scale_transformations(data, invert = False):
+            trafo_mode = self.features['scale_transform']
             trafos = {}
-            for item in features['scaling']:
-                if features['trafo'].lower() == 'standard':
-                    mean = data[item[0]].mean()
-                    std = data[item[0]].std()
-
-                    def trafo(x, mean=mean, std=std):  # force early binding
-                        return (x - mean) / std
-
-                    def inv_trafo(x, mean=mean, std=std):
-                        return x * std + mean
-
-                elif features['trafo'].lower() == 'norm':
-                    feature_max = data[item[0]].max()
-
-                    def trafo(x, max=feature_max):  # force early binding
-                        return x / max
-
-                    def inv_trafo(x, max=feature_max):
-                        return x * max
-                else:
-                    raise ValueError('The transformation {}'.format(self.features['trafo'])
-                                     + ' is not defined in the function gen_trafos.')
-
-                trafo_tuple = (trafo, inv_trafo)
-                trafos[trafo_tuple] = item
-            return trafos
-
-        if scale == True:
-            self.trafos = gen_trafos(data, self.features)  # retrieve trafos for features
-            for trafo_tuple, item in self.trafos.items():
-                for column in item:
-                    if column in data.columns:
-                        data[column] = trafo_tuple[0](data[column])
-
-        if scale == False:
-            for trafo_tuple, item in self.trafos.items():
-                for column in item:
-                    if column in data.columns:
-                        data[column] = trafo_tuple[1](data[column])
-        return data
-
-    def data_distributions(self, features, train=True): #ToDo change path to generalize to multiple scaling trafos
-        assert isinstance(train, bool)
-        import matplotlib.pyplot as plt
-        bin_num = 100 #desired number of bins in each plot
-        for feature in features.columns: #create 100 equal space bin vals per feat.
-            bins = []
-            domain = features[feature].max()-features[feature].min()
-            bin_step = domain/bin_num
-            counter = features[feature].min()
-            for i in range(bin_num):
-                bins.append(counter)
-                counter = counter + bin_step
-            bins.append(counter) #for the last value of counter
-
-            plt_info = plt.hist(features[feature], bins=bins)
-            bin_values, bins = plt_info[0], plt_info[1]
-            count_range = max(bin_values)-min(bin_values)
-            sorted_values = list(bin_values)
-            sorted_values.sort(reverse=True)
-
-            for i in range(len(sorted_values)-1): #scale plots by step through sorted bins
-
-                if abs(sorted_values[i]-sorted_values[i+1])/count_range < 0.80:
+            
+            for feature, trafo in self.features['scaling'].items():
+                if feature not in data.columns:
                     continue
+                
+                if trafo_mode.lower() == 'norm' or str(trafo).isdigit():
+                    trafo_value = float(trafo) if not str(trafo).isdigit() else data[feature].max()
+                    
+                    def transform(value):
+                        if not invert:
+                            return value / trafo_value
+                        else:
+                            return value * trafo_value
+                    
+                elif trafo_mode.lower() == 'std':
+                    mean = data[feature].mean()
+                    std = data[feature].std()
+                    
+                    def transform(value):
+                        if not invert:
+                            return (value - mean) / std
+                        else:
+                            return value * std + mean
                 else:
-                    plt.ylim([0, sorted_values[i+1]+10])
-                    break
-
-            if train is True: #save histogram to appropriate folder.
-                path = os.path.join(self.dir, '../distributions/train/{}.png'.format(feature))
-                plt.savefig(path)
-                plt.clf()
-
-            elif train is False:
-                path = os.path.join(self.dir, '../distributions/test/{}.png'.format(feature))
-                plt.savefig(path)
-                plt.clf()
-
+                    raise ValueError('The transformation {} is not defined in the function gen_trafos.'.format(trafo_mode))
+                
+                trafos[feature] = transform
+            
+            return trafos
+        
+        for feature, transform in _scale_transformations(data):
+            data[feature] = transform(data[feature])
+        
+        return data
 
     def _parse_horizon(self, data):
         resolution = self._resolutions[0]
@@ -406,6 +360,44 @@ class NeuralNetwork(Model):
             data[feature + '_cos'] = np.cos(2.0*np.pi*data[feature] / bound)
             data = data.drop(columns=[feature])
         return data
+
+
+    def _print_distributions(self, features):
+        import matplotlib.pyplot as plt
+        
+        # Desired number of bins in each plot
+        bin_num = 100
+        for feature in features.columns: #create 100 equal space bin vals per feat.
+            bins = []
+            bin_domain = features[feature].max() - features[feature].min()
+            bin_step = bin_domain/bin_num
+            
+            counter = features[feature].min()
+            for i in range(bin_num):
+                bins.append(counter)
+                counter = counter + bin_step
+            
+            # Add the last value of the counter
+            bins.append(counter) 
+            
+            plt_info = plt.hist(features[feature], bins=bins)
+            bin_values, bins = plt_info[0], plt_info[1]
+            count_range = max(bin_values)-min(bin_values)
+            sorted_values = list(bin_values)
+            sorted_values.sort(reverse=True)
+            
+            # Scale plots by step through sorted bins
+            for i in range(len(sorted_values)-1):
+                if abs(sorted_values[i]-sorted_values[i+1])/count_range < 0.80:
+                    continue
+                else:
+                    plt.ylim([0, sorted_values[i+1]+10])
+                    break
+            
+            # Save histogram to appropriate folder
+            path = os.path.join(self.dir, 'dist', '{}.png'.format(feature))
+            plt.savefig(path)
+            plt.clf()
 
 
 class ConvLSTM(NeuralNetwork):
