@@ -188,42 +188,65 @@ class NeuralNetwork(Model):
         return self._train(features)
 
     def _train(self, features):
-        X, y = self._parse_data(features)
-        logger.debug("Built input of %s, %s", X.shape, y.shape)
-
-        split = int(len(y) / 10.0)
-        result = self.model.fit(X[split:], y[split:], batch_size=self.batch, epochs=self.epochs,
-                                validation_data=(X[:split], y[:split]), callbacks=self.callbacks,
+        inputs, targets = self._parse_data(features)
+        logger.debug("Built input of %s, %s", inputs.shape, targets.shape)
+        
+        split = int(len(targets) / 10.0)
+        result = self.model.fit(inputs[split:], targets[split:], batch_size=self.batch, epochs=self.epochs,
+                                validation_data=(inputs[:split], targets[:split]), callbacks=self.callbacks,
                                 verbose=LOG_VERBOSE)
-
+        
         # write normed loss to tensorboard
         train_summary_writer = create_file_writer(os.path.join(self.dir, 'custom_metric'))
         norm_loss = result.history['loss']/features['pv_power'].max()
         for epoch in range(len(result.history['loss'])):
             with train_summary_writer.as_default():
                 scalar('norm_loss', norm_loss[epoch], step=epoch)
-
+        
         self._save()
         return result
 
-    def _parse_data(self, features, X=list(), y=list()):
+    def _shuffle_data(self, inputs, targets):
+        import random
+
+        data = []
+        for i in range(len(inputs)):
+            data.append(list(inputs[i]) + list([targets[i]]))
+
+        random.shuffle(data)
+
+        inputs = []
+        targets = []
+        for i in range(len(data)):
+            inputs.append(data[i][:len(self.features['input'])])
+            targets.append(data[i][len(self.features['input']):][0])
+
+        return inputs, targets
+
+    def _parse_data(self, features, inputs, targets, shuffle=True):
         end = features.index[-1]
         time = features.index[0] + self._resolutions[0].time_prior
         while time <= end:
             try:
-                inputs = self._parse_inputs(features, time)
+                input = self._parse_inputs(features, time)
                 target = self._parse_target(features, time)
-                
+
                 # If no exception was raised, add the validated data to the set
-                X.append(inputs)
-                y.append(target)
+                inputs.append(input)
+                targets.append(target)
                 
             except ValueError:
                 logger.debug("Skipping %s", time)
                 
             time += dt.timedelta(minutes=self._resolutions[-1].minutes)
-        
-        return np.array(X), np.array(y)
+
+        inputs = np.array(inputs)
+        targets = np.array(targets)
+
+        if shuffle:
+            return self._shuffle_data(inputs, targets)
+
+        return inputs, targets
 
     def _parse_inputs(self, features, time):
         inputs = self._extract_inputs(features, time)
