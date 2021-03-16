@@ -22,7 +22,7 @@ from keras.models import Sequential
 from keras.layers import LSTM, Dense, LeakyReLU, Flatten
 from keras.layers.convolutional import Conv1D, MaxPooling1D
 from keras.models import model_from_json
-from tensorflow.summary import create_file_writer, scalar
+from tensorflow import summary
 from th_e_core import Model
 from abc import abstractmethod
 
@@ -191,12 +191,13 @@ class NeuralNetwork(Model):
                                 validation_data=(inputs[:split], targets[:split]), callbacks=self.callbacks,
                                 verbose=LOG_VERBOSE)
         
-        # write normed loss to tensorboard
-        train_summary_writer = create_file_writer(os.path.join(self.dir, 'custom_metric'))
-        norm_loss = result.history['loss']/features['pv_power'].max()
-        for epoch in range(len(result.history['loss'])):
-            with train_summary_writer.as_default():
-                scalar('norm_loss', norm_loss[epoch], step=epoch)
+        # Write normed loss to TensorBoard
+        writer = summary.create_file_writer(os.path.join(self.dir, 'loss'))
+        for target in self.features['target']:
+            loss = result.history['loss']/features[target].max()
+            for epoch in range(len(result.history['loss'])):
+                with writer.as_default():
+                    summary.scalar('{}_norm'.format(target), loss[epoch], step=epoch)
         
         self._print_distributions(features)
         self._save()
@@ -380,16 +381,16 @@ class NeuralNetwork(Model):
             
             plt_info = plt.hist(features[feature], bins=bins)
             bin_values, bins = plt_info[0], plt_info[1]
-            count_range = max(bin_values)-min(bin_values)
+            count_range = max(bin_values) - min(bin_values)
             sorted_values = list(bin_values)
             sorted_values.sort(reverse=True)
             
             # Scale plots by step through sorted bins
-            for i in range(len(sorted_values)-1):
-                if abs(sorted_values[i]-sorted_values[i+1])/count_range < 0.80:
+            for i in range(len(sorted_values) - 1):
+                if abs(sorted_values[i] - sorted_values[i+1])/count_range < 0.80:
                     continue
                 else:
-                    plt.ylim([0, sorted_values[i+1]+10])
+                    plt.ylim([0, sorted_values[i+1] + 10])
                     break
             
             # Save histogram to appropriate folder
@@ -432,20 +433,20 @@ class ConvLSTM(NeuralNetwork):
                              padding='causal')) # ToDo handle padding in configs
         
         model.add(MaxPooling1D(int(configs['pool_size'])))
-
+        
         lstm_units = json.loads(configs['lstm_units'])
         while lstm_units:
             model.add(LSTM(lstm_units.pop(0),
                            activation=configs['lstm_activation']))
-
+            
         dense_units = json.loads(configs['dense_units'])
         while dense_units:
             model.add(Dense(dense_units.pop(0),
                             activation=configs['dense_activation'],
                             kernel_initializer=configs['dense_kernel']))
-
+        
         model.add(Dense(len(self.features['target'])))
-
+        
         if configs['dense_activation']=='relu':
             model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
         
@@ -467,6 +468,48 @@ class ConvLSTM(NeuralNetwork):
             #inputs.interpolate(method='nearest', fill_value='extrapolate', inplace=True)
         
         return inputs
+
+
+class StackedLSTM(NeuralNetwork):
+
+    def build(self, configs):
+        steps = 0
+        for resolution in self._resolutions:
+            steps += resolution.steps_prior
+        
+        model = Sequential()
+
+        model.add(LSTM(32,
+                       input_shape=(steps, len(self.features['target'] + self.features['input'])),
+                       activation=configs['activation'],
+                       kernel_initializer=configs['lstm_kernel'],
+                       return_sequences=True))
+
+        lstm_units = json.loads(configs['lstm_units'])
+        while lstm_units:
+            model.add(LSTM(lstm_units.pop(0),
+                           activation=configs['lstm_activation'],
+                           kernel_initializer=configs['lstm_kernel'],
+                           return_sequences=True))
+
+        model.add(LSTM(32,
+                       input_shape=(steps, len(self.features['target'] + self.features['input'])),
+                       activation=configs['lstm_activation'],
+                       kernel_initializer=configs['lstm_kernel']))
+        
+        neurons = json.loads(configs['dense_units'])
+        while neurons:
+            model.add(Dense(neurons.pop(0),
+                            activation=configs['dense_activation'],
+                            kernel_initializer=configs['dense_kernel']))
+
+        model.add(Dense(len(self.features['target'])))
+
+        if configs['dense_activation'] == 'relu':
+            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
+        
+        return model
+
 
 class MultiLayerPerceptron(NeuralNetwork):
 
@@ -522,47 +565,6 @@ class MultiLayerPerceptron(NeuralNetwork):
         if configs['dense_activation'] == 'relu':
             model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
 
-        return model
-
-
-class StackedLSTM(NeuralNetwork):
-
-    def build(self, configs):
-        steps = 0
-        for resolution in self._resolutions:
-            steps += resolution.steps_prior
-        
-        model = Sequential()
-
-        model.add(LSTM(32,
-                       input_shape=(steps, len(self.features['target'] + self.features['input'])),
-                       activation=configs['activation'],
-                       kernel_initializer=configs['lstm_kernel'],
-                       return_sequences=True))
-
-        lstm_units = json.loads(configs['lstm_units'])
-        while lstm_units:
-            model.add(LSTM(lstm_units.pop(0),
-                           activation=configs['lstm_activation'],
-                           kernel_initializer=configs['lstm_kernel'],
-                           return_sequences=True))
-
-        model.add(LSTM(32,
-                       input_shape=(steps, len(self.features['target'] + self.features['input'])),
-                       activation=configs['lstm_activation'],
-                       kernel_initializer=configs['lstm_kernel']))
-        
-        neurons = json.loads(configs['dense_units'])
-        while neurons:
-            model.add(Dense(neurons.pop(0),
-                            activation=configs['dense_activation'],
-                            kernel_initializer=configs['dense_kernel']))
-
-        model.add(Dense(len(self.features['target'])))
-
-        if configs['dense_activation'] == 'relu':
-            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
-        
         return model
 
 
