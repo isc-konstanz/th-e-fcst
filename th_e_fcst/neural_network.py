@@ -219,11 +219,9 @@ class NeuralNetwork(Model):
 
         return inputs, targets
 
-    def _parse_data(self, features, inputs=None, targets=None, shuffle=True):
-        if inputs is None:
-            inputs = list()
-        if targets is None:
-            targets = list()
+    def _parse_data(self, features, shuffle=True):
+        targets = list()
+        inputs = list()
         
         end = features.index[-1]
         time = features.index[0] + self._resolutions[0].time_prior
@@ -231,20 +229,20 @@ class NeuralNetwork(Model):
             try:
                 input = self._parse_inputs(features, time)
                 target = self._parse_target(features, time)
-
+                
                 # If no exception was raised, add the validated data to the set
                 inputs.append(input)
                 targets.append(target)
                 
             except ValueError:
                 logger.debug("Skipping %s", time)
-                
+            
             time += dt.timedelta(minutes=self._resolutions[-1].minutes)
-
+        
         if shuffle:
             inputs, 
             targets = self._shuffle_data(inputs, targets)
-
+        
         return np.array(inputs), np.array(targets)
 
     def _parse_inputs(self, features, time):
