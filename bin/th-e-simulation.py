@@ -525,7 +525,7 @@ def _result_comparison(systems):
                     if os.path.isfile(csv):
                         system_data = pd.read_csv(os.path.join(database, sheet + '.csv'), index_col=0)
 
-                        if sheet in ['mae', 'mae_cor', 'mse', 'mae_corr', 'horizon_doubt', 'hourly_doubt']:
+                        if sheet in ['mae', 'mae_cor', 'mse', 'mae_cor', 'horizon_doubt', 'hourly_doubt']:
                             system_data.columns = [name + '_{}'.format(i) for name in system_data.columns]  # ensure unique column names
                             data[sheet] = pd.concat([data[sheet], system_data], axis=1)
                         else:
