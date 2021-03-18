@@ -8,15 +8,12 @@
     To learn how to configure specific settings, see "th-e-simulation --help"
 
 """
-import logging
-
-import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
-
+import sys
 import copy
 import shutil
 import inspect
+import logging
 import pytz as tz
 import numpy as np
 import pandas as pd
@@ -26,6 +23,8 @@ import matplotlib.pyplot as plt
 
 from argparse import ArgumentParser, RawTextHelpFormatter
 from configparser import ConfigParser
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
 
 
 def main(args):
@@ -111,23 +110,26 @@ def _simulate(settings, system, features, **kwargs):
     
     while time <= end:
         # Check if this step was simulated already and load the results, if so
-        if database.exists(time, subdir='outputs'):
-            result = database.get(time, subdir='outputs')
-            results = pd.concat([results, result], axis=0)
-            
-            time += dt.timedelta(minutes=interval)
-            continue
+        # if database.exists(time, subdir='outputs'):
+            # result = database.get(time, subdir='outputs')
+            # results = pd.concat([results, result], axis=0)
+            #
+            # time += dt.timedelta(minutes=interval)
+            # continue
         
         try:
             step_result = list()
-            step_features = copy.deepcopy(features[time - resolution.time_prior\
-                                                        - resolution.time_step\
-                                                        + dt.timedelta(seconds=1):
-                                                   time + resolution.time_horizon])
+            step_prior = time - resolution.time_prior - resolution.time_step + dt.timedelta(seconds=1)
+            step_horizon = time + resolution.time_horizon
+            step_features = copy.deepcopy(features[step_prior:step_horizon])
+            
+            # Remove target values from features, as those will be recursively filled with predictions
+            step_features.loc[time:, forecast.features['target']] = np.NaN
             
             step_index = step_features[time:].index
             step = step_index[0]
             while step in step_index:
+                step_next = step + dt.timedelta(minutes=resolution.minutes)
                 step_inputs = forecast._extract_inputs(step_features, step)
                 
                 if verbose:
@@ -139,12 +141,13 @@ def _simulate(settings, system, features, **kwargs):
                 result = forecast._run_step(inputs)
                 
                 # Add predicted output to features of next iteration
-                step_features.loc[step, forecast.features['target']] = result
+                step_range = step_features[(step_features.index >= step) & (step_features.index < step_next)].index
+                step_features.loc[step_range, forecast.features['target']] = result
                 step_result.append(result)
-                step += dt.timedelta(minutes=resolution.minutes)
+                step = step_next
             
             if training_recursive:
-                training_features = step_features
+                training_features = features[step_prior:step_horizon]
                 
                 forecast._train(training_features)
                 forecast._save_model()
@@ -257,7 +260,7 @@ def _prepare_weather(system):
     meteoblue_libs = os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme', 'data', 'Meteoblue')
     meteoblue_lib = os.path.join(meteoblue_libs, 'Locations', loc)
     if not os.path.isdir(meteoblue_libs):
-        raise Exception("Unable to access meteoblue directory: {0}".format(meteoblue_dir))
+        raise Exception("Unable to access meteoblue directory: {0}".format(meteoblue_libs))
     
     infos = []
     files = []
@@ -379,7 +382,7 @@ def _prepare_system(system):
     
     opsd_libs = os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme', 'data', 'OPSD')
     if not os.path.isdir(opsd_libs):
-        raise Exception("Unable to access OPSD directory: {0}".format(meteoblue_dir))
+        raise Exception("Unable to access OPSD directory: {0}".format(opsd_libs))
     
     index = 'utc_timestamp'
     data = pd.read_csv(os.path.join(opsd_libs, 'household_data_1min.csv'), 
