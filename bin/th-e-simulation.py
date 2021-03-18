@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 
 from argparse import ArgumentParser, RawTextHelpFormatter
 from configparser import ConfigParser
+from tensorboard import program
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
 
@@ -41,6 +42,8 @@ def main(args):
     
     kwargs = vars(args)
     kwargs.update(dict(settings.items('General')))
+    
+    tensorboard = _launch_tensorboard(**kwargs)
     
     start = _get_time(settings['General']['start'])
     end = _get_time(settings['General']['end']) + dt.timedelta(hours=23, minutes=59)
@@ -79,7 +82,16 @@ def main(args):
         del results['horizon']
         _result_write(system, results)
         
-    logger.info("Finished TH-E Simulation")
+    logger.info("TH-E Simulation{0} finished".format('s' if len(systems) > 1 else ''))
+    
+    while tensorboard:
+        logger.info("TensorBoard will be kept running")
+        try:
+            time.sleep(100)
+            
+        except KeyboardInterrupt:
+            tensorboard = False
+
 
 def _simulate(settings, system, features, **kwargs):
     forecast = system.forecast._model
@@ -173,6 +185,7 @@ def _simulate(settings, system, features, **kwargs):
         time += dt.timedelta(minutes=interval)
     
     return results
+
 
 def _result_horizon(system, results, hour):
     results_dir = os.path.join('results', 'horizons')
@@ -475,11 +488,33 @@ def _process_power(energy, filter=True):
     
     return column_power
 
+
+def _launch_tensorboard(**kwargs):
+    launch = kwargs['tensorboard'] if isinstance(kwargs['tensorboard'], bool) \
+                                   else str(kwargs['tensorboard']).lower() == 'true'
+    
+    if launch:
+        logging.getLogger('tensorboard').setLevel(logging.ERROR)
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
+        
+        tensorboard = program.TensorBoard()
+        tensorboard.configure(argv=[None, '--logdir', kwargs['data_dir']])
+        tensorboard_url = tensorboard.launch()
+        
+        logger.info("Started TensorBoard at {}".format(tensorboard_url))
+    
+    return launch
+
+
 def _get_time(time_str):
     return tz.utc.localize(dt.datetime.strptime(time_str, '%d.%m.%Y'))
 
+
 def _get_parser(root_dir):
     from th_e_fcst import __version__
+    
+    def _to_bool(v):
+        return v.lower() in ("yes", "true", "1")
     
     parser = ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
     parser.add_argument('-v', '--version',
@@ -498,7 +533,14 @@ def _get_parser(root_dir):
                         default='conf',
                         metavar='DIR')
     
+    parser.add_argument('-tb', '--tensorboard',
+                        dest='tensorboard',
+                        help="Launches TensorBoard at the selected data directory",
+                        type=_to_bool,
+                        default=False)
+    
     return parser
+
 
 if __name__ == "__main__":
     root_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(main)))
