@@ -17,12 +17,11 @@ from pandas.tseries.frequencies import to_offset
 from pvlib.solarposition import get_solarposition
 from keras.callbacks import History, EarlyStopping, TensorBoard
 from keras.models import Sequential
-from keras.layers import LSTM, Dense, LeakyReLU, Flatten
+from keras.layers import LSTM, Dense, Dropout, LeakyReLU, Flatten
 from keras.layers.convolutional import Conv1D, MaxPooling1D
 from keras.models import model_from_json
 from tensorflow import summary
 from th_e_core import Model
-from abc import abstractmethod
 
 logger = logging.getLogger(__name__)
 
@@ -32,45 +31,25 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
 class NeuralNetwork(Model):
-    SECTIONS = ['Resolution', 'Model', 'Features']
 
-    @classmethod
-    def from_forecast(cls, context, forecast_configs, **kwargs):
-        configs = ConfigParser()
-        configs.add_section('General')
+    @staticmethod
+    def from_configs(context, configs, **kwargs):
+        model = configs.get('General', 'model', fallback='default').lower()
 
-        root_dir = forecast_configs.get('General', 'root_dir')
-        configs.set('General', 'root_dir', root_dir)
+        if model in ['mlp', 'ann', 'dense', 'default']:
+            return NeuralNetwork(configs, context, **kwargs)
 
-        lib_dir = forecast_configs.get('General', 'lib_dir')
-        configs.set('General', 'lib_dir', lib_dir if os.path.isabs(lib_dir) else os.path.join(root_dir, lib_dir))
+        elif model in ['convdilated', 'conv', 'cnn']:
+            return ConvDilated(configs, context, **kwargs)
 
-        tmp_dir = forecast_configs.get('General', 'tmp_dir')
-        configs.set('General', 'tmp_dir', tmp_dir if os.path.isabs(tmp_dir) else os.path.join(root_dir, tmp_dir))
+        elif model == 'convlstm':
+            return ConvLSTM(configs, context, **kwargs)
 
-        data_dir = forecast_configs.get('General', 'data_dir')
-        configs.set('General', 'data_dir', data_dir if os.path.isabs(data_dir) else os.path.join(root_dir, data_dir))
+        elif model == 'lstm':
+            return StackedLSTM(configs, context, **kwargs)
 
-        configs.set('General', 'config_dir', forecast_configs.get('General', 'config_dir'))
-        configs.set('General', 'config_file', forecast_configs.get('General', 'config_file'))
-
-        if forecast_configs.has_section('NeuralNetwork'):
-            for key, value in forecast_configs.items('NeuralNetwork'):
-                configs.set('General', key, value)
-
-        for section in forecast_configs.sections():
-            if section.startswith(tuple(NeuralNetwork.SECTIONS)):
-                if not configs.has_section(section):
-                    configs.add_section(section)
-                for key, value in forecast_configs.items(section):
-                    configs.set(section, key, value)
-
-        configs.add_section('Import')
-        configs.set('Import', 'class', cls.__name__)
-        configs.set('Import', 'module', '.'.join(cls.__module__.split('.')[:-1]))
-        configs.set('Import', 'package', cls.__module__.split('.')[-1])
-
-        return cls(configs, context, **kwargs)
+        else:
+            return Model.from_configs(context, configs, **kwargs)
 
     def _configure(self, configs, **kwargs):
         super()._configure(configs, **kwargs)
@@ -80,13 +59,6 @@ class NeuralNetwork(Model):
         self.epochs = configs.getint('General', 'epochs')
         self.batch = configs.getint('General', 'batch')
 
-        self._resolutions = list()
-        for resolution in [s for s in configs.sections() if s.lower().startswith('resolution')]:
-            self._resolutions.append(Resolution(**dict(configs.items(resolution))))
-
-        if len(self._resolutions) < 1:
-            raise ValueError("Invalid control configurations without specified step resolutions")
-
         self.features = {}
         for (key, value) in configs.items('Features'):
             try:
@@ -94,6 +66,34 @@ class NeuralNetwork(Model):
 
             except json.decoder.JSONDecodeError:
                 pass
+
+        resolutions_range = pd.date_range(dt.datetime.now().replace(minute=0, second=0, microsecond=0), periods=0)
+
+        self.resolutions = list()
+        for resolution_configs in [s for s in configs.sections() if s.lower().startswith('resolution')]:
+            resolution = Resolution(**dict(configs.items(resolution_configs)))
+
+            resolution_start = dt.datetime.now().replace(minute=0, second=0, microsecond=0) - resolution.time_prior
+            resolutions_range = resolutions_range.union(pd.date_range(resolution_start,
+                                                                      periods=resolution.steps_prior,
+                                                                      freq='{}min'.format(resolution.minutes)))
+
+            self.resolutions.append(resolution)
+
+        if len(self.resolutions) < 1:
+            raise ValueError("Invalid control configurations without specified step resolutions")
+
+        self._estimate = kwargs.get('estimate') if 'estimate' in kwargs else \
+            configs.get('Features', 'estimate', fallback='true').lower() == 'true'
+
+        input_steps = len(resolutions_range)
+
+        if self._estimate:
+            input_steps += 1
+
+        self._input_shape = (input_steps,
+                             len(self.features['target'] + self.features['input']))
+        self._target_shape = len(self.features['target'])
 
     def _build(self, context, configs, **kwargs):
         super()._build(context, configs, **kwargs)
@@ -108,15 +108,48 @@ class NeuralNetwork(Model):
             self.model = self._load()
 
         else:
-            self.model = self.build(configs['Model'])
+            self.model = self._build_model(configs)
 
-        self.model.compile(optimizer=configs.get('Model', 'optimizer'),
-                           loss=configs.get('Model', 'loss'),
-                           metrics=configs.get('Model', 'metrics', fallback=[]))
+        self.model.compile(optimizer=configs.get('General', 'optimizer'), loss=configs.get('General', 'loss'),
+                           metrics=configs.get('General', 'metrics', fallback=[]))
 
-    @abstractmethod
-    def build(self, configs):
-        pass
+    def _build_model(self, configs):
+        model = Sequential()
+        model = self._build_dense(model, configs['Dense'], first=True)
+
+        return model
+
+    def _build_dense(self, model, configs, first=False):
+        dropout = configs.getfloat('dropout', fallback=0)
+        units = configs.get('units')
+        if units.isdigit():
+            units = [int(units)] * configs.getint('layers', fallback=1)
+        else:
+            units = json.loads(units)
+
+        for i in range(len(units)):
+            if i == 0 and first:
+                # model.add(Flatten())
+                model.add(Dense(units[i],
+                                input_dim=self._input_shape,
+                                activation=configs['activation'],
+                                kernel_initializer=configs['kernel_initializer']))
+
+            model.add(Dense(units[i],
+                            activation=configs['activation'],
+                            kernel_initializer=configs['kernel_initializer']))
+
+            if dropout > 0.:
+                model.add(Dropout(dropout))
+
+        model.add(Dense(self._target_shape,
+                        activation=configs['activation'],
+                        kernel_initializer=configs['kernel_initializer']))
+
+        if configs['activation'] == 'relu':
+            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
+
+        return model
 
     def _load(self, inplace=False):
         logger.debug("Loading model from file")
@@ -167,7 +200,7 @@ class NeuralNetwork(Model):
         features.loc[time:, self.features['target']] = np.NaN
 
         while time < end:
-            time_next = time + dt.timedelta(minutes=self._resolutions[0].minutes)
+            time_next = time + dt.timedelta(minutes=self.resolutions[0].minutes)
 
             inputs = self._parse_inputs(features, time)
             result = self._run_step(inputs)
@@ -218,43 +251,51 @@ class NeuralNetwork(Model):
 
         data = []
         for i in range(len(inputs)):
-            data.append(list(inputs[i]) + list([targets[i]]))
-
+            data.append({
+                'input': inputs[i],
+                'target': targets[i]
+            })
         random.shuffle(data)
 
         inputs = []
         targets = []
         for i in range(len(data)):
-            inputs.append(data[i][:len(self.features['input'])])
-            targets.append(data[i][len(self.features['input']):][0])
+            inputs.append(data[i]['input'])
+            targets.append(data[i]['target'])
 
         return inputs, targets
 
     def _parse_data(self, features, shuffle=True):
-        targets = list()
-        inputs = list()
+        targets = []
+        inputs = []
 
         end = features.index[-1]
-        time = features.index[0] + self._resolutions[0].time_prior
+        time = features.index[0] + self.resolutions[0].time_prior
         while time <= end:
             try:
                 input = self._parse_inputs(features, time)
                 target = self._parse_target(features, time)
 
                 # If no exception was raised, add the validated data to the set
-                inputs.append(input)
-                targets.append(target)
+                if not isinstance(input, list):
+                    inputs.append(input)
+                else:
+                    inputs.append(np.array(input, dtype=float))
+
+                if not isinstance(target, list):
+                    targets.append(target)
+                else:
+                    targets.append(np.array(target, dtype=float))
 
             except ValueError:
                 logger.debug("Skipping %s", time)
 
-            time += dt.timedelta(minutes=self._resolutions[-1].minutes)
+            time += dt.timedelta(minutes=self.resolutions[-1].minutes)
 
         if shuffle:
-            inputs,
-            targets = self._shuffle_data(inputs, targets)
+            inputs, targets = self._shuffle_data(inputs, targets)
 
-        return np.array(inputs), np.array(targets)
+        return np.array(inputs, dtype=object), np.array(targets, dtype=object)
 
     def _parse_inputs(self, features, time):
         inputs = self._extract_inputs(features, time)
@@ -263,17 +304,27 @@ class NeuralNetwork(Model):
     def _extract_inputs(self, features, time):
         data = pd.DataFrame()
         data.index.name = 'time'
-        for resolution in self._resolutions:
+        for resolution in self.resolutions:
             resolution_end = time - resolution.time_step
             resolution_start = time - resolution.time_prior
-            resolution_data = features.loc[
-                              (resolution_start - resolution.time_step + dt.timedelta(seconds=1)):resolution_end,
-                              self.features['target'] + self.features['input']]
+            resolution_data = features.loc[resolution_start:resolution_end,
+                                           self.features['target'] + self.features['input']]
 
-            data = resolution.resample(resolution_data).combine_first(data[:resolution_start])
+            data = resolution.resample(resolution_data).combine_first(data)
 
         if data.isnull().values.any():
             raise ValueError("Input data incomplete for %s" % time)
+
+        if self._estimate:
+            resolution = self.resolutions[-1]
+            resolution_end = time - resolution.time_step
+            resolution_inputs = resolution.resample(features.loc[resolution_end:time,
+                                                                 self.features['input']])
+
+            data.loc[time] = np.append([np.NaN] * len(self.features['target']), resolution_inputs.values)
+
+            # TODO: Replace interpolation with prediction of ANN
+            data.interpolate(method='linear', inplace=True)
 
         return data
 
@@ -283,7 +334,7 @@ class NeuralNetwork(Model):
 
     def _extract_target(self, features, time):
         # TODO: Implement horizon resolutions
-        resolution = self._resolutions[-1]
+        resolution = self.resolutions[-1]
         resolution_target = resolution.resample(
             features.loc[time - resolution.time_step + dt.timedelta(seconds=1): time,
             self.features['target']])
@@ -305,7 +356,7 @@ class NeuralNetwork(Model):
         solar = solar.loc[:, ['azimuth', 'apparent_zenith', 'apparent_elevation']]
         solar.columns = ['solar_azimuth', 'solar_zenith', 'solar_elevation']
 
-        data = data[np.intersect1d(data.columns, columns)]
+        data = data[np.intersect1d(data.columns, columns)].copy()
         data['day_of_year'] = data.index.dayofyear
         data['day_of_week'] = data.index.dayofweek
 
@@ -318,9 +369,9 @@ class NeuralNetwork(Model):
 
     def _scale_features(self, data):
         if 'scaling' not in self.features:
-            return data;
+            return data
 
-        def _scale_transformations(data, invert=False):
+        def _scale_transformations(invert=False):
             trafos = {}
 
             for feature, trafo in self.features.get('scaling', {}).items():
@@ -352,18 +403,15 @@ class NeuralNetwork(Model):
 
             return trafos
 
-        for feature, transform in _scale_transformations(data):
+        for feature, transform in _scale_transformations():
             data[feature] = transform(data[feature])
 
         return data
 
     def _parse_horizon(self, data):
-        resolution = self._resolutions[0]
-        if resolution.steps_horizon is not None:
-            data['horizon'] = (data.index - data.index[0]) / np.timedelta64(1, 'm') % (
-                        resolution.minutes * resolution.steps_horizon)
-        else:
-            data['horizon'] = self.resolution * range(data.index)
+        resolution = self.resolutions[0]
+        data['horizon'] = (data.index - data.index[0]) / np.timedelta64(1, 'm') % (
+                resolution.minutes * resolution.steps_horizon)
 
         return data
 
@@ -372,7 +420,7 @@ class NeuralNetwork(Model):
             data[feature + '_sin'] = np.sin(2.0 * np.pi * data[feature] / bound)
             data[feature + '_cos'] = np.cos(2.0 * np.pi * data[feature] / bound)
             data = data.drop(columns=[feature])
-        
+
         return data
 
     def _print_distributions(self, features):
@@ -413,172 +461,75 @@ class NeuralNetwork(Model):
             plt.clf()
 
 
-class ConvLSTM(NeuralNetwork):
-
-    def _configure(self, configs, **kwargs):
-        super()._configure(configs, **kwargs)
-        self._estimate = kwargs.get('estimate') if 'estimate' in kwargs else \
-            configs.get('Features', 'estimate', fallback='true').lower() == 'true'
-
-    def build(self, configs):
-        if not self._estimate:
-            steps = 0
-        else:
-            steps = 1
-
-        for resolution in self._resolutions:
-            steps += resolution.steps_prior
-
-        model = Sequential()
-        model.add(Conv1D(int(configs['filters']),
-                         int(configs['kernel_size']),
-                         input_shape=(steps, len(self.features['target'] + self.features['input'])),
-                         activation=configs['conv_activation'],
-                         kernel_initializer=configs['conv_kernel'],
-                         dilation_rate=int(configs['dilation']),
-                         padding='causal'))
-
-        for n in range(int(configs['layers_conv']) - 1):
-            model.add(Conv1D(int(configs['filters']),
-                             int(configs['kernel_size']),
-                             activation=configs['conv_activation'],
-                             kernel_initializer=configs['conv_kernel'],
-                             dilation_rate=2 ** (n + 1),  # ToDo consider how to handle dilation in .cfgs
-                             padding='causal'))  # ToDo handle padding in configs
-
-        model.add(MaxPooling1D(int(configs['pool_size'])))
-
-        lstm_units = json.loads(configs['lstm_units'])
-        while lstm_units:
-            model.add(LSTM(lstm_units.pop(0),
-                           activation=configs['lstm_activation']))
-
-        dense_units = json.loads(configs['dense_units'])
-        while dense_units:
-            model.add(Dense(dense_units.pop(0),
-                            activation=configs['dense_activation'],
-                            kernel_initializer=configs['dense_kernel']))
-
-        model.add(Dense(len(self.features['target'])))
-
-        if configs['dense_activation'] == 'relu':
-            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
-
-        return model
-
-    def _extract_inputs(self, features, time):
-        inputs = super()._extract_inputs(features, time)
-
-        if self._estimate:
-            resolution = self._resolutions[-1]
-            resolution_inputs = resolution.resample(
-                features.loc[(time - resolution.time_step + dt.timedelta(seconds=1)):time,
-                self.features['input']])
-
-            inputs.loc[time] = np.append([np.NaN] * len(self.features['target']), resolution_inputs.values)
-
-            # TODO: Replace interpolation with prediction of ANN
-            inputs.interpolate(method='linear', inplace=True)
-            # inputs.interpolate(method='akima', inplace=True)
-            # inputs.interpolate(method='nearest', fill_value='extrapolate', inplace=True)
-
-        return inputs
-
-
 class StackedLSTM(NeuralNetwork):
 
-    def build(self, configs):
-        steps = 0
-        for resolution in self._resolutions:
-            steps += resolution.steps_prior
-
+    def _build_model(self, configs):
         model = Sequential()
+        model = self._build_lstm(model, configs['LSTM'], first=True)
+        model = self._build_dense(model, configs['Dense'])
 
-        model.add(LSTM(32,
-                       input_shape=(steps, len(self.features['target'] + self.features['input'])),
-                       activation=configs['activation'],
-                       kernel_initializer=configs['lstm_kernel'],
-                       return_sequences=True))
+        return model
 
-        lstm_units = json.loads(configs['lstm_units'])
-        while lstm_units:
-            model.add(LSTM(lstm_units.pop(0),
-                           activation=configs['lstm_activation'],
-                           kernel_initializer=configs['lstm_kernel'],
-                           return_sequences=True))
+    def _build_lstm(self, model, configs, first=False):
+        units = configs.get('units')
+        if units.isdigit():
+            units = [int(units)] * configs.getint('layers', fallback=1)
+        else:
+            units = json.loads(units)
 
-        model.add(LSTM(32,
-                       input_shape=(steps, len(self.features['target'] + self.features['input'])),
-                       activation=configs['lstm_activation'],
-                       kernel_initializer=configs['lstm_kernel']))
-
-        neurons = json.loads(configs['dense_units'])
-        while neurons:
-            model.add(Dense(neurons.pop(0),
-                            activation=configs['dense_activation'],
-                            kernel_initializer=configs['dense_kernel']))
-
-        model.add(Dense(len(self.features['target'])))
-
-        if configs['dense_activation'] == 'relu':
-            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
+        for i in range(len(units)):
+            if i == 0 and first:
+                model.add(LSTM(units[i], activation=configs['activation'], input_shape=self._input_shape,
+                               kernel_initializer=configs['kernel_initializer'],
+                               return_sequences=True))
+            else:
+                model.add(LSTM(units[i], activation=configs['activation'],
+                               kernel_initializer=configs['kernel_initializer'],
+                               return_sequences=True))
 
         return model
 
 
-class MultiLayerPerceptron(NeuralNetwork):
+class ConvDilated(NeuralNetwork):
 
-    def _configure(self, configs, **kwargs):
-        super()._configure(configs, **kwargs)
-        self._estimate = kwargs.get('estimate') if 'estimate' in kwargs else \
-            configs.get('Features', 'estimate', fallback='true').lower() == 'true'
-
-    def _extract_inputs(self, features, time):
-        inputs = super()._extract_inputs(features, time)
-
-        if self._estimate:
-            resolution = self._resolutions[-1]
-            resolution_inputs = resolution.resample(
-                features.loc[(time - resolution.time_step + dt.timedelta(seconds=1)):time,
-                self.features['input']])
-
-            inputs.loc[time] = np.append([np.NaN] * len(self.features['target']), resolution_inputs.values)
-
-            # TODO: Replace interpolation with prediction of ANN
-            inputs.interpolate(method='linear', inplace=True)
-            # inputs.interpolate(method='akima', inplace=True)
-            # inputs.interpolate(method='nearest', fill_value='extrapolate', inplace=True)
-
-        return inputs
-
-    def build(self, configs):
-        if not self._estimate:
-            steps = 0
-        else:
-            steps = 1
-
-        for resolution in self._resolutions:
-            steps += resolution.steps_prior
-
+    def _build_model(self, configs):
         model = Sequential()
-        num_channels = len(self.features['target'] + self.features['input'])
-        units = steps * num_channels
-        model.add(Flatten(input_shape=(steps, num_channels)))
-        model.add(Dense(units, activation=configs['dense_activation'],
-                        kernel_initializer=configs['dense_kernel']))
+        model = self._build_conv(model, configs['Conv1D'], first=True)
+        model = self._build_dense(model, configs['Dense'])
 
-        dense_units = json.loads(configs['dense_units'])
-        while dense_units:
-            model.add(Dense(dense_units.pop(0),
-                            activation=configs['dense_activation'],
-                            kernel_initializer=configs['dense_kernel']))
+        return model
 
-        model.add(Dense(len(self.features['target']),
-                        activation=configs['dense_activation'],
-                        kernel_initializer=configs['dense_kernel']))
+    def _build_conv(self, model, configs, first=False):
+        filters = configs.get('filters')
+        if filters.isdigit():
+            filters = [int(filters)] * configs.getint('layers', fallback=1)
+        else:
+            filters = json.loads(filters)
 
-        if configs['dense_activation'] == 'relu':
-            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
+        # TODO: Handle padding and dilation in configuration
+        for i in range(len(filters)):
+            if i == 0 and first:
+                model.add(Conv1D(filters[i], int(configs['kernel_size']), activation=configs['activation'],
+                                 kernel_initializer=configs['kernel_initializer'], input_shape=self._input_shape,
+                                 dilation_rate=1, padding='causal'))
+            else:
+                model.add(Conv1D(int(configs['filters']), int(configs['kernel_size']), activation=configs['activation'],
+                                 kernel_initializer=configs['kernel_initializer'],
+                                 dilation_rate=2 ** (i + 1), padding='causal'))
+
+        model.add(MaxPooling1D(int(configs['pool_size'])))
+        model.add(Flatten())
+
+        return model
+
+
+class ConvLSTM(ConvDilated, StackedLSTM):
+
+    def _build_model(self, configs):
+        model = Sequential()
+        model = self._build_conv(model, configs['Conv1D'], first=True)
+        model = self._build_lstm(model, configs['LSTM'])
+        model = self._build_dense(model, configs['Dense'])
 
         return model
 

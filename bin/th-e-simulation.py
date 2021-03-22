@@ -10,6 +10,7 @@
 """
 import os
 import sys
+import time
 import copy
 import shutil
 import inspect
@@ -42,46 +43,49 @@ def main(args):
     
     kwargs = vars(args)
     kwargs.update(dict(settings.items('General')))
-    
+
     tensorboard = _launch_tensorboard(**kwargs)
-    
+
     start = _get_time(settings['General']['start'])
     end = _get_time(settings['General']['end']) + dt.timedelta(hours=23, minutes=59)
-    
+
     systems = System.read(**kwargs)
     for system in systems:
         _prepare_weather(system)
         _prepare_system(system)
-        
-        if not system.forecast._model.exists():
-            system.forecast._model.train(system.forecast._get_history(_get_time(settings['Training']['start']), 
-                                                                      _get_time(settings['Training']['end']) \
-                                                                      +dt.timedelta(hours=23, minutes=59)))
-        
-        data = system._database.get(start, end)
-        weather = system.forecast._weather._database.get(start, end)
-        features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
-        results = _simulate(settings, system, features)
-        
-        # Do not evaluate horizon, if forecast is done in a daily or higher interval
-        if settings.getint('General', 'interval') < 1440:
-            results_horizon1 = _result_horizon(system, results, 1)
-            results_horizon3 = _result_horizon(system, results, 3)
-            results_horizon6 = _result_horizon(system, results, 6)
-            results_horizon12 = _result_horizon(system, results, 12)
-            results_horizon24 = _result_horizon(system, results, 24)
-            
-            #results_horizons = pd.concat([results_horizon1, results_horizon3, results_horizon6, results_horizon12, results_horizon24])
-            results_horizons = pd.concat([results_horizon1, results_horizon6, results_horizon24])
-            _result_boxplot(system, results_horizons, results_horizons.index.hour, name='horizons', label='Hours', hue='horizon', colors=5)
-        
-        _result_hours(system, results, name='hours')
-        
-        interval = settings.getint('General', 'interval')/60
-        results = results[results['horizon'] <= interval].sort_index()
-        del results['horizon']
-        _result_write(system, results)
-        
+        try:
+            if not system.forecast._model.exists():
+                system.forecast._model.train(system.forecast._get_history(_get_time(settings['Training']['start']),
+                                                                          _get_time(settings['Training']['end'])
+                                                                          + dt.timedelta(hours=23, minutes=59)))
+
+            data = system._database.get(start, end)
+            weather = system.forecast._weather._database.get(start, end)
+            features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
+            results = _simulate(settings, system, features)
+
+            # Do not evaluate horizon, if forecast is done in a daily or higher interval
+            if settings.getint('General', 'interval') < 1440:
+                results_horizon1 = _result_horizon(system, results, 1)
+                results_horizon3 = _result_horizon(system, results, 3)
+                results_horizon6 = _result_horizon(system, results, 6)
+                results_horizon12 = _result_horizon(system, results, 12)
+                results_horizon24 = _result_horizon(system, results, 24)
+
+                #results_horizons = pd.concat([results_horizon1, results_horizon3, results_horizon6, results_horizon12, results_horizon24])
+                results_horizons = pd.concat([results_horizon1, results_horizon6, results_horizon24])
+                _result_boxplot(system, results_horizons, results_horizons.index.hour, name='horizons', label='Hours', hue='horizon', colors=5)
+
+            _result_hours(system, results, name='hours')
+
+            interval = settings.getint('General', 'interval')/60
+            results = results[results['horizon'] <= interval].sort_index()
+            del results['horizon']
+            _result_write(system, results)
+
+        except Exception as e:
+            logger.error("Error simulating system {0}: {1}".format(system.name, e.message))
+
     logger.info("TH-E Simulation{0} finished".format('s' if len(systems) > 1 else ''))
     
     while tensorboard:
@@ -492,17 +496,20 @@ def _process_power(energy, filter=True):
 def _launch_tensorboard(**kwargs):
     launch = kwargs['tensorboard'] if isinstance(kwargs['tensorboard'], bool) \
                                    else str(kwargs['tensorboard']).lower() == 'true'
-    
+
     if launch:
+        logging.getLogger('MARKDOWN').setLevel(logging.ERROR)
         logging.getLogger('tensorboard').setLevel(logging.ERROR)
-        logging.getLogger('werkzeug').setLevel(logging.ERROR)
-        
+        logger_werkzeug = logging.getLogger('werkzeug')
+        logger_werkzeug.setLevel(logging.ERROR)
+        logger_werkzeug.disabled = True
+
         tensorboard = program.TensorBoard()
         tensorboard.configure(argv=[None, '--logdir', kwargs['data_dir']])
         tensorboard_url = tensorboard.launch()
-        
+
         logger.info("Started TensorBoard at {}".format(tensorboard_url))
-    
+
     return launch
 
 
@@ -526,19 +533,25 @@ def _get_parser(root_dir):
                         help="directory where the package and related libraries are located",
                         default=root_dir,
                         metavar='DIR')
-    
+
     parser.add_argument('-c','--config-directory',
                         dest='config_dir',
                         help="directory to expect configuration files",
                         default='conf',
                         metavar='DIR')
-    
+
+    parser.add_argument('-d', '--data-directory',
+                        dest='data_dir',
+                        help="directory to expect and write result files to",
+                        default='data',
+                        metavar='DIR')
+
     parser.add_argument('-tb', '--tensorboard',
                         dest='tensorboard',
                         help="Launches TensorBoard at the selected data directory",
                         type=_to_bool,
                         default=False)
-    
+
     return parser
 
 
