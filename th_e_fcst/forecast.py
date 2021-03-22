@@ -39,16 +39,16 @@ class Forecast(ForecastCore):
                 config_weather.remove_section(section)
             
             self._weather = ForecastCore.from_configs(context, config_weather, **kwargs)
-
+        
         model = configs.get('NeuralNetwork', 'model', fallback='default').lower()
         if model in ['convlstm', 'default']:
             from th_e_fcst.neural_network import ConvLSTM
             self._model = ConvLSTM.from_forecast(context, configs, **kwargs)
-
+            
         elif model == 'lstm':
             from th_e_fcst.neural_network import StackedLSTM
             self._model = StackedLSTM.from_forecast(context, configs, **kwargs)
-
+            
         elif model == 'mlp':
             from th_e_fcst.neural_network import MultiLayerPerceptron
             self._model = MultiLayerPerceptron.from_forecast(context, configs, **kwargs)
