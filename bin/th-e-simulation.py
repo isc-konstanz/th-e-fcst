@@ -255,13 +255,15 @@ def _result_summary(system, results, sim_time, train_time, pred_time, doubt=Fals
                'mae_cor': pd.DataFrame(index=err_names, columns=targets),
                'weights': pd.DataFrame({'train_weights': 1, 'nontrain_weights': 1, 'total_weights': 1}, index=[0]),
                'apollo': pd.DataFrame({'apollo': 1}, index=[0]),
+               'apollo_2': pd.DataFrame(index=err_names, columns=targets),
                'horizon_doubt': pd.Series(index=err_names[1:], name='horizon_doubt')}
     else:
         kpi = {'times': pd.DataFrame(),
                'mse': pd.DataFrame(index=err_names, columns=targets),
                'mae': pd.DataFrame(index=err_names, columns=targets),
                'weights': pd.DataFrame({'train_weights': 1, 'nontrain_weights': 1, 'total_weights': 1}, index=[0]),
-               'apollo': pd.DataFrame({'apollo': 1}, index=[0])}
+               'apollo': pd.DataFrame({'apollo': 1}, index=[0]),
+               'apollo_2': pd.DataFrame(index=err_names, columns=targets),}
 
     # retrieve duration of various process durations and compile in np.array
     kpi['times']['sim_time'] = [sim_time]
@@ -277,6 +279,10 @@ def _result_summary(system, results, sim_time, train_time, pred_time, doubt=Fals
         kpi['mse'][target]['err_hs'] = (results[target + '_err'] ** 2).mean()
         kpi['mae'][target]['err_hs'] = abs(results[target + '_err']).mean()
 
+        #calculate apollo_2
+        median = results['pv_power_err'].groupby([results.index.hour]).median()
+        kpi['apollo_2'][target]['err_hs'] = abs(median).mean()
+
         if doubt is True:
             # noise corrected error
             err_cor = results[target + '_err'] - results['doubt'] * results[target + '_err']
@@ -290,6 +296,9 @@ def _result_summary(system, results, sim_time, train_time, pred_time, doubt=Fals
 
             kpi['mse'][target]['err_h{}'.format(i+1)] = (horizon_data[target + '_err'] ** 2).mean()
             kpi['mae'][target]['err_h{}'.format(i+1)] = abs(horizon_data[target + '_err']).mean()
+
+            median = horizon_data[target + '_err'].groupby([horizon_data.index.hour]).median()
+            kpi['apollo_2'][target]['err_h{}'.format(i + 1)] = abs(median).mean()
 
             if doubt is True:
                 err_cor = horizon_data[target + '_err'] - horizon_data['doubt'] * horizon_data[target + '_err']
@@ -508,7 +517,9 @@ def _result_comparison(systems):
     import xlsxwriter
 
     def _write_performance_summary(xldoc):
-        metrics = ['mse', 'mae', 'mse_cor', 'mae_cor', 'times', 'weights', 'apollo', 'horizon_doubt']
+        metrics = ['mse', 'mae', 'mse_cor', 'mae_cor',
+                   'times', 'weights', 'apollo', 'apollo_2',
+                   'horizon_doubt']
 
         def _retrieve_model_data(systems, sheets):
             data = {}
