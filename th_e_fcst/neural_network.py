@@ -103,21 +103,19 @@ class NeuralNetwork(Model):
 
         # TODO: implement date based backups and naming scheme
         if self.exists():
-            self.model = self._load()
+            self._load()
 
         else:
-            self.model = self._build_model(configs)
+            self._build_layers(configs)
 
         self.model.compile(optimizer=configs.get('General', 'optimizer'), loss=configs.get('General', 'loss'),
                            metrics=configs.get('General', 'metrics', fallback=[]))
 
-    def _build_model(self, configs):
-        model = Sequential()
-        model = self._build_dense(model, configs['Dense'], first=True)
+    def _build_layers(self, configs):
+        self.model = Sequential()
+        self._add_dense(configs['Dense'], first=True)
 
-        return model
-
-    def _build_dense(self, model, configs, first=False, flatten=False):
+    def _add_dense(self, configs, first=False, flatten=False):
         dropout = configs.getfloat('dropout', fallback=0)
         units = configs.get('units')
         if units.isdigit():
@@ -133,23 +131,21 @@ class NeuralNetwork(Model):
                 kwargs['input_dim'] = self._input_shape[1]
 
             if flatten:
-                model.add(Flatten())
+                self.model.add(Flatten())
 
-            model.add(Dense(units[i], **kwargs))
+            self.model.add(Dense(units[i], **kwargs))
 
             if dropout > 0.:
-                model.add(Dropout(dropout))
+                self.model.add(Dropout(dropout))
 
-        model.add(Dense(self._target_shape,
-                        activation=configs['activation'],
-                        kernel_initializer=configs['kernel_initializer']))
+        self.model.add(Dense(self._target_shape,
+                            activation=configs['activation'],
+                            kernel_initializer=configs['kernel_initializer']))
 
         if configs['activation'] == 'relu':
-            model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
+            self.model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
 
-        return model
-
-    def _load(self, inplace=False):
+    def _load(self, inplace=True):
         logger.debug("Loading model for system {} from file".format(self._system.name))
 
         with open(os.path.join(self.dir, 'model.json'), 'r') as f:
@@ -279,8 +275,8 @@ class NeuralNetwork(Model):
                 inputs.append(input)
                 targets.append(target)
 
-            except ValueError:
-                logger.debug("Skipping %s", time)
+            except ValueError as e:
+                logger.debug("Skipping %s: %s", time, str(e))
 
             time += dt.timedelta(minutes=self.resolutions[-1].minutes)
 
@@ -310,8 +306,8 @@ class NeuralNetwork(Model):
         if self._estimate:
             resolution = self.resolutions[-1]
             resolution_end = time - resolution.time_step
-            resolution_inputs = resolution.resample(features.loc[resolution_end:time,
-                                                                 self.features['input']])
+            resolution_range = features[(features.index > resolution_end) & (features.index <= time)].index
+            resolution_inputs = resolution.resample(features.loc[resolution_range, self.features['input']])
 
             data.loc[time] = np.append([np.NaN] * len(self.features['target']), resolution_inputs.values)
 
@@ -469,14 +465,12 @@ class NeuralNetwork(Model):
 
 class StackedLSTM(NeuralNetwork):
 
-    def _build_model(self, configs):
-        model = Sequential()
-        model = self._build_lstm(model, configs['LSTM'], first=True)
-        model = self._build_dense(model, configs['Dense'])
+    def _build_layers(self, configs):
+        self.model = Sequential()
+        self._add_lstm(configs['LSTM'], first=True)
+        self._add_dense(configs['Dense'])
 
-        return model
-
-    def _build_lstm(self, model, configs, first=False):
+    def _add_lstm(self, configs, first=False):
         units = configs.get('units')
         if units.isdigit():
             units = [int(units)] * configs.getint('layers', fallback=1)
@@ -493,21 +487,17 @@ class StackedLSTM(NeuralNetwork):
             elif i < length-1:
                 kwargs['return_sequences'] = True
 
-            model.add(LSTM(units[i], **kwargs))
-
-        return model
+            self.model.add(LSTM(units[i], **kwargs))
 
 
 class ConvDilated(NeuralNetwork):
 
-    def _build_model(self, configs):
-        model = Sequential()
-        model = self._build_conv(model, configs['Conv1D'], first=True)
-        model = self._build_dense(model, configs['Dense'], flatten=True)
+    def _build_layers(self, configs):
+        self.model = Sequential()
+        self._add_conv(configs['Conv1D'], first=True)
+        self._add_dense(configs['Dense'], flatten=True)
 
-        return model
-
-    def _build_conv(self, model, configs, first=False):
+    def _add_conv(self, configs, first=False):
         filters = configs.get('filters')
         if filters.isdigit():
             filters = [int(filters)] * configs.getint('layers', fallback=1)
@@ -526,22 +516,18 @@ class ConvDilated(NeuralNetwork):
             else:
                 kwargs['dilation_rate'] = 2**(i+1)
 
-            model.add(Conv1D(filters[i], int(configs['kernel_size']), **kwargs))
+            self.model.add(Conv1D(filters[i], int(configs['kernel_size']), **kwargs))
 
-        model.add(MaxPooling1D(int(configs['pool_size'])))
-
-        return model
+        self.model.add(MaxPooling1D(int(configs['pool_size'])))
 
 
 class ConvLSTM(ConvDilated, StackedLSTM):
 
-    def _build_model(self, configs):
-        model = Sequential()
-        model = self._build_conv(model, configs['Conv1D'], first=True)
-        model = self._build_lstm(model, configs['LSTM'])
-        model = self._build_dense(model, configs['Dense'])
-
-        return model
+    def _build_layers(self, configs):
+        self.model = Sequential()
+        self._add_conv(configs['Conv1D'], first=True)
+        self._add_lstm(configs['LSTM'])
+        self._add_dense(configs['Dense'])
 
 
 class Resolution:

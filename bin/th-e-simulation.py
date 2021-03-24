@@ -103,10 +103,13 @@ def _simulate(settings, system, features, **kwargs):
     forecast = system.forecast._model
     results = pd.DataFrame()
 
-    for i in range(len(forecast.resolutions)-1, 0, -1):
-        resolution_min = forecast.resolutions[i]
-        if resolution_min.steps_horizon is not None:
-            break
+    if len(forecast.resolutions) == 1:
+        resolution_min = forecast.resolutions[0]
+    else:
+        for i in range(len(forecast.resolutions)-1, 0, -1):
+            resolution_min = forecast.resolutions[i]
+            if resolution_min.steps_horizon is not None:
+                break
 
     resolution_max = forecast.resolutions[0]
     resolution_data = resolution_min.resample(features)
