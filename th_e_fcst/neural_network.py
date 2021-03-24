@@ -12,13 +12,11 @@ import pandas as pd
 import datetime as dt
 import logging
 
-from configparser import ConfigParser
 from pandas.tseries.frequencies import to_offset
 from pvlib.solarposition import get_solarposition
 from keras.callbacks import History, EarlyStopping, TensorBoard
 from keras.models import Sequential
-from keras.layers import LSTM, Dense, Dropout, LeakyReLU, Flatten
-from keras.layers.convolutional import Conv1D, MaxPooling1D
+from keras.layers import Dense, Dropout, LeakyReLU, Flatten, Conv1D, MaxPooling1D, LSTM
 from keras.models import model_from_json
 from tensorflow import summary
 from th_e_core import Model
@@ -101,7 +99,7 @@ class NeuralNetwork(Model):
         self.history = History()
         self.callbacks = [self.history,
                           TensorBoard(log_dir=self.dir, histogram_freq=1),
-                          EarlyStopping(patience=32, restore_best_weights=True)]
+                          EarlyStopping(patience=self.epochs/4, restore_best_weights=True)]
 
         # TODO: implement date based backups and naming scheme
         if self.exists():
