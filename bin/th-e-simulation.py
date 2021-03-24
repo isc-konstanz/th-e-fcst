@@ -84,15 +84,17 @@ def main(args):
             _result_write(system, results)
 
         except Exception as e:
-            logger.error("Error simulating system {0}: {1}".format(system.name, e.message))
+            logger.error("Error simulating system {0}: {1}".format(system.name, str(e)))
 
     logger.info("TH-E Simulation{0} finished".format('s' if len(systems) > 1 else ''))
-    
-    while tensorboard:
+
+    if tensorboard:
         logger.info("TensorBoard will be kept running")
+
+    while tensorboard:
         try:
             time.sleep(100)
-            
+
         except KeyboardInterrupt:
             tensorboard = False
 
@@ -100,52 +102,57 @@ def main(args):
 def _simulate(settings, system, features, **kwargs):
     forecast = system.forecast._model
     results = pd.DataFrame()
-    
-    resolution = forecast._resolutions[0]
-    resolution_data = resolution.resample(features)
-    
+
+    for i in range(len(forecast.resolutions)-1, 0, -1):
+        resolution_min = forecast.resolutions[i]
+        if resolution_min.steps_horizon is not None:
+            break
+
+    resolution_max = forecast.resolutions[0]
+    resolution_data = resolution_min.resample(features)
+
     system_dir = system._configs['General']['data_dir']
     database = copy.deepcopy(system._database)
     database.dir = system_dir
     #database.format = '%Y%m%d'
     database.enabled = True
     
-    #Reactivate this, when multiprocessing will be implemented
-    #global logger
-    #if process.current_process().name != 'MainProcess':
-    #    logger = process.get_logger()
+    # Reactivate this, when multiprocessing will be implemented
+    # global logger
+    # if process.current_process().name != 'MainProcess':
+    #     logger = process.get_logger()
     
     verbose = settings.getboolean('General', 'verbose', fallback=False)
     interval = settings.getint('General', 'interval')
-    time = features.index[0] + forecast._resolutions[0].time_prior
-    end = features.index[-1] - forecast._resolutions[0].time_horizon
+    time = features.index[0] + resolution_max.time_prior
+    end = features.index[-1] - resolution_max.time_horizon
     
     training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
-    #training_interval = settings.getint('Training', 'interval')
-    #training_last = time
+    # training_interval = settings.getint('Training', 'interval')
+    # training_last = time
     
     while time <= end:
         # Check if this step was simulated already and load the results, if so
-        # if database.exists(time, subdir='outputs'):
-            # result = database.get(time, subdir='outputs')
-            # results = pd.concat([results, result], axis=0)
-            #
-            # time += dt.timedelta(minutes=interval)
-            # continue
+        if database.exists(time, subdir='outputs'):
+            result = database.get(time, subdir='outputs')
+            results = pd.concat([results, result], axis=0)
+
+            time += dt.timedelta(minutes=interval)
+            continue
         
         try:
             step_result = list()
-            step_prior = time - resolution.time_prior - resolution.time_step + dt.timedelta(seconds=1)
-            step_horizon = time + resolution.time_horizon
+            step_prior = time - resolution_max.time_prior - resolution_max.time_step + dt.timedelta(seconds=1)
+            step_horizon = time + resolution_max.time_horizon
             step_features = copy.deepcopy(features[step_prior:step_horizon])
-            
+
             # Remove target values from features, as those will be recursively filled with predictions
             step_features.loc[time:, forecast.features['target']] = np.NaN
-            
-            step_index = step_features[time:].index
-            step = step_index[0]
+
+            step = time
+            step_index = step_features[step:step+resolution_min.time_horizon].index
             while step in step_index:
-                step_next = step + dt.timedelta(minutes=resolution.minutes)
+                step_next = step + resolution_min.time_step
                 step_inputs = forecast._extract_inputs(step_features, step)
                 
                 if verbose:

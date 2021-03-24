@@ -119,7 +119,7 @@ class NeuralNetwork(Model):
 
         return model
 
-    def _build_dense(self, model, configs, first=False):
+    def _build_dense(self, model, configs, first=False, flatten=False):
         dropout = configs.getfloat('dropout', fallback=0)
         units = configs.get('units')
         if units.isdigit():
@@ -127,17 +127,17 @@ class NeuralNetwork(Model):
         else:
             units = json.loads(units)
 
-        for i in range(len(units)):
-            if i == 0 and first:
-                # model.add(Flatten())
-                model.add(Dense(units[i],
-                                input_dim=self._input_shape,
-                                activation=configs['activation'],
-                                kernel_initializer=configs['kernel_initializer']))
+        length = len(units)
+        for i in range(length):
+            kwargs = self._parse_kwargs(configs, 'activation', 'kernel_initializer')
 
-            model.add(Dense(units[i],
-                            activation=configs['activation'],
-                            kernel_initializer=configs['kernel_initializer']))
+            if first and i == 0:
+                kwargs['input_dim'] = self._input_shape[1]
+
+            if flatten:
+                model.add(Flatten())
+
+            model.add(Dense(units[i], **kwargs))
 
             if dropout > 0.:
                 model.add(Dropout(dropout))
@@ -152,7 +152,7 @@ class NeuralNetwork(Model):
         return model
 
     def _load(self, inplace=False):
-        logger.debug("Loading model from file")
+        logger.debug("Loading model for system {} from file".format(self._system.name))
 
         with open(os.path.join(self.dir, 'model.json'), 'r') as f:
             model = model_from_json(f.read())
@@ -164,7 +164,7 @@ class NeuralNetwork(Model):
             return model
 
     def _save(self):
-        logger.debug("Saving model to file")
+        logger.debug("Saving model for system {} to file".format(self._system.name))
 
         # Serialize model to JSON
         with open(os.path.join(self.dir, 'model.json'), 'w') as f:
@@ -238,11 +238,12 @@ class NeuralNetwork(Model):
         writer = summary.create_file_writer(os.path.join(self.dir, 'loss'))
         for target in self.features['target']:
             loss = result.history['loss'] / features[target].max()
+            loss_name = 'epoch_loss_norm' if len(self.features['target']) == 1 else '{}_norm'.format(target)
             for epoch in range(len(result.history['loss'])):
                 with writer.as_default():
-                    summary.scalar('{}_norm'.format(target), loss[epoch], step=epoch)
+                    summary.scalar(loss_name, loss[epoch], step=epoch)
 
-        self._print_distributions(features)
+        self._write_distributions(features)
         self._save()
         return result
 
@@ -277,15 +278,8 @@ class NeuralNetwork(Model):
                 target = self._parse_target(features, time)
 
                 # If no exception was raised, add the validated data to the set
-                if not isinstance(input, list):
-                    inputs.append(input)
-                else:
-                    inputs.append(np.array(input, dtype=float))
-
-                if not isinstance(target, list):
-                    targets.append(target)
-                else:
-                    targets.append(np.array(target, dtype=float))
+                inputs.append(input)
+                targets.append(target)
 
             except ValueError:
                 logger.debug("Skipping %s", time)
@@ -295,7 +289,7 @@ class NeuralNetwork(Model):
         if shuffle:
             inputs, targets = self._shuffle_data(inputs, targets)
 
-        return np.array(inputs, dtype=object), np.array(targets, dtype=object)
+        return np.array(inputs, dtype=float), np.array(targets, dtype=float)
 
     def _parse_inputs(self, features, time):
         inputs = self._extract_inputs(features, time)
@@ -423,7 +417,17 @@ class NeuralNetwork(Model):
 
         return data
 
-    def _print_distributions(self, features):
+    @staticmethod
+    def _parse_kwargs(configs, *args):
+        kwargs = {}
+        for arg in args:
+            kwargs[arg] = configs[arg]
+
+        return kwargs
+
+    # TODO: Move function to evaluation package
+    @staticmethod
+    def _write_distributions(features, path=''):
         import matplotlib.pyplot as plt
 
         # Desired number of bins in each plot
@@ -456,8 +460,12 @@ class NeuralNetwork(Model):
                     break
 
             # Save histogram to appropriate folder
-            path = os.path.join(self.dir, 'dist', '{}.png'.format(feature))
-            plt.savefig(path)
+            path_dist = os.path.join(path, 'dist')
+            path_file = os.path.join(path_dist, '{}.png'.format(feature))
+            if not os.path.isdir(path_dist):
+                os.makedirs(path_dist, exist_ok=True)
+
+            plt.savefig(path_file)
             plt.clf()
 
 
@@ -477,15 +485,17 @@ class StackedLSTM(NeuralNetwork):
         else:
             units = json.loads(units)
 
-        for i in range(len(units)):
+        length = len(units)
+        for i in range(length):
+            kwargs = self._parse_kwargs(configs, 'activation', 'kernel_initializer')
+
             if i == 0 and first:
-                model.add(LSTM(units[i], activation=configs['activation'], input_shape=self._input_shape,
-                               kernel_initializer=configs['kernel_initializer'],
-                               return_sequences=True))
-            else:
-                model.add(LSTM(units[i], activation=configs['activation'],
-                               kernel_initializer=configs['kernel_initializer'],
-                               return_sequences=True))
+                kwargs['input_shape'] = self._input_shape
+
+            elif i < length-1:
+                kwargs['return_sequences'] = True
+
+            model.add(LSTM(units[i], **kwargs))
 
         return model
 
@@ -495,7 +505,7 @@ class ConvDilated(NeuralNetwork):
     def _build_model(self, configs):
         model = Sequential()
         model = self._build_conv(model, configs['Conv1D'], first=True)
-        model = self._build_dense(model, configs['Dense'])
+        model = self._build_dense(model, configs['Dense'], flatten=True)
 
         return model
 
@@ -507,18 +517,20 @@ class ConvDilated(NeuralNetwork):
             filters = json.loads(filters)
 
         # TODO: Handle padding and dilation in configuration
-        for i in range(len(filters)):
-            if i == 0 and first:
-                model.add(Conv1D(filters[i], int(configs['kernel_size']), activation=configs['activation'],
-                                 kernel_initializer=configs['kernel_initializer'], input_shape=self._input_shape,
-                                 dilation_rate=1, padding='causal'))
+        length = len(filters)
+        for i in range(length):
+            kwargs = self._parse_kwargs(configs, 'activation', 'kernel_initializer')
+            kwargs['padding'] = 'causal'
+
+            if first and i == 0:
+                kwargs['input_shape'] = self._input_shape
+                kwargs['dilation_rate'] = 1
             else:
-                model.add(Conv1D(int(configs['filters']), int(configs['kernel_size']), activation=configs['activation'],
-                                 kernel_initializer=configs['kernel_initializer'],
-                                 dilation_rate=2 ** (i + 1), padding='causal'))
+                kwargs['dilation_rate'] = 2**(i+1)
+
+            model.add(Conv1D(filters[i], int(configs['kernel_size']), **kwargs))
 
         model.add(MaxPooling1D(int(configs['pool_size'])))
-        model.add(Flatten())
 
         return model
 
