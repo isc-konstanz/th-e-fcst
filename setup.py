@@ -26,7 +26,7 @@ DESCRIPTION = 'TH-E Forecast provides a set of functions to predict timeseries.'
 #     README = f.read()
 
 NAME = 'th-e-fcst'
-#LICENSE = 'LGPLv3'
+# LICENSE = 'LGPLv3'
 AUTHOR = 'ISC Konstanz'
 MAINTAINER_EMAIL = 'steffen.friedriszik@isc-konstanz.de'
 URL = 'http://gitlab.isc-konstanz.de/systems/systems/th-e-fcst'
@@ -46,14 +46,14 @@ SETUPTOOLS_KWARGS = {
 }
 
 setup(
-    name = NAME,
-    version = VERSION,
-    #license = LICENSE,
-    description = DESCRIPTION,
-    #long_description=README,
-    author = AUTHOR,
-    author_email = MAINTAINER_EMAIL,
-    packages = PACKAGES,
-    install_requires = INSTALL_REQUIRES,
-    scripts  = SCRIPTS,
+    name=NAME,
+    version=VERSION,
+    # license=LICENSE,
+    description=DESCRIPTION,
+    # long_description=README,
+    author=AUTHOR,
+    author_email=MAINTAINER_EMAIL,
+    packages=PACKAGES,
+    install_requires=INSTALL_REQUIRES,
+    scripts=SCRIPTS,
 )

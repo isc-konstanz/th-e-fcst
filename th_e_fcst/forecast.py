@@ -12,11 +12,11 @@ import pandas as pd
 import datetime as dt
 
 from configparser import ConfigParser
-from th_e_core import Forecast as ForecastCore
+from th_e_core import Forecast as WeatherForecast
 from th_e_fcst import NeuralNetwork
 
 
-class Forecast(ForecastCore):
+class Forecast(WeatherForecast):
 
     @staticmethod
     def from_configs(context, configs, **kwargs):
@@ -35,26 +35,10 @@ class Forecast(ForecastCore):
         else:
             config_weather = ConfigParser()
             config_weather.read_dict(configs)
-            for section in NeuralNetwork.SECTIONS + ['Import']:
-                config_weather.remove_section(section)
-            
-            self._weather = ForecastCore.from_configs(context, config_weather, **kwargs)
 
-        model = configs.get('NeuralNetwork', 'model', fallback='default').lower()
-        if model in ['convlstm', 'default']:
-            from th_e_fcst.neural_network import ConvLSTM
-            self._model = ConvLSTM.from_forecast(context, configs, **kwargs)
+            self._weather = WeatherForecast.from_configs(context, config_weather, **kwargs)
 
-        elif model == 'lstm':
-            from th_e_fcst.neural_network import StackedLSTM
-            self._model = StackedLSTM.from_forecast(context, configs, **kwargs)
-
-        elif model == 'mlp':
-            from th_e_fcst.neural_network import MultiLayerPerceptron
-            self._model = MultiLayerPerceptron.from_forecast(context, configs, **kwargs)
-        else:
-            raise ValueError('Unknown ANN model : '+model)
-
+        self._model = NeuralNetwork.read(context, **kwargs)
         self._context = context
 
     def _get(self, *args, **kwargs):
