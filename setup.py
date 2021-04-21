@@ -34,6 +34,8 @@ URL = 'http://gitlab.isc-konstanz.de/systems/systems/th-e-fcst'
 INSTALL_REQUIRES = ['numpy',
                     'pandas',
                     'pvlib',
+                    'keras',
+                    'tensorflow',
                     'th_e_core >= 0.1.5']
 
 SCRIPTS = ['bin/th-e-fcst']
