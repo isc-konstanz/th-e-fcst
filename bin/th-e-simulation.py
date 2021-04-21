@@ -40,7 +40,8 @@ def main(args):
     
     settings = ConfigParser()
     settings.read(settings_file)
-    
+
+    error = False
     kwargs = vars(args)
     kwargs.update(dict(settings.items('General')))
 
@@ -84,6 +85,7 @@ def main(args):
             _result_write(system, results)
 
         except Exception as e:
+            error = True
             logger.error("Error simulating system {0}: {1}".format(system.name, str(e)))
 
     logger.info("TH-E Simulation{0} finished".format('s' if len(systems) > 1 else ''))
@@ -91,7 +93,7 @@ def main(args):
     if tensorboard:
         logger.info("TensorBoard will be kept running")
 
-    while tensorboard:
+    while tensorboard and not error:
         try:
             time.sleep(100)
 
