@@ -101,9 +101,11 @@ class NeuralNetwork(Model):
         super()._build(context, configs, **kwargs)
 
         self.history = History()
-        self.callbacks = [self.history,
-                          TensorBoard(log_dir=self.dir, histogram_freq=1),
-                          EarlyStopping(patience=self.epochs/4, restore_best_weights=True)]
+        self.callbacks = [self.history, TensorBoard(log_dir=self.dir, histogram_freq=1)]
+
+        self._early_stopping = configs.get('General', 'early_stopping', fallback='False').lower() == 'true'
+        if self._early_stopping:
+            self.callbacks.append(EarlyStopping(patience=self.epochs/4, restore_best_weights=True))
 
         # TODO: implement date based backups and naming scheme
         if self.exists():
@@ -230,13 +232,24 @@ class NeuralNetwork(Model):
         inputs, targets = self._parse_data(features)
         logger.debug("Built input of %s, %s", inputs.shape, targets.shape)
 
-        if shuffle:
-            inputs, targets = self._shuffle_data(inputs, targets)
+        kwargs = {
+            'verbose': LOG_VERBOSE
+        }
+        if self._early_stopping:
+            if shuffle:
+                inputs, targets = self._shuffle_data(inputs, targets)
 
-        split = int(len(targets) / 10.0)
-        result = self.model.fit(inputs[split:], targets[split:], batch_size=self.batch, epochs=self.epochs,
-                                validation_data=(inputs[:split], targets[:split]), callbacks=self.callbacks,
-                                verbose=LOG_VERBOSE)
+            validation_split = int(len(targets) / 10.0)
+            validation_inputs = inputs[:validation_split]
+            validation_targets = targets[:validation_split]
+
+            kwargs['validation_data'] = (validation_inputs, validation_targets)
+
+            inputs = inputs[validation_split:]
+            targets = targets[validation_split:]
+
+        result = self.model.fit(inputs, targets, batch_size=self.batch, epochs=self.epochs, callbacks=self.callbacks,
+                                **kwargs)
 
         # Write normed loss to TensorBoard
         # writer = summary.create_file_writer(os.path.join(self.dir, 'loss'))
