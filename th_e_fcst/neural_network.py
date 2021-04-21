@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-    th_e_fcst.model
+    th_e_fcst.neural_network
     ~~~~~~~~~~~~~~~
     
     
@@ -64,6 +64,10 @@ class NeuralNetwork(Model):
 
             except json.decoder.JSONDecodeError:
                 pass
+
+        # TODO: Save and load these from database
+        self.features['covariance'] = {}
+        self.features['covariance_std'] = {}
 
         resolutions_range = pd.date_range(dt.datetime.now().replace(minute=0, second=0, microsecond=0), periods=0)
 
@@ -205,6 +209,9 @@ class NeuralNetwork(Model):
             # Add predicted output to features of next iteration
             features.loc[result_range, forecast.features['target']] = result
 
+            # Calculate doubt again with newly predicted output
+            features = self._parse_doubt(forecast)
+
             time = time_next
 
         return results
@@ -219,9 +226,12 @@ class NeuralNetwork(Model):
         features = self._parse_features(data)
         return self._train(features)
 
-    def _train(self, features):
+    def _train(self, features, shuffle=True):
         inputs, targets = self._parse_data(features)
         logger.debug("Built input of %s, %s", inputs.shape, targets.shape)
+
+        if shuffle:
+            inputs, targets = self._shuffle_data(inputs, targets)
 
         split = int(len(targets) / 10.0)
         result = self.model.fit(inputs[split:], targets[split:], batch_size=self.batch, epochs=self.epochs,
@@ -229,19 +239,20 @@ class NeuralNetwork(Model):
                                 verbose=LOG_VERBOSE)
 
         # Write normed loss to TensorBoard
-        writer = summary.create_file_writer(os.path.join(self.dir, 'loss'))
-        for target in self.features['target']:
-            loss = result.history['loss'] / features[target].max()
-            loss_name = 'epoch_loss_norm' if len(self.features['target']) == 1 else '{}_norm'.format(target)
-            for epoch in range(len(result.history['loss'])):
-                with writer.as_default():
-                    summary.scalar(loss_name, loss[epoch], step=epoch)
+        # writer = summary.create_file_writer(os.path.join(self.dir, 'loss'))
+        # for target in self.features['target']:
+        #     loss = result.history['loss'] / features[target].max()
+        #     loss_name = 'epoch_loss_norm' if len(self.features['target']) == 1 else '{}_norm'.format(target)
+        #     for epoch in range(len(result.history['loss'])):
+        #         with writer.as_default():
+        #             summary.scalar(loss_name, loss[epoch], step=epoch)
 
         self._write_distributions(features)
         self._save()
         return result
 
-    def _shuffle_data(self, inputs, targets):
+    @staticmethod
+    def _shuffle_data(inputs, targets):
         import random
 
         data = []
@@ -258,9 +269,10 @@ class NeuralNetwork(Model):
             inputs.append(data[i]['input'])
             targets.append(data[i]['target'])
 
-        return inputs, targets
+        return np.array(inputs, dtype=float), \
+               np.array(targets, dtype=float)
 
-    def _parse_data(self, features, shuffle=True):
+    def _parse_data(self, features):
         targets = []
         inputs = []
 
@@ -268,8 +280,8 @@ class NeuralNetwork(Model):
         time = features.index[0] + self.resolutions[-1].time_prior
         while time <= end:
             try:
-                input = self._parse_inputs(features, time)
-                target = self._parse_target(features, time)
+                input = np.squeeze(self._parse_inputs(features, time))
+                target = float(self._parse_target(features, time))
 
                 # If no exception was raised, add the validated data to the set
                 inputs.append(input)
@@ -280,25 +292,25 @@ class NeuralNetwork(Model):
 
             time += dt.timedelta(minutes=self.resolutions[-1].minutes)
 
-        if shuffle:
-            inputs, targets = self._shuffle_data(inputs, targets)
-
-        return np.array(inputs, dtype=float), np.array(targets, dtype=float)
+        return np.array(inputs, dtype=float), \
+               np.array(targets, dtype=float)
 
     def _parse_inputs(self, features, time):
-        inputs = self._extract_inputs(features, time)
-        return np.squeeze(inputs.values)
-
-    def _extract_inputs(self, features, time):
+        inputs = self.features['target'] + self.features['input']
         data = pd.DataFrame()
         data.index.name = 'time'
         for resolution in self.resolutions:
             resolution_end = time - resolution.time_step
             resolution_start = time - resolution.time_prior
-            resolution_data = features.loc[resolution_start:resolution_end,
-                                           self.features['target'] + self.features['input']]
+            resolution_data = features[resolution_start:resolution_end]
 
             data = resolution.resample(resolution_data).combine_first(data)
+
+        # Calculate the doubt for the current time step
+        # This is necessary for the recursive iteration
+        data = self._parse_cov(data, time - resolution.time_step)
+        data = self._parse_doubt(data)
+        data = data[inputs]
 
         if data.isnull().values.any():
             raise ValueError("Input data incomplete for %s" % time)
@@ -309,7 +321,7 @@ class NeuralNetwork(Model):
             resolution_range = features[(features.index > resolution_end) & (features.index <= time)].index
             resolution_inputs = resolution.resample(features.loc[resolution_range, self.features['input']])
 
-            data.loc[time] = np.append([np.NaN] * len(self.features['target']), resolution_inputs.values)
+            data.loc[time, inputs] = np.append([np.NaN] * len(self.features['target']), resolution_inputs.values)
 
             # TODO: Replace interpolation with prediction of ANN
             data.interpolate(method='linear', inplace=True)
@@ -317,15 +329,10 @@ class NeuralNetwork(Model):
         return data
 
     def _parse_target(self, features, time):
-        # return np.squeeze(self._extract_target(features, time).values)
-        return float(self._extract_target(features, time))
-
-    def _extract_target(self, features, time):
         # TODO: Implement horizon resolutions
         resolution = self.resolutions[-1]
-        resolution_target = resolution.resample(
-            features.loc[time - resolution.time_step + dt.timedelta(seconds=1): time,
-            self.features['target']])
+        resolution_target = resolution.resample(features.loc[time - resolution.time_step + dt.timedelta(seconds=1):time,
+                                                self.features['target']])
 
         data = resolution_target.loc[time, :]
         if data.isnull().values.any():
@@ -349,29 +356,28 @@ class NeuralNetwork(Model):
         data['day_of_week'] = data.index.dayofweek
 
         features = pd.concat([data, solar], axis=1)
-
-        if 'doubt' in self.features['input']:
-            features = self.cov('pv_power', 'dni', features)
-
         features = self._parse_cyclic(features)
-        features = self._parse_horizon(features)
+        features = self._parse_cov(features)
+        features = self._parse_doubt(features)
         features = self._scale_features(features)
 
         return features
 
-    def _scale_features(self, data):
+    def _scale_features(self, features):
         if 'scaling' not in self.features:
-            return data
+            return features
+
+        scalings = self.features.get('scaling', {})
 
         def _scale_transformations(invert=False):
             trafos = {}
 
-            for feature, trafo in self.features.get('scaling', {}).items():
-                if feature not in data.columns:
+            for feature, trafo in scalings.items():
+                if feature not in features.columns:
                     continue
 
                 if trafo.lower() == 'norm' or str(trafo).isdigit():
-                    trafo_value = float(trafo) if not str(trafo).isdigit() else data[feature].max()
+                    trafo_value = float(trafo) if not str(trafo).isdigit() else features[feature].max()
 
                     def transform(value):
                         if not invert:
@@ -380,8 +386,8 @@ class NeuralNetwork(Model):
                             return value * trafo_value
 
                 elif trafo.lower() == 'std':
-                    mean = data[feature].mean()
-                    std = data[feature].std()
+                    mean = features[feature].mean()
+                    std = features[feature].std()
 
                     def transform(value):
                         if not invert:
@@ -396,57 +402,67 @@ class NeuralNetwork(Model):
             return trafos
 
         for feature, transform in _scale_transformations():
-            data[feature] = transform(data[feature])
-
-        return data
-
-    def cov(self, f1, f2, features):
-        isinstance(f1, str)
-        isinstance(f2, str)
-        # population estimate of cov
-        m1 = features[f1].mean()
-        m2 = features[f2].mean()
-        self.covariance = ((features[f1]-m1)*(features[f2]-m2)).sum() / (len(features[f1])-1)
-
-        # sample estimates of cov
-        for time in features.index:
-            if time - features.index[0] < dt.timedelta(hours=24):
-                continue
-            else:
-                # calculate sample means
-                sm1 = features.loc[time-dt.timedelta(hours=23):time, f1].mean()
-                sm2 = features.loc[time-dt.timedelta(hours=23):time, f2].mean()
-
-                # extract features of sample
-                sf1 = features.loc[time-dt.timedelta(hours=23):time, f1]
-                sf2 = features.loc[time-dt.timedelta(hours=23):time, f2]
-
-                #sample cov
-                features.loc[time, 'cov'] = ((sf1-sm1)*(sf2-sm2)).mean()
-
-        # std of sample cov from population cov estimate
-        self.cov_std = np.sqrt(((features['cov'] - self.covariance)**2).sum() / (len(features['cov'].dropna())-1))
-
-        # faith value
-        features['doubt'] = abs(features['cov']-self.covariance) / self.cov_std
-        features.drop(columns=['cov'])
+            features[feature] = transform(features[feature])
 
         return features
 
-    def _parse_horizon(self, data):
-        resolution = self.resolutions[0]
-        data['horizon'] = (data.index - data.index[0]) / np.timedelta64(1, 'm') % (
-                resolution.minutes * resolution.steps_horizon)
+    def _parse_doubt(self, features):
+        if 'doubt' not in self.features:
+            return features
 
-        return data
+        for feature1, feature2 in self.features['doubt'].items():
+            features_key = '{}_{}'.format(feature1, feature2)
+            features_cov_std = self.features['covariance_std'][features_key]
+            features_cov_total = self.features['covariance'][features_key]
+            features_cov = features[features_key+'_cov']
 
-    def _parse_cyclic(self, data):
+            features[features_key+'_doubt'] = abs(features_cov - features_cov_total) / features_cov_std
+
+        return features
+
+    def _parse_cov(self, features, time=None):
+        if 'doubt' not in self.features:
+            return features
+
+        for feature1, feature2 in self.features['doubt'].items():
+            features_key = '{}_{}'.format(feature1, feature2)
+
+            if time is not None:
+                time_interval = dt.timedelta(hours=self.features.get('doubt_interval', 24))
+                time_range = features[time - time_interval + dt.timedelta(seconds=1):time].index
+                features_cov = features.loc[time_range, feature1].cov(
+                               features.loc[time_range, feature2])
+                features.loc[time, features_key+'_cov'] = features_cov
+
+            else:
+                time_interval = dt.timedelta(hours=self.features.get('doubt_interval', 24))
+                time_periods = len(features[:features.index[0] + time_interval].index) - 1
+                features_cov = features[[feature1, feature2]].rolling(time_periods, min_periods=time_periods)\
+                                                             .cov().unstack()[feature1][feature2]
+                features[features_key+'_cov'] = features_cov
+
+            # Overall covariance of the whole series
+            if features_key not in self.features['covariance']:
+                features_cov_total = features[feature1].cov(features[feature2])
+                self.features['covariance'][features_key] = features_cov_total
+
+            # Std of sample covariance from population covariance estimate
+            if features_key not in self.features['covariance_std']:
+                features_cov_total = self.features['covariance'][features_key]
+                features_cov = features[features_key+'_cov']
+
+                features_cov_std = np.sqrt(((features_cov - features_cov_total) ** 2).sum() / (len(features_cov) - 1))
+                self.features['covariance_std'][features_key] = features_cov_std
+
+        return features
+
+    def _parse_cyclic(self, features):
         for feature, bound in self.features['cyclic'].items():
-            data[feature + '_sin'] = np.sin(2.0 * np.pi * data[feature] / bound)
-            data[feature + '_cos'] = np.cos(2.0 * np.pi * data[feature] / bound)
-            data = data.drop(columns=[feature])
+            features[feature + '_sin'] = np.sin(2.0 * np.pi * features[feature] / bound)
+            features[feature + '_cos'] = np.cos(2.0 * np.pi * features[feature] / bound)
+            features = features.drop(columns=[feature])
 
-        return data
+        return features
 
     @staticmethod
     def _parse_kwargs(configs, *args):

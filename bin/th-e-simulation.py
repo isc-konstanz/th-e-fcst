@@ -156,7 +156,7 @@ def _simulate(settings, system, features, **kwargs):
             step_index = step_features[step:step+resolution_min.time_horizon].index
             while step in step_index:
                 step_next = step + resolution_min.time_step
-                step_inputs = forecast._extract_inputs(step_features, step)
+                step_inputs = forecast._parse_inputs(step_features, step)
                 
                 if verbose:
                     database.persist(step_inputs, 
@@ -176,7 +176,7 @@ def _simulate(settings, system, features, **kwargs):
                 training_features = features[step_prior:step_horizon]
                 
                 forecast._train(training_features)
-                forecast._save_model()
+                forecast._save()
             
             target = forecast.features['target']
             result = resolution_data.loc[step_index[0]:step_index[-1], target]
