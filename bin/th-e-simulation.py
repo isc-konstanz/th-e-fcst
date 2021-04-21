@@ -3,31 +3,30 @@
 """
     th-e-simulation
     ~~~~~~~~~~~~~~~
-
-
+    
+    
     To learn how to configure specific settings, see "th-e-simulation --help"
 
 """
-import logging
-
-import sys
 import os
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
-
+import sys
+import time
 import copy
 import shutil
 import inspect
+import logging
 import pytz as tz
 import numpy as np
 import pandas as pd
 import datetime as dt
 import dateutil.relativedelta as rd
 import matplotlib.pyplot as plt
-from keras import backend as K
 
 from argparse import ArgumentParser, RawTextHelpFormatter
 from configparser import ConfigParser
+from tensorboard import program
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
 
 
 def main(args):
@@ -42,8 +41,11 @@ def main(args):
     settings = ConfigParser()
     settings.read(settings_file)
 
+    error = False
     kwargs = vars(args)
     kwargs.update(dict(settings.items('General')))
+
+    tensorboard = _launch_tensorboard(**kwargs)
 
     start = _get_time(settings['General']['start'])
     end = _get_time(settings['General']['end']) + dt.timedelta(hours=23, minutes=59)
@@ -52,8 +54,6 @@ def main(args):
     for system in systems:
         logger.info('Starting TH-E-Simulation of model {}'.format(system.id))
         start_simulation = dt.datetime.now()
-        _prepare_weather(system)
-        _prepare_system(system)
 
         if not system.forecast._model.exists():
             logging.info("Beginning network training of model {}".format(system.id))
@@ -105,6 +105,8 @@ def main(args):
         logger.info("TH-E Simulation lasted: {}".format(end_simulation - start_simulation))
         sim_time = end_simulation - start_simulation
 
+        preparation.process_weather(system)
+        preparation.process_system(system)
         try:
             kpi = _result_summary(system, results, sim_time, train_time, pred_time)
         except NameError:
@@ -124,6 +126,16 @@ def main(args):
 
     _result_comparison(systems)
 
+
+    if tensorboard:
+        logger.info("TensorBoard will be kept running")
+
+    while tensorboard and not error:
+        try:
+            time.sleep(100)
+
+        except KeyboardInterrupt:
+            tensorboard = False
 
 def _simulate(settings, system, features, **kwargs):
     forecast = system.forecast._model
@@ -500,6 +512,26 @@ def _result_comparison(systems):
     workbook.close()
 
 
+def _launch_tensorboard(**kwargs):
+    launch = kwargs['tensorboard'] if isinstance(kwargs['tensorboard'], bool) \
+                                   else str(kwargs['tensorboard']).lower() == 'true'
+
+    if launch:
+        logging.getLogger('MARKDOWN').setLevel(logging.ERROR)
+        logging.getLogger('tensorboard').setLevel(logging.ERROR)
+        logger_werkzeug = logging.getLogger('werkzeug')
+        logger_werkzeug.setLevel(logging.ERROR)
+        logger_werkzeug.disabled = True
+
+        tensorboard = program.TensorBoard()
+        tensorboard.configure(argv=[None, '--logdir', kwargs['data_dir']])
+        tensorboard_url = tensorboard.launch()
+
+        logger.info("Started TensorBoard at {}".format(tensorboard_url))
+
+    return launch
+
+
 def _get_time(time_str):
     return tz.utc.localize(dt.datetime.strptime(time_str, '%d.%m.%Y'))
 
@@ -507,22 +539,37 @@ def _get_time(time_str):
 def _get_parser(root_dir):
     from th_e_fcst import __version__
 
+    def _to_bool(v):
+        return v.lower() in ("yes", "true", "1")
+
     parser = ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
     parser.add_argument('-v', '--version',
-                        action='version',
-                        version='%(prog)s {version}'.format(version=__version__))
+                         action='version',
+                         version='%(prog)s {version}'.format(version=__version__))
 
-    parser.add_argument('-r', '--root-directory',
+    parser.add_argument('-r','--root-directory',
                         dest='root_dir',
                         help="directory where the package and related libraries are located",
                         default=root_dir,
                         metavar='DIR')
 
-    parser.add_argument('-c', '--config-directory',
+    parser.add_argument('-c','--config-directory',
                         dest='config_dir',
                         help="directory to expect configuration files",
                         default='conf',
                         metavar='DIR')
+
+    parser.add_argument('-d', '--data-directory',
+                        dest='data_dir',
+                        help="directory to expect and write result files to",
+                        default='data',
+                        metavar='DIR')
+
+    parser.add_argument('-tb', '--tensorboard',
+                        dest='tensorboard',
+                        help="Launches TensorBoard at the selected data directory",
+                        type=_to_bool,
+                        default=False)
 
     return parser
 
@@ -539,7 +586,6 @@ if __name__ == "__main__":
 
     # Load the logging configuration
     import logging.config
-
     logging_file = os.path.join(os.path.join(root_dir, 'conf'), 'logging.cfg')
     logging.config.fileConfig(logging_file)
     logger = logging.getLogger('th-e-simulation')
