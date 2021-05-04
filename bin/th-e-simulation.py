@@ -94,7 +94,7 @@ def main(args):
             data = system._database.get(start, end)
             weather = system.forecast._weather._database.get(start, end)
             features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
-            features_file = os.path.join('validation', 'features')
+            features_file = os.path.join('evaluation', 'features')
             write_csv(system, features, features_file)
             durations['prediction'] = {
                 'start': dt.datetime.now()
@@ -136,7 +136,7 @@ def main(args):
     logger.info("TH-E Simulation{0} finished".format('s' if len(systems) > 1 else ''))
 
     if not error:
-        validate(settings, systems)
+        evaluate(settings, systems)
 
         if tensorboard:
             logger.info("TensorBoard will be kept running")
@@ -259,21 +259,21 @@ def simulate(settings, system, features, **kwargs):
     return results
 
 
-def validate(settings, systems):
+def evaluate(settings, systems):
     from th_e_sim.iotools import print_boxplot, write_excel
 
     def apollo(data, data_target):
         data_column = data_target + '_err'
         data_name = data_target.replace('_power', '')
-        data_file = os.path.join('validation', data_name + '_apollo')
+        data_file = os.path.join('evaluation', data_name + '_apollo')
 
         doubt = data[data_target + '_doubt']
         data_cor = data.copy()
-        data_cor.loc[:, data_column] = data_cor[data_column] - doubt
+        data_cor.loc[:, data_column] = data_cor[data_column] - data_cor[data_column] * doubt
         data_cor.loc[data_cor[data_column] < 0, data_column] = 0
         data_cor = data_cor.drop(doubt[doubt >= data_cor[data_target].max()].index)
 
-        data_desc = _validate_data(system, data_cor, data_cor.index.hour, data_column, data_file,
+        data_desc = _evaluate_data(system, data_cor, data_cor.index.hour, data_column, data_file,
                                    label='Hours', title='Apollo')
 
         data_rmse = data_desc.transpose().loc[['rmse']]
@@ -285,8 +285,8 @@ def validate(settings, systems):
     def astraea(data, data_target):
         data_column = data_target + '_err'
         data_name = data_target.replace('_power', '')
-        data_file = os.path.join('validation', data_name + '_astraea')
-        data_desc = _validate_data(system, data, data.index.hour, data_column, data_file,
+        data_file = os.path.join('evaluation', data_name + '_astraea')
+        data_desc = _evaluate_data(system, data, data.index.hour, data_column, data_file,
                                    label='Hours', title='Astraea')
 
         data_mae = data_desc.transpose().loc[['mae']]
@@ -296,8 +296,8 @@ def validate(settings, systems):
         data_rmse = pd.Series(index=range(7), dtype='float64')
         for day in data_rmse.index:
             day_data = data[data.index.day_of_week == day]
-            day_file = os.path.join('validation', data_name + '_astraea_{}'.format(day + 1))
-            day_desc = _validate_data(system, day_data, day_data.index.hour, data_column, day_file,
+            day_file = os.path.join('evaluation', data_name + '_astraea_{}'.format(day + 1))
+            day_desc = _evaluate_data(system, day_data, day_data.index.hour, data_column, day_file,
                                       label='Hours', title='Astraea ({})'.format(cal.day_name[day]))
 
             data_rmse[day] = (day_desc['mean'] ** 2).mean() ** .5
@@ -307,7 +307,7 @@ def validate(settings, systems):
     def prometheus(data, data_target):
         data_column = data_target + '_err'
         data_name = data_target.replace('_power', '')
-        data_file = os.path.join('validation', data_name + '_prometheus')
+        data_file = os.path.join('evaluation', data_name + '_prometheus')
 
         data_mae = pd.DataFrame(index=[system.name])
         data_mae_weighted = []
@@ -319,9 +319,9 @@ def validate(settings, systems):
         horizons = {}
         for horizon in [1, 3, 6, 12, 24]:
             horizon_data = data[data['horizon'] == horizon].assign(horizon=horizon)
-            horizon_file = os.path.join('validation', data_name + '_prometheus_{}'.format(horizon))
+            horizon_file = os.path.join('evaluation', data_name + '_prometheus_{}'.format(horizon))
             # horizon_desc = describe_data(horizon_data, horizon_data['horizon'], data_column, horizon_file)
-            horizon_desc = _validate_data(system, horizon_data, horizon_data.index.hour, data_column, horizon_file,
+            horizon_desc = _evaluate_data(system, horizon_data, horizon_data.index.hour, data_column, horizon_file,
                                           label='Horizons', title='Prometheus ({})'.format(horizon))
 
             horizons[horizon] = horizon_data
@@ -351,7 +351,7 @@ def validate(settings, systems):
                            columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
                                                               ('Durations [min]', 'Prediction')]))
 
-    validations = {}
+    evaluations = {}
     for system in systems:
         results = system.simulation['results']
         durations = system.simulation['durations']
@@ -363,18 +363,18 @@ def validate(settings, systems):
         if 'training' in durations.keys():
             summary.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
 
-        def concat_validation(name, header, data):
+        def concat_evaluation(name, header, data):
             if data is None:
                 return
 
             data.columns = pd.MultiIndex.from_product([[header], data.columns])
-            if name not in validations.keys():
-                validations[name] = pd.DataFrame(columns=data.columns)
+            if name not in evaluations.keys():
+                evaluations[name] = pd.DataFrame(columns=data.columns)
 
-            validations[name] = pd.concat([validations[name], data], axis=0)
+            evaluations[name] = pd.concat([evaluations[name], data], axis=0)
 
-        def add_validation(name, header, kpi, data=None):
-            concat_validation(name, header, data)
+        def add_evaluation(name, header, kpi, data=None):
+            concat_evaluation(name, header, data)
             if kpi is not None:
                 summary.loc[system.name, (header, name)] = kpi
 
@@ -390,14 +390,14 @@ def validate(settings, systems):
                 if len(columns_daylight) > 0:
                     results = results[(results[columns_daylight] > 0).any()]
 
-            add_validation('Apollo', target_name, *apollo(results, target))
-            add_validation('Astraea', target_name, *astraea(results, target))
-            add_validation('Prometheus', target_name, *prometheus(results, target))
+            add_evaluation('Apollo', target_name, *apollo(results, target))
+            add_evaluation('Astraea', target_name, *astraea(results, target))
+            add_evaluation('Prometheus', target_name, *prometheus(results, target))
 
-    write_excel(settings, summary, validations)
+    write_excel(settings, summary, evaluations)
 
 
-def _validate_data(system, data, index, column, file, **kwargs):
+def _evaluate_data(system, data, index, column, file, **kwargs):
     from th_e_sim.iotools import print_boxplot
     try:
 

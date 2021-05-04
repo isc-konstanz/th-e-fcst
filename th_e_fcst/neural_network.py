@@ -266,7 +266,6 @@ class NeuralNetwork(Model):
         #         with writer.as_default():
         #             summary.scalar(loss_name, loss[epoch], step=epoch)
 
-        self._write_distributions(features)
         self._save()
         return result
 
