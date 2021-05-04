@@ -15,12 +15,12 @@ import copy
 import shutil
 import inspect
 import logging
+import traceback
 import pytz as tz
 import numpy as np
 import pandas as pd
 import datetime as dt
-import dateutil.relativedelta as rd
-import matplotlib.pyplot as plt
+import calendar as cal
 
 from argparse import ArgumentParser, RawTextHelpFormatter
 from configparser import ConfigParser
@@ -28,8 +28,16 @@ from tensorboard import program
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
 
+TARGETS = {
+    'pv': 'Photovoltaics',
+    'el': 'Electrical',
+    'th': 'Thermal'
+}
+
 
 def main(args):
+    from th_e_sim.iotools import write_csv
+    from th_e_sim import preparation
     from th_e_fcst import System
 
     logger.info("Starting TH-E Simulation")
@@ -52,83 +60,84 @@ def main(args):
 
     systems = System.read(**kwargs)
     for system in systems:
-        logger.info('Starting TH-E-Simulation of model {}'.format(system.id))
-        start_simulation = dt.datetime.now()
-
-        if not system.forecast._model.exists():
-            logging.info("Beginning network training of model {}".format(system.id))
-            start_training = dt.datetime.now()
-            system.forecast._model.train(system.forecast._get_history(_get_time(settings['Training']['start']),
-                                                                      _get_time(settings['Training']['end']) \
-                                                                      + dt.timedelta(hours=23, minutes=59)))
-            end_training = dt.datetime.now()
-            logging.info("Network training of model {} complete".format(system.id))
-            train_time = end_training - start_training
-            logging.info("Network training lasted: {}".format(train_time))
-
-        logging.info("Beginning network predictions of model {}".format(system.id))
-        start_prediction = dt.datetime.now()
-        val_dir = os.path.join('lib', 'validation')
-        results = pd.DataFrame()
-        val_features = pd.DataFrame()
-        for file in os.listdir(val_dir):
-            features = pd.read_csv(os.path.join(val_dir, file),
-                                   index_col=0, parse_dates=True,
-                                   infer_datetime_format=True)
-            val_features = pd.concat([val_features, features])
-            results = pd.concat([results, _simulate(settings, system, features)])
-
-        # save feature distributions
-        system.forecast._model.data_distributions(val_features, train=False)
-        end_prediction = dt.datetime.now()
-        pred_time = end_prediction - start_prediction
-        logging.info("Network predictions of model {} complete".format(system.id))
-        logging.info('Network prediction lasted: {}'.format(pred_time))
-
-        # Do not evaluate horizon, if forecast is done in a daily or higher interval
-        if settings.getint('General', 'interval') < 1440:
-            results_horizon1 = _result_horizon(system, results, 1)
-            results_horizon3 = _result_horizon(system, results, 3)
-            results_horizon6 = _result_horizon(system, results, 6)
-            results_horizon12 = _result_horizon(system, results, 12)
-            results_horizon24 = _result_horizon(system, results, 24)
-
-            # results_horizons = pd.concat([results_horizon1, results_horizon3, results_horizon6, results_horizon12, results_horizon24])
-            results_horizons = pd.concat([results_horizon1, results_horizon6, results_horizon24])
-            _result_boxplot(system, results_horizons, results_horizons.index.hour, name='horizons', label='Hours',
-                            hue='horizon', colors=5)
-
-        _result_hours(system, results, name='hours')
-
-        end_simulation = dt.datetime.now()
-        logger.info("Finished TH-E Simulation of model {}".format(system.id))
-        logger.info("TH-E Simulation lasted: {}".format(end_simulation - start_simulation))
-        sim_time = end_simulation - start_simulation
-
-        preparation.process_weather(system)
-        preparation.process_system(system)
+        logger.info('Starting TH-E-Simulation of system {}'.format(system.name))
+        durations = {
+            'simulation': {
+                'start': dt.datetime.now()
+            }
+        }
+        preparation.process_weather(system, os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme', 'data', 'Meteoblue'))
+        preparation.process_system(system, os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme', 'data', 'OPSD'))
         try:
-            kpi = _result_summary(system, results, sim_time, train_time, pred_time)
-        except NameError:
-            logging.warning('train_time set to {}:'.format(0) +
-                            'Training for {}'.format(system.id) +
-                            'did not occur due to preexisting model.')
-            train_time = 0
-            kpi = _result_summary(system, results, sim_time, train_time, pred_time)
+            if not system.forecast._model.exists():
+                from th_e_sim.iotools import print_distributions
 
-        interval = settings.getint('General', 'interval') / 60
-        results = results[results['horizon'] <= interval].sort_index()
-        del results['horizon']
-        _result_write(system, results)
+                logging.debug("Beginning training of neural network for system: {}".format(system.name))
+                durations['training'] = {
+                    'start': dt.datetime.now()
+                }
+                print_distributions(features, path=system.forecast._model.dir)
 
-        for key, info in kpi.items():
-            _result_write(system, info, results_name=key, results_dir='results')
+                system.forecast._model.train(system.forecast._get_history(_get_time(settings['Training']['start']),
+                                                                          _get_time(settings['Training']['end'])
+                                                                          + dt.timedelta(hours=23, minutes=59)))
 
-    _result_comparison(systems)
+                durations['training']['end'] = dt.datetime.now()
+                durations['training']['minutes'] = (durations['training']['end'] -
+                                                    durations['training']['start']).total_seconds() / 60.0
 
+                logging.debug("Training of neural network for system {} complete after {} minutes"
+                              .format(system.name, durations['training']['minutes']))
 
-    if tensorboard:
-        logger.info("TensorBoard will be kept running")
+            data = system._database.get(start, end)
+            weather = system.forecast._weather._database.get(start, end)
+            features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
+            features_file = os.path.join('validation', 'features')
+            write_csv(system, features, features_file)
+            durations['prediction'] = {
+                'start': dt.datetime.now()
+            }
+            logging.debug("Beginning predictions for system: {}".format(system.name))
+
+            durations['prediction']['end'] = dt.datetime.now()
+            durations['prediction']['minutes'] = (durations['prediction']['end'] -
+                                                  durations['prediction']['start']).total_seconds() / 60.0
+
+            results = simulate(settings, system, features)
+
+            for results_err in [c for c in results.columns if c.endswith('_err')]:
+                results_file = os.path.join('results', results_err.replace('_err', '').replace('_power', ''))
+                write_csv(system, results, results_file)
+
+            logging.debug("Predictions for system {} complete {} minutes".format(system.name,
+                                                                                 durations['prediction']['minutes']))
+
+            durations['simulation']['end'] = dt.datetime.now()
+            durations['simulation']['minutes'] = (durations['simulation']['end'] -
+                                                  durations['simulation']['start']).total_seconds() / 60.0
+
+            # Store results with its system, to summarize it later on
+            system.simulation = {
+                'results': results,
+                'durations': durations
+            }
+
+        except Exception as e:
+            error = True
+            logger.error("Error simulating system %s: %s", system.name, str(e))
+            logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
+
+    logger.info("Finished TH-E Simulation{0}".format('s' if len(systems) > 1 else ''))
+    logger.debug("Finished {0} Simulation{1} after: {2}".format(len(systems), 's' if len(systems) > 1 else '',
+                                                                durations['simulation']['minutes']))
+
+    logger.info("TH-E Simulation{0} finished".format('s' if len(systems) > 1 else ''))
+
+    if not error:
+        validate(settings, systems)
+
+        if tensorboard:
+            logger.info("TensorBoard will be kept running")
 
     while tensorboard and not error:
         try:
@@ -137,9 +146,21 @@ def main(args):
         except KeyboardInterrupt:
             tensorboard = False
 
-def _simulate(settings, system, features, **kwargs):
+
+def simulate(settings, system, features, **kwargs):
     forecast = system.forecast._model
     results = pd.DataFrame()
+
+    if len(forecast.resolutions) == 1:
+        resolution_min = forecast.resolutions[0]
+    else:
+        for i in range(len(forecast.resolutions)-1, 0, -1):
+            resolution_min = forecast.resolutions[i]
+            if resolution_min.steps_horizon is not None:
+                break
+
+    resolution_max = forecast.resolutions[0]
+    resolution_data = resolution_min.resample(features)
 
     system_dir = system._configs['General']['data_dir']
     database = copy.deepcopy(system._database)
@@ -154,8 +175,8 @@ def _simulate(settings, system, features, **kwargs):
 
     verbose = settings.getboolean('General', 'verbose', fallback=False)
     interval = settings.getint('General', 'interval')
-    time = features.index[0] + forecast._resolutions[-1].time_prior
-    end = features.index[-1] - forecast._resolutions[-1].time_horizon
+    time = features.index[0] + resolution_max.time_prior
+    end = features.index[-1] - resolution_max.time_horizon
 
     training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
     # training_interval = settings.getint('Training', 'interval')
@@ -172,17 +193,22 @@ def _simulate(settings, system, features, **kwargs):
 
         try:
             step_result = list()
+            step_prior = time - resolution_max.time_prior - resolution_max.time_step + dt.timedelta(seconds=1)
+            step_horizon = time + resolution_max.time_horizon
+            step_features = copy.deepcopy(features[step_prior:step_horizon])
 
-            if 'doubt' in forecast.features['input']:
-                step_doubt = list()
+            # Extract target feature reference values and scale them for evaluation later
+            step_reference = resolution_data.loc[time:time+resolution_min.time_horizon, forecast.features['target']]
+            step_reference = forecast._scale_features(step_reference, invert=True)
 
-            step_features = copy.deepcopy(features[time - forecast._resolutions[-1].time_prior:
-                                                   time + forecast._resolutions[-1].time_horizon])
+            # Remove target values from features, as those will be recursively filled with predictions
+            step_features.loc[time:, forecast.features['target']] = np.NaN
 
-            step_index = step_features[time:].index
-            step = step_index[0]
+            step = time
+            step_index = step_features[step:step+resolution_min.time_horizon].index
             while step in step_index:
-                step_inputs = forecast._extract_inputs(step_features, step)
+                step_next = step + resolution_min.time_step
+                step_inputs = forecast._parse_inputs(step_features, step)
 
                 if verbose:
                     database.persist(step_inputs,
@@ -192,55 +218,28 @@ def _simulate(settings, system, features, **kwargs):
                 inputs = np.squeeze(step_inputs.fillna(0).values)
                 result = forecast._run_step(inputs)
 
-                if 'doubt' in forecast.features['input']:
-                    # retrieve prediction doubt (assumes doubt is last column in inputs)
-                    if forecast._estimate == True:
-                        doubt = inputs[-2, -1]
-                    elif forecast._estimate == False:
-                        doubt = inputs[-1, -1]
-
-                    step_doubt.append(doubt)
-
-                    # recalculate doubt for target hour (this value will be utilized in next prediction)
-                    sm1 = step_features.loc[step - dt.timedelta(hours=23):step, 'pv_power'].mean()
-                    sm2 = step_features.loc[step - dt.timedelta(hours=23):step, 'dni'].mean()
-
-                    sf1 = step_features.loc[step - dt.timedelta(hours=23):step, 'pv_power']
-                    sf2 = step_features.loc[step - dt.timedelta(hours=23):step, 'dni']
-
-                    cov = ((sf1 - sm1) * (sf2 - sm2)).mean()
-                    step_features.loc[step, 'doubt'] = abs(cov - forecast.covariance) / forecast.cov_std
-
                 # Add predicted output to features of next iteration
-                step_features.loc[step, forecast.features['target']] = result
+                step_range = step_features[(step_features.index >= step) & (step_features.index < step_next)].index
+                step_features.loc[step_range, forecast.features['target']] = result
 
                 step_result.append(result)
-                step += dt.timedelta(minutes=forecast._resolutions[-1].minutes)
+                step = step_next
 
             if training_recursive:
-                training_features = step_features
+                training_features = features[step_prior:step_horizon]
 
                 forecast._train(training_features)
                 forecast._save_model()
 
-            target = forecast.features['target']
-
-            if 'doubt' in forecast.features['input']:
-                result = features.loc[step_index[0]:step_index[-1], ['doubt'] + target]
-                result = pd.concat(
-                    [result, pd.DataFrame(step_result, result.index, columns=[t + '_est' for t in target]),
-                     pd.DataFrame(step_doubt, result.index, columns=['true_doubt'])],
-                    axis=1)
-            else:
-                result = features.loc[step_index[0]:step_index[-1], target]
-                result = pd.concat(
-                    [result, pd.DataFrame(step_result, result.index, columns=[t + '_est' for t in target])],
-                    axis=1)
-
-            result = system.forecast._model.rescale(result, scale=False)
+            result = pd.DataFrame(data=step_result, index=step_reference.index, columns=forecast.features['target'])
+            result = forecast._scale_features(result, invert=True)
+            result.rename('{}_est'.format, axis=1, inplace=True)
+            result = pd.concat([step_reference, result], axis=1)
 
             for target in forecast.features['target']:
                 result[target + '_err'] = result[target + '_est'] - result[target]
+
+            result = pd.concat([result, step_features[forecast.features['input']]], axis=1)
 
             result['horizon'] = pd.Series(range(1, len(result.index) + 1), result.index)
             result.index.name = 'time'
@@ -251,265 +250,176 @@ def _simulate(settings, system, features, **kwargs):
 
         except ValueError as e:
             logger.debug("Skipping %s: %s", time, str(e))
+            # logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
 
         time += dt.timedelta(minutes=interval)
 
     return results
 
 
-def _result_summary(system, results, sim_time, train_time, pred_time, doubt=False):
-    err_names = ['err_hs']
-    for i in range(24):
-        err_names.append('err_h{}'.format(i + 1))
+def validate(settings, systems):
+    from th_e_sim.iotools import print_boxplot, write_csv, write_excel
 
-    # retrieve total and 'horizon_wise' mae and mse of sim targets
-    targets = system.forecast._model.features['target']
+    def validate_data(data, index, column, file, **kwargs):
+        try:
+            print_boxplot(system, data, index, column, file, **kwargs)
 
-    if doubt is True:
-        kpi = {'times': pd.DataFrame(),
-               'mse': pd.DataFrame(index=err_names, columns=targets),
-               'mae': pd.DataFrame(index=err_names, columns=targets),
-               'mse_cor': pd.DataFrame(index=err_names, columns=targets),
-               'mae_cor': pd.DataFrame(index=err_names, columns=targets),
-               'weights': pd.DataFrame({'train_weights': 1, 'nontrain_weights': 1, 'total_weights': 1}, index=[0]),
-               'apollo': pd.DataFrame({'apollo': 1}, index=[0]),
-               'apollo_2': pd.DataFrame(index=err_names, columns=targets),
-               'horizon_doubt': pd.Series(index=err_names[1:], name='horizon_doubt')}
-    else:
-        kpi = {'times': pd.DataFrame(),
-               'mse': pd.DataFrame(index=err_names, columns=targets),
-               'mae': pd.DataFrame(index=err_names, columns=targets),
-               'weights': pd.DataFrame({'train_weights': 1, 'nontrain_weights': 1, 'total_weights': 1}, index=[0]),
-               'apollo': pd.DataFrame({'apollo': 1}, index=[0]),
-               'apollo_2': pd.DataFrame(index=err_names, columns=targets), }
+        except ImportError as e:
+            logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
+                                                                                 str(e)))
 
-    # retrieve duration of various process durations and compile in np.array
-    kpi['times']['sim_time'] = [sim_time]
-    kpi['times']['train_time'] = [train_time]
-    kpi['times']['pred_time'] = [pred_time]
+        return describe_data(data, index, column, file)
 
-    if doubt is True:
-        for i in range(24):
-            horizon_data = results.loc[results['horizon'] == i + 1]
-            kpi['horizon_doubt']['err_h{}'.format(i + 1)] = horizon_data['true_doubt'].mean()
-
-    for target in targets:
-        kpi['mse'][target]['err_hs'] = (results[target + '_err'] ** 2).mean()
-        kpi['mae'][target]['err_hs'] = abs(results[target + '_err']).mean()
-
-        # calculate apollo_2
-        median = results['pv_power_err'].groupby([results.index.hour]).median()
-        kpi['apollo_2'][target]['err_hs'] = abs(median).mean()
-
-        if doubt is True:
-            # noise corrected error
-            err_cor = results[target + '_err'] - results['doubt'] * results[target + '_err']
-            err_cor.loc[err_cor < 0] = 0
-            kpi['mse_cor'][target]['err_hs'] = (err_cor ** 2).mean()
-            kpi['mae_cor'][target]['err_hs'] = abs(err_cor).mean()
-
-        for i in range(24):
-            # parse horizon data
-            horizon_data = results.loc[results['horizon'] == i + 1]
-
-            kpi['mse'][target]['err_h{}'.format(i + 1)] = (horizon_data[target + '_err'] ** 2).mean()
-            kpi['mae'][target]['err_h{}'.format(i + 1)] = abs(horizon_data[target + '_err']).mean()
-
-            median = horizon_data[target + '_err'].groupby([horizon_data.index.hour]).median()
-            kpi['apollo_2'][target]['err_h{}'.format(i + 1)] = abs(median).mean()
-
-            if doubt is True:
-                err_cor = horizon_data[target + '_err'] - horizon_data['doubt'] * horizon_data[target + '_err']
-                err_cor.loc[err_cor < 0] = 0
-                kpi['mse_cor'][target]['err_h{}'.format(i + 1)] = (err_cor ** 2).mean()
-                kpi['mae_cor'][target]['err_h{}'.format(i + 1)] = abs(err_cor).mean()
-
-    trainable_count = int(
-        np.sum([K.count_params(p) for p in system.forecast._model.model.trainable_weights]))
-    non_trainable_count = int(
-        np.sum([K.count_params(p) for p in system.forecast._model.model.non_trainable_weights]))
-    total_count = trainable_count + non_trainable_count
-
-    kpi['weights']['train_weights'] = trainable_count
-    kpi['weights']['nontrain_weights'] = non_trainable_count
-    kpi['weights']['total_weights'] = total_count
-
-    hourly_max = results['pv_power_err'].groupby([results.index.hour]).max()
-    median = results['pv_power_err'].groupby([results.index.hour]).median()
-    kpi['apollo']['apollo'] = (median[5:22] / hourly_max).mean()  # ToDo fix index, take abs of median
-
-    return kpi
-
-
-def _result_horizon(system, results, hour):
-    results_dir = os.path.join('results', 'horizons')
-    results_horizon = results[results['horizon'] == hour].assign(horizon=hour)
-    _result_hours(system, results_horizon, name='horizon{}'.format(hour), dir=results_dir)
-
-    return results_horizon
-
-
-def _result_hours(system, results, dir='results', name=None):
-    _result_describe(system, results, results.index.hour, dir=dir, name=name)
-    _result_boxplot(system, results, results.index.hour, dir=dir, name=name, label='Hours')
-
-
-def _result_describe(system, results, index, name=None, dir='results'):
-    for error in [c for c in results.columns if c.endswith('_err')]:
-        result = results[error]
-        median = result.groupby([index]).median()
+    def describe_data(data, index, column, file):
+        data = data[column]
+        group = data.groupby([index])
+        median = group.median()
         median.name = 'median'
-        desc = pd.concat([median, result.groupby([index]).describe()], axis=1)
-        _result_write(system, desc, error.split('_err')[0], dir, name)
+        mae = data.abs().groupby([index]).mean()
+        mae.name = 'mae'
+        rmse = (data ** 2).groupby([index]).mean() ** .5
+        rmse.name = 'rmse'
+        description = pd.concat([rmse, mae, median, group.describe()], axis=1)
+        description.index.name = 'index'
+        del description['count']
 
+        write_csv(system, description, file)
 
-def _result_write(system, results, results_name='results', results_dir='', postfix=None):
-    system_dir = system._configs['General']['data_dir']
-    database = copy.deepcopy(system._database)
-    database.dir = system_dir
-    # database.format = '%Y%m%d'
-    database.enabled = True
-    database_dir = os.path.join(database.dir, results_dir)
+        return description
 
-    if not os.path.isdir(database_dir):
-        os.makedirs(database_dir, exist_ok=True)
+    def apollo(data, data_target):
+        data_column = data_target + '_err'
+        data_name = data_target.replace('_power', '')
+        data_file = os.path.join('validation', data_name + '_apollo')
 
-    if postfix is not None:
-        results_name += '_{}'.format(postfix)
+        doubt = data[data_target + '_doubt']
+        data_cor = data.copy()
+        data_cor.loc[:, data_column] = data_cor[data_column] - doubt
+        data_cor.loc[data_cor[data_column] < 0, data_column] = 0
+        data_cor = data_cor.drop(doubt[doubt >= data_cor[data_target].max()].index)
 
-    results.to_csv(os.path.join(database_dir, results_name + '.csv'),
-                   sep=database.separator,
-                   decimal=database.decimal,
-                   encoding='utf-8')
+        data_desc = validate_data(data_cor, data_cor.index.hour, data_column, data_file,
+                                  label='Hours', title='Apollo')
 
+        data_rmse = data_desc.transpose().loc[['rmse']]
+        data_rmse.columns = ['Hour {}'.format(c + 1) for c in data_rmse.columns]
+        data_rmse.index = [system.name]
 
-def _result_boxplot(system, results, index, label='', name=None, colors=None, dir='results', **kwargs):
-    try:
-        import seaborn as sns
+        return (data_cor[data_column] ** 2).mean() ** .5, data_rmse
 
-        for error in [c for c in results.columns if c.endswith('_err')]:
-            plot_name = error.split('_err')[0]
-            if name is not None:
-                plot_name += '_{}'.format(name)
+    def astraea(data, data_target):
+        data_column = data_target + '_err'
+        data_name = data_target.replace('_power', '')
+        data_file = os.path.join('validation', data_name + '_astraea')
+        data_desc = validate_data(data, data.index.hour, data_column, data_file,
+                                  label='Hours', title='Astraea')
 
-            plot_file = os.path.join(system._configs['General']['data_dir'], dir, plot_name + '.png')
+        data_mae = data_desc.transpose().loc[['mae']]
+        data_mae.columns = ['Hour {}'.format(c + 1) for c in data_mae.columns]
+        data_mae.index = [system.name]
 
-            plt.figure()
-            plot_fliers = dict(marker='o', markersize=3, markerfacecolor='none', markeredgecolor='lightgrey')
-            plot_colors = colors if colors is not None else index.nunique()
-            plot_palette = sns.light_palette('#0069B4', n_colors=plot_colors, reverse=True)
-            plot = sns.boxplot(x=index, y=error, data=results, palette=plot_palette, flierprops=plot_fliers,
-                               **kwargs)  # , showfliers=False)
-            plot.set(xlabel=label, ylabel='Error [W]')
-            plot.figure.savefig(plot_file)
-            plt.show(block=False)
+        data_rmse = pd.Series(index=range(7), dtype='float64')
+        for day in data_rmse.index:
+            day_data = data[data.index.day_of_week == day]
+            day_file = os.path.join('validation', data_name + '_astraea_{}'.format(day + 1))
+            day_desc = validate_data(day_data, day_data.index.hour, data_column, day_file,
+                                     label='Hours', title='Astraea ({})'.format(cal.day_name[day]))
 
-    except ImportError:
-        pass
+            data_rmse[day] = (day_desc['mean'] ** 2).mean() ** .5
 
+        return (data_rmse ** 2).mean() ** .5, data_mae
 
-def _result_comparison(systems):
-    import xlsxwriter
+    def prometheus(data, data_target):
+        data_column = data_target + '_err'
+        data_name = data_target.replace('_power', '')
+        data_file = os.path.join('validation', data_name + '_prometheus')
 
-    def _write_performance_summary(xldoc):
-        metrics = ['mse', 'mae', 'mse_cor', 'mae_cor',
-                   'times', 'weights', 'apollo', 'apollo_2',
-                   'horizon_doubt']
+        data_mae = pd.DataFrame(index=[system.name])
+        data_mae_weighted = []
+        for horizon in range(24):
+            horizon_mae = data.loc[data['horizon'] == horizon + 1, data_column].abs().mean()
+            data_mae.loc[system.name, 'Horizon {}'.format(horizon + 1)] = horizon_mae
+            data_mae_weighted.append(horizon_mae * (0.75 ** horizon))
 
-        def _retrieve_model_data(systems, sheets):
-            data = {}
+        horizons = {}
+        for horizon in [1, 3, 6, 12, 24]:
+            horizon_data = data[data['horizon'] == horizon].assign(horizon=horizon)
+            horizon_file = os.path.join('validation', data_name + '_prometheus_{}'.format(horizon))
+            # horizon_desc = describe_data(horizon_data, horizon_data['horizon'], data_column, horizon_file)
+            horizon_desc = validate_data(horizon_data, horizon_data.index.hour, data_column, horizon_file,
+                                         label='Horizons', title='Prometheus ({})'.format(horizon))
 
-            for sheet in sheets:
-                data[sheet] = pd.DataFrame()
+            horizons[horizon] = horizon_data
 
-            i = 0
-            for system in systems:
-                data_dir = system._configs['General']['data_dir']
-                database = os.path.join(data_dir, 'results')
-                for sheet in sheets:
-                    csv = os.path.join(database, sheet + '.csv')
-                    if os.path.isfile(csv):
-                        system_data = pd.read_csv(os.path.join(database, sheet + '.csv'), index_col=0)
+        try:
+            horizons_data = pd.concat([horizons[1], horizons[12], horizons[24]])
+            print_boxplot(system, horizons_data, horizons_data.index.hour, data_column, data_file,
+                          label='Horizons', title='Prometheus', hue='horizon', colors=5)
 
-                        if sheet in ['mae', 'mae_cor', 'mse', 'mae_cor', 'horizon_doubt', 'hourly_doubt']:
-                            system_data.columns = [name + '_{}'.format(i) for name in
-                                                   system_data.columns]  # ensure unique column names
-                            data[sheet] = pd.concat([data[sheet], system_data], axis=1)
-                        else:
-                            data[sheet] = pd.concat([data[sheet], system_data])
-                i += 1
+        except ImportError as e:
+            logger.debug(
+                "Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(data_file), system.name,
+                                                                        str(e)))
 
-            # delete keys for which no info was extracted
-            for sheet in sheets:
-                if data[sheet].shape == (0, 0):
-                    del data[sheet]
-            return data
+        return (np.array(data_mae_weighted) ** 2).mean() ** .5, data_mae
 
-        def _write_MSE_MAE(systems, data, kpi, offset):
-            if kpi.lower() not in metrics:
-                print('Valid metrics include:')
-                for kpi in metrics:
-                    print(kpi)
-                raise ValueError('The chosen kpi does not belong to the list metrics used.')
+    # def weights(data, data_target):
+    #     trainable_count = int(
+    #         np.sum([K.count_params(p) for p in system.forecast._model.model.trainable_weights]))
+    #     non_trainable_count = int(
+    #         np.sum([K.count_params(p) for p in system.forecast._model.model.non_trainable_weights]))
+    #     total_count = trainable_count + non_trainable_count
+    #
+    #     return None, total_count
 
-            worksheet.merge_range(len(systems) + 2, offset, len(systems) + 3, offset, kpi.upper(), bold_format)
+    summary = pd.DataFrame(index=[s.name for s in systems],
+                           columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
+                                                              ('Durations [min]', 'Prediction')]))
 
-            worksheet.write_column(len(systems) + 4, offset, list(data.index), bold_format)
-            offset += 1
+    validations = {}
+    for system in systems:
+        results = system.simulation['results']
+        durations = system.simulation['durations']
 
-            # write system ids above data
-            if len(systems) != len(data.columns):
-                step = int(len(data.columns) / len(systems))
-                n = 0
-                for system in systems:
-                    worksheet.merge_range(len(systems) + 2, offset + n * step,
-                                          len(systems) + 2, offset + (n + 1) * step - 1,
-                                          system.id, merge_format)
-                    n += 1
-            else:
-                for i in range(len(systems)):
-                    worksheet.write(len(systems) + 2, offset + i, systems[i].id, merge_format)
+        # index = pd.IndexSlice
+        summary.loc[system.name, ('Durations [min]', 'Simulation')] = round(durations['simulation']['minutes'])
+        summary.loc[system.name, ('Durations [min]', 'Prediction')] = round(durations['prediction']['minutes'])
 
-            # write data
-            for column in data.columns:
-                worksheet.write(len(systems) + 3, offset, column)
-                worksheet.write_column(len(systems) + 4, offset, data[column])
-                offset += 1
+        if 'training' in durations.keys():
+            summary.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
 
-            return offset + 1
+        def concat_validation(name, header, data):
+            if data is None:
+                return
 
-        def _write_summary_table(systems, data, offset):
-            for i in range(len(systems)):
-                worksheet.write(i + 1, offset, systems[i].id, bold_format)
-            for i in range(len(data.columns)):
-                worksheet.write(0, i + offset + 1, data.columns[i], bold_format)  # write column labels
-                worksheet.write_column(1, i + offset + 1, data[data.columns[i]])  # write column data
+            data.columns = pd.MultiIndex.from_product([[header], data.columns])
+            if name not in validations.keys():
+                validations[name] = pd.DataFrame(columns=data.columns)
 
-            return len(data.columns) + offset + 2  # next offset
+            validations[name] = pd.concat([validations[name], data], axis=0)
 
-        if len(systems) == 25:
-            raise TypeError('This methods formatting relies on the fact that len(systems) does not' +
-                            ' equal 25.')
+        def add_validation(name, header, kpi, data=None):
+            concat_validation(name, header, data)
+            if kpi is not None:
+                summary.loc[system.name, (header, name)] = kpi
 
-        data = _retrieve_model_data(systems, metrics)
+        for target in system.forecast._model.features['target']:
+            target_id = target.replace('_power', '')
+            target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
 
-        worksheet = workbook.add_worksheet('performance_summary')
+            if target+'_err' not in results.columns:
+                continue
 
-        left_col = 0
-        offset = 0
-        for key, info in data.items():
-            if len(info.index) == len(systems):  # ToDo results in err if len(systems) = 25
-                left_col = _write_summary_table(systems, info, left_col)
-            else:
-                offset = _write_MSE_MAE(systems, info, key, offset)
+            if target_id in ['pv']:
+                columns_daylight = np.intersect1d(results.columns, ['ghi', 'dni', 'dhi', 'solar_elevation'])
+                if len(columns_daylight) > 0:
+                    results = results[(results[columns_daylight] > 0).any()]
 
-    workbook = xlsxwriter.Workbook('data\\model_comparison.xlsx')
+            add_validation('Apollo', target_name, *apollo(results, target))
+            add_validation('Astraea', target_name, *astraea(results, target))
+            add_validation('Prometheus', target_name, *prometheus(results, target))
 
-    bold_format = workbook.add_format({'bold': True})
-    merge_format = workbook.add_format({'bold': True, 'align': 'center', 'fg_color': 'yellow'})
-
-    _write_performance_summary(workbook)
-    workbook.close()
+    write_excel(settings, summary, validations)
 
 
 def _launch_tensorboard(**kwargs):
