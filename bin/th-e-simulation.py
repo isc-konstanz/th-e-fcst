@@ -76,11 +76,13 @@ def main(args):
                 durations['training'] = {
                     'start': dt.datetime.now()
                 }
+                features = system.forecast._get_history(_get_time(settings['Training']['start']),
+                                                        _get_time(settings['Training']['end'])
+                                                        + dt.timedelta(hours=23, minutes=59))
+
                 print_distributions(features, path=system.forecast._model.dir)
 
-                system.forecast._model.train(system.forecast._get_history(_get_time(settings['Training']['start']),
-                                                                          _get_time(settings['Training']['end'])
-                                                                          + dt.timedelta(hours=23, minutes=59)))
+                system.forecast._model.train(features)
 
                 durations['training']['end'] = dt.datetime.now()
                 durations['training']['minutes'] = (durations['training']['end'] -
