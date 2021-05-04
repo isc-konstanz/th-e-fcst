@@ -258,34 +258,7 @@ def simulate(settings, system, features, **kwargs):
 
 
 def validate(settings, systems):
-    from th_e_sim.iotools import print_boxplot, write_csv, write_excel
-
-    def validate_data(data, index, column, file, **kwargs):
-        try:
-            print_boxplot(system, data, index, column, file, **kwargs)
-
-        except ImportError as e:
-            logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
-                                                                                 str(e)))
-
-        return describe_data(data, index, column, file)
-
-    def describe_data(data, index, column, file):
-        data = data[column]
-        group = data.groupby([index])
-        median = group.median()
-        median.name = 'median'
-        mae = data.abs().groupby([index]).mean()
-        mae.name = 'mae'
-        rmse = (data ** 2).groupby([index]).mean() ** .5
-        rmse.name = 'rmse'
-        description = pd.concat([rmse, mae, median, group.describe()], axis=1)
-        description.index.name = 'index'
-        del description['count']
-
-        write_csv(system, description, file)
-
-        return description
+    from th_e_sim.iotools import print_boxplot, write_excel
 
     def apollo(data, data_target):
         data_column = data_target + '_err'
@@ -298,8 +271,8 @@ def validate(settings, systems):
         data_cor.loc[data_cor[data_column] < 0, data_column] = 0
         data_cor = data_cor.drop(doubt[doubt >= data_cor[data_target].max()].index)
 
-        data_desc = validate_data(data_cor, data_cor.index.hour, data_column, data_file,
-                                  label='Hours', title='Apollo')
+        data_desc = _validate_data(system, data_cor, data_cor.index.hour, data_column, data_file,
+                                   label='Hours', title='Apollo')
 
         data_rmse = data_desc.transpose().loc[['rmse']]
         data_rmse.columns = ['Hour {}'.format(c + 1) for c in data_rmse.columns]
@@ -311,8 +284,8 @@ def validate(settings, systems):
         data_column = data_target + '_err'
         data_name = data_target.replace('_power', '')
         data_file = os.path.join('validation', data_name + '_astraea')
-        data_desc = validate_data(data, data.index.hour, data_column, data_file,
-                                  label='Hours', title='Astraea')
+        data_desc = _validate_data(system, data, data.index.hour, data_column, data_file,
+                                   label='Hours', title='Astraea')
 
         data_mae = data_desc.transpose().loc[['mae']]
         data_mae.columns = ['Hour {}'.format(c + 1) for c in data_mae.columns]
@@ -322,8 +295,8 @@ def validate(settings, systems):
         for day in data_rmse.index:
             day_data = data[data.index.day_of_week == day]
             day_file = os.path.join('validation', data_name + '_astraea_{}'.format(day + 1))
-            day_desc = validate_data(day_data, day_data.index.hour, data_column, day_file,
-                                     label='Hours', title='Astraea ({})'.format(cal.day_name[day]))
+            day_desc = _validate_data(system, day_data, day_data.index.hour, data_column, day_file,
+                                      label='Hours', title='Astraea ({})'.format(cal.day_name[day]))
 
             data_rmse[day] = (day_desc['mean'] ** 2).mean() ** .5
 
@@ -346,8 +319,8 @@ def validate(settings, systems):
             horizon_data = data[data['horizon'] == horizon].assign(horizon=horizon)
             horizon_file = os.path.join('validation', data_name + '_prometheus_{}'.format(horizon))
             # horizon_desc = describe_data(horizon_data, horizon_data['horizon'], data_column, horizon_file)
-            horizon_desc = validate_data(horizon_data, horizon_data.index.hour, data_column, horizon_file,
-                                         label='Horizons', title='Prometheus ({})'.format(horizon))
+            horizon_desc = _validate_data(system, horizon_data, horizon_data.index.hour, data_column, horizon_file,
+                                          label='Horizons', title='Prometheus ({})'.format(horizon))
 
             horizons[horizon] = horizon_data
 
@@ -420,6 +393,39 @@ def validate(settings, systems):
             add_validation('Prometheus', target_name, *prometheus(results, target))
 
     write_excel(settings, summary, validations)
+
+
+def _validate_data(system, data, index, column, file, **kwargs):
+    from th_e_sim.iotools import print_boxplot
+    try:
+
+        print_boxplot(system, data, index, column, file, **kwargs)
+
+    except ImportError as e:
+        logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
+                                                                             str(e)))
+
+    return _describe_data(system, data, index, column, file)
+
+
+def _describe_data(system, data, index, column, file):
+    from th_e_sim.iotools import write_csv
+
+    data = data[column]
+    group = data.groupby([index])
+    median = group.median()
+    median.name = 'median'
+    mae = data.abs().groupby([index]).mean()
+    mae.name = 'mae'
+    rmse = (data ** 2).groupby([index]).mean() ** .5
+    rmse.name = 'rmse'
+    description = pd.concat([rmse, mae, median, group.describe()], axis=1)
+    description.index.name = 'index'
+    del description['count']
+
+    write_csv(system, description, file)
+
+    return description
 
 
 def _launch_tensorboard(**kwargs):
