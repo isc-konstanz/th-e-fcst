@@ -262,24 +262,35 @@ def evaluate(settings, systems):
     from th_e_sim.iotools import print_boxplot, write_excel
 
     def apollo(data, data_target):
+        data_doubt = data_target + '_doubt'
+        data_doubts = system.forecast._model.features.get('doubt', {})
+        if data_target not in data_doubts:
+            return
+
         data_column = data_target + '_err'
         data_name = data_target.replace('_power', '')
         data_file = os.path.join('evaluation', data_name + '_apollo')
 
-        doubt = data[data_target + '_doubt']
-        data_cor = data.copy()
-        data_cor.loc[:, data_column] = data_cor[data_column] - data_cor[data_column] * doubt
-        data_cor.loc[data_cor[data_column] < 0, data_column] = 0
-        data_cor = data_cor.drop(doubt[doubt >= data_cor[data_target].max()].index)
+        doubt = data[data_doubt]
+        data.loc[:, data_column] = data[data_column] - data[data_column] * doubt
 
-        data_desc = _evaluate_data(system, data_cor, data_cor.index.hour, data_column, data_file,
+        data_dates = pd.DataFrame(index=list(set(data.index.date)))
+        for date in data_dates.index:
+            data_dates.loc[date, data_doubt] = data.loc[data.index.date == date, data_doubt].mean()
+            data_dates.loc[date, data_target] = data.loc[data.index.date == date, data_target].mean()
+        data_dates = data_dates.loc[data_dates[data_target] > data_dates[data_target].quantile(0.75), data_doubt]
+
+        logger.debug("Most accurately forecasted days: \n%s", "\n".join(
+                    ["{}. {}".format(i+1, d) for i, d in enumerate(data_dates.abs().sort_values().head(10).index)]))
+
+        data_desc = _evaluate_data(system, data, data.index.hour, data_column, data_file,
                                    label='Hours', title='Apollo')
 
         data_rmse = data_desc.transpose().loc[['rmse']]
         data_rmse.columns = ['Hour {}'.format(c + 1) for c in data_rmse.columns]
         data_rmse.index = [system.name]
 
-        return (data_cor[data_column] ** 2).mean() ** .5, data_rmse
+        return (data[data_column] ** 2).mean() ** .5, data_rmse
 
     def astraea(data, data_target):
         data_column = data_target + '_err'
