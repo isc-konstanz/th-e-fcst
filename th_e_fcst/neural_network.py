@@ -434,23 +434,22 @@ class NeuralNetwork(Model):
                 .rolling(time_periods, min_periods=time_periods) \
                 .cov().unstack()[feature][feature_cor]
 
-            # Overall covariance of the series series per annum
-            if features_cov_key not in self.features['covariance_pa']:
-                features_cov_pa = features[feature].cov(features[feature_cor])
-                self.features['covariance_pa'][features_cov_key] = features_cov_pa
-
-            features_cov_pa = self.features['covariance_pa'][features_cov_key]
-
-            # Std of sample covariance from population covariance estimate
-            if features_cov_key not in self.features['covariance_std']:
-                features_cov_std = np.sqrt(((features_cov - features_cov_pa) ** 2).sum() / (len(features_cov) - 1))
-                self.features['covariance_std'][features_cov_key] = features_cov_std
-
-            features_cov_std = self.features['covariance_std'][features_cov_key]
+            # # Overall covariance of the series series per annum
+            # if features_cov_key not in self.features['covariance_pa']:
+            #     features_cov_pa = features[feature].cov(features[feature_cor])
+            #     self.features['covariance_pa'][features_cov_key] = features_cov_pa
+            #
+            # features_cov_pa = self.features['covariance_pa'][features_cov_key]
+            #
+            # # Std of sample covariance from population covariance estimate
+            # if features_cov_key not in self.features['covariance_std']:
+            #     features_cov_std = np.sqrt(((features_cov - features_cov_pa) ** 2).sum() / (len(features_cov) - 1))
+            #     self.features['covariance_std'][features_cov_key] = features_cov_std
+            #
+            # features_cov_std = self.features['covariance_std'][features_cov_key]
 
             features.loc[times, features_cov_key] = features_cov[times]
-            features.loc[times, feature+'_doubt'] = (abs(features[feature] - features[feature_cor])) / \
-                                                    (abs(features_cov[times] - features_cov_pa) / features_cov_std)
+            features.loc[times, feature+'_doubt'] = abs(features[feature] - features[feature_cor])
 
         return features
 

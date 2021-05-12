@@ -94,6 +94,10 @@ def main(args):
 
             data = system._database.get(start, end)
             weather = system.forecast._weather._database.get(start, end)
+            if system.contains_type('pv'):
+                solar = system.forecast._get_yield(weather)
+                data = pd.concat([data, solar], axis=1)
+
             features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
             features_file = os.path.join('evaluation', 'features')
             write_csv(system, features, features_file)
