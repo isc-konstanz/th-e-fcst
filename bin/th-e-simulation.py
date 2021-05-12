@@ -80,6 +80,7 @@ def main(args):
                                                         _get_time(settings['Training']['end'])
                                                         + dt.timedelta(hours=23, minutes=59))
 
+                if settings.getboolean('General', 'verbose', fallback=False):
                 print_distributions(features, path=system.forecast._model.dir)
 
                 system.forecast._model.train(features)
@@ -111,8 +112,8 @@ def main(args):
                 results_file = os.path.join('results', results_err.replace('_err', '').replace('_power', ''))
                 write_csv(system, results, results_file)
 
-            logging.debug("Predictions for system {} complete {} minutes".format(system.name,
-                                                                                 durations['prediction']['minutes']))
+            logging.debug("Predictions for system {} complete after {} minutes"
+                          .format(system.name, durations['prediction']['minutes']))
 
             durations['simulation']['end'] = dt.datetime.now()
             durations['simulation']['minutes'] = (durations['simulation']['end'] -
@@ -130,10 +131,6 @@ def main(args):
             logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
 
     logger.info("Finished TH-E Simulation{0}".format('s' if len(systems) > 1 else ''))
-    logger.debug("Finished {0} Simulation{1} after: {2}".format(len(systems), 's' if len(systems) > 1 else '',
-                                                                durations['simulation']['minutes']))
-
-    logger.info("TH-E Simulation{0} finished".format('s' if len(systems) > 1 else ''))
 
     if not error:
         evaluate(settings, systems)
@@ -177,36 +174,36 @@ def simulate(settings, system, features, **kwargs):
 
     verbose = settings.getboolean('General', 'verbose', fallback=False)
     interval = settings.getint('General', 'interval')
-    time = features.index[0] + resolution_max.time_prior
+    date = features.index[0] + resolution_max.time_prior
     end = features.index[-1] - resolution_max.time_horizon
 
     training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
     # training_interval = settings.getint('Training', 'interval')
     # training_last = time
 
-    while time <= end:
+    while date <= end:
         # Check if this step was simulated already and load the results, if so
-        if database.exists(time, subdir='outputs'):
-            result = database.get(time, subdir='outputs')
+        if database.exists(date, subdir='outputs'):
+            result = database.get(date, subdir='outputs')
             results = pd.concat([results, result], axis=0)
 
-            time += dt.timedelta(minutes=interval)
+            date += dt.timedelta(minutes=interval)
             continue
 
         try:
             step_result = list()
-            step_prior = time - resolution_max.time_prior - resolution_max.time_step + dt.timedelta(seconds=1)
-            step_horizon = time + resolution_max.time_horizon
+            step_prior = date - resolution_max.time_prior - resolution_max.time_step + dt.timedelta(seconds=1)
+            step_horizon = date + resolution_max.time_horizon
             step_features = copy.deepcopy(features[step_prior:step_horizon])
 
             # Extract target feature reference values and scale them for evaluation later
-            step_reference = resolution_data.loc[time:time+resolution_min.time_horizon, forecast.features['target']]
+            step_reference = resolution_data.loc[date:date+resolution_min.time_horizon, forecast.features['target']]
             step_reference = forecast._scale_features(step_reference, invert=True)
 
             # Remove target values from features, as those will be recursively filled with predictions
-            step_features.loc[time:, forecast.features['target']] = np.NaN
+            step_features.loc[date:, forecast.features['target']] = np.NaN
 
-            step = time
+            step = date
             step_index = step_features[step:step+resolution_min.time_horizon].index
             while step in step_index:
                 step_next = step + resolution_min.time_step
@@ -241,7 +238,9 @@ def simulate(settings, system, features, **kwargs):
             for target in forecast.features['target']:
                 result[target + '_err'] = result[target + '_est'] - result[target]
 
-            result = pd.concat([result, step_features[forecast.features['input']]], axis=1)
+            result = pd.concat([result, resolution_data.loc[result.index, np.setdiff1d(forecast.features['input'],
+                                                                                       forecast.features['target'],
+                                                                                       assume_unique=True)]], axis=1)
 
             result['horizon'] = pd.Series(range(1, len(result.index) + 1), result.index)
             result.index.name = 'time'
@@ -251,10 +250,10 @@ def simulate(settings, system, features, **kwargs):
             results = pd.concat([results, result], axis=0)
 
         except ValueError as e:
-            logger.debug("Skipping %s: %s", time, str(e))
+            logger.debug("Skipping %s: %s", date, str(e))
             # logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
 
-        time += dt.timedelta(minutes=interval)
+        date += dt.timedelta(minutes=interval)
 
     return results
 
@@ -388,7 +387,7 @@ def evaluate(settings, systems):
             if target_id in ['pv']:
                 columns_daylight = np.intersect1d(results.columns, ['ghi', 'dni', 'dhi', 'solar_elevation'])
                 if len(columns_daylight) > 0:
-                    results = results[(results[columns_daylight] > 0).any()]
+                    results = results[(results[columns_daylight] > 0).any(axis=1)]
 
             add_evaluation('Apollo', target_name, *apollo(results, target))
             add_evaluation('Astraea', target_name, *astraea(results, target))

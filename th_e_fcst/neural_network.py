@@ -105,7 +105,7 @@ class NeuralNetwork(Model):
 
         self._early_stopping = configs.get('General', 'early_stopping', fallback='True').lower() == 'true'
         if self._early_stopping:
-            self.callbacks.append(EarlyStopping(patience=self.epochs/2, restore_best_weights=True))
+            self.callbacks.append(EarlyStopping(patience=self.epochs/4, restore_best_weights=True))
 
         # TODO: implement date based backups and naming scheme
         if self.exists():
@@ -228,7 +228,10 @@ class NeuralNetwork(Model):
         if len(inputs.shape) < 3:
             inputs = inputs.reshape(1, inputs.shape[0], inputs.shape[1])
 
-        return float(self.model.predict(inputs, verbose=LOG_VERBOSE))
+        result = self.model.predict(inputs, verbose=LOG_VERBOSE)
+        if len(result) == 1:
+            return float(result)
+        return np.squeeze(result)
 
     def train(self, data):
         features = self._parse_features(data)
@@ -299,7 +302,7 @@ class NeuralNetwork(Model):
         while time <= end:
             try:
                 input = np.squeeze(self._parse_inputs(features, time, update=False))
-                target = float(self._parse_target(features, time))
+                target = np.squeeze(self._parse_target(features, time))
 
                 # If no exception was raised, add the validated data to the set
                 inputs.append(input)
@@ -350,7 +353,7 @@ class NeuralNetwork(Model):
         resolution_target = resolution.resample(features.loc[time - resolution.time_step + dt.timedelta(seconds=1):time,
                                                 self.features['target']])
 
-        data = resolution_target.loc[time, :]
+        data = resolution_target.loc[[time], self.features['target']]
         if data.isnull().values.any():
             raise ValueError("Target data incomplete for %s" % time)
 
