@@ -5,4 +5,4 @@ numpy~=1.19.2
 pvlib~=0.8.1
 keras~=2.4.3
 tensorflow~=2.3.0
-th_e_core>=0.2.0
+th_e_core>=0.2.1

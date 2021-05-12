@@ -36,7 +36,7 @@ INSTALL_REQUIRES = ['numpy',
                     'pvlib',
                     'keras',
                     'tensorflow',
-                    'th_e_core >= 0.1.5']
+                    'th_e_core >= 0.2.1']
 
 SCRIPTS = ['bin/th-e-fcst']
 
