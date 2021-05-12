@@ -487,7 +487,7 @@ class StackedLSTM(NeuralNetwork):
 
         length = len(units)
         for i in range(length):
-            kwargs = self._parse_kwargs(configs, 'activation', 'kernel_initializer')
+            kwargs = self._parse_kwargs(configs, 'activation')
 
             if i == 0 and first:
                 kwargs['input_shape'] = self._input_shape
