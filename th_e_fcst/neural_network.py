@@ -317,27 +317,28 @@ class NeuralNetwork(Model):
                np.array(targets, dtype=float)
 
     def _parse_inputs(self, features, time, update=True):
+        _features = features.copy()
         resolution_min = self.resolutions[-1]
         resolution_end = time - resolution_min.time_step
         resolution_range = features[(features.index > resolution_end) & (features.index <= time)].index
 
         features_target = self.features['target']
-        features.loc[resolution_range, features_target] = np.NaN
+        _features.loc[resolution_range, features_target] = np.NaN
 
         # TODO: Replace interpolation with prediction of ANN
-        features[features_target] = features[features_target].interpolate(method='linear')
+        _features[features_target] = features[features_target].interpolate(method='linear')
 
         if update:
             # Calculate the doubt for the current time step
             # This is necessary for the recursive iteration
-            features = self._calc_doubt(features, resolution_range)
+            _features = self._calc_doubt(features, resolution_range)
 
         data = pd.DataFrame()
         data.index.name = 'time'
         for resolution in self.resolutions:
             resolution_end = time - resolution.time_step if not self._estimate else time
             resolution_start = time - resolution.time_prior
-            resolution_data = features.loc[resolution_start:resolution_end,
+            resolution_data = _features.loc[resolution_start:resolution_end,
                                            self.features['target'] + self.features['input']]
 
             data = resolution.resample(resolution_data).combine_first(data)
@@ -348,9 +349,11 @@ class NeuralNetwork(Model):
         return data
 
     def _parse_target(self, features, time):
+        _features = features.copy()
+
         # TODO: Implement horizon resolutions
         resolution = self.resolutions[-1]
-        resolution_target = resolution.resample(features.loc[time - resolution.time_step + dt.timedelta(seconds=1):time,
+        resolution_target = resolution.resample(_features.loc[time - resolution.time_step + dt.timedelta(seconds=1):time,
                                                 self.features['target']])
 
         data = resolution_target.loc[[time], self.features['target']]
