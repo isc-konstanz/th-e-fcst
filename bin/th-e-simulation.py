@@ -81,7 +81,7 @@ def main(args):
                                                         + dt.timedelta(hours=23, minutes=59))
 
                 if settings.getboolean('General', 'verbose', fallback=False):
-                print_distributions(features, path=system.forecast._model.dir)
+                    print_distributions(features, path=system.forecast._model.dir)
 
                 system.forecast._model.train(features)
 
@@ -174,7 +174,7 @@ def simulate(settings, system, features, **kwargs):
 
     verbose = settings.getboolean('General', 'verbose', fallback=False)
     interval = settings.getint('General', 'interval')
-    date = features.index[0] + resolution_max.time_prior
+    date = features.index[0] + resolution_max.time_prior + resolution_max.time_step
     end = features.index[-1] - resolution_max.time_horizon
 
     training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
@@ -201,13 +201,12 @@ def simulate(settings, system, features, **kwargs):
             step_reference = forecast._scale_features(step_reference, invert=True)
 
             # Remove target values from features, as those will be recursively filled with predictions
-            step_features.loc[date:, forecast.features['target']] = np.NaN
+            step_features.loc[date-resolution_max.time_step + dt.timedelta(seconds=1):, forecast.features['target']] = np.NaN
 
             step = date
             step_index = step_features[step:step+resolution_min.time_horizon].index
             while step in step_index:
-                step_next = step + resolution_min.time_step
-                step_inputs = forecast._parse_inputs(step_features, step)
+                step_inputs = forecast._parse_inputs(step_features, step, update=False)
 
                 if verbose:
                     database.persist(step_inputs,
@@ -218,11 +217,12 @@ def simulate(settings, system, features, **kwargs):
                 result = forecast._run_step(inputs)
 
                 # Add predicted output to features of next iteration
-                step_range = step_features[(step_features.index >= step) & (step_features.index < step_next)].index
+                step_last = step - resolution_max.time_step
+                step_range = step_features[(step_features.index > step_last) & (step_features.index <= step)].index
                 step_features.loc[step_range, forecast.features['target']] = result
 
                 step_result.append(result)
-                step = step_next
+                step = step + resolution_min.time_step
 
             if training_recursive:
                 training_features = features[step_prior:step_horizon]
