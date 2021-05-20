@@ -106,11 +106,11 @@ def main(args):
             }
             logging.debug("Beginning predictions for system: {}".format(system.name))
 
+            results = simulate(settings, system, features)
+
             durations['prediction']['end'] = dt.datetime.now()
             durations['prediction']['minutes'] = (durations['prediction']['end'] -
                                                   durations['prediction']['start']).total_seconds() / 60.0
-
-            results = simulate(settings, system, features)
 
             for results_err in [c for c in results.columns if c.endswith('_err')]:
                 results_file = os.path.join('results', results_err.replace('_err', '').replace('_power', ''))
