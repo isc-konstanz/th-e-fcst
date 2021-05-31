@@ -70,7 +70,6 @@ def main(args):
         preparation.process_system(system, os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme', 'data', 'OPSD'))
         try:
             if not system.forecast._model.exists():
-                from th_e_sim.iotools import print_distributions
 
                 logging.debug("Beginning training of neural network for system: {}".format(system.name))
                 durations['training'] = {
@@ -79,9 +78,6 @@ def main(args):
                 features = system.forecast._get_history(_get_time(settings['Training']['start']),
                                                         _get_time(settings['Training']['end'])
                                                         + dt.timedelta(hours=23, minutes=59))
-
-                if settings.getboolean('General', 'verbose', fallback=False):
-                    print_distributions(features, path=system.forecast._model.dir)
 
                 system.forecast._model.train(features)
 
@@ -196,7 +192,7 @@ def simulate(settings, system, features, **kwargs):
 
         try:
             step_result = list()
-            step_prior = date - resolution_max.time_prior - resolution_max.time_step + dt.timedelta(seconds=1)
+            step_prior = date - resolution_max.time_step - resolution_max.time_prior + dt.timedelta(seconds=1)
             step_horizon = date + resolution_max.time_horizon
             step_features = copy.deepcopy(features[step_prior:step_horizon])
 
