@@ -298,10 +298,10 @@ class NeuralNetwork(Model):
         inputs = []
 
         end = features.index[-1]
-        time = features.index[0] + self.resolutions[-1].time_prior
+        time = features.index[0] + self.resolutions[-1].time_prior + self.resolutions[-1].time_step
         while time <= end:
             try:
-                input = np.squeeze(self._parse_inputs(features, time, update=False))
+                input = np.squeeze(self._parse_inputs(features, time, update=True))
                 target = np.squeeze(self._parse_target(features, time))
 
                 # If no exception was raised, add the validated data to the set
