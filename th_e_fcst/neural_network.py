@@ -234,7 +234,9 @@ class NeuralNetwork(Model):
         return np.squeeze(result)
 
     def train(self, data):
+        from th_e_sim.iotools import print_distributions
         features = self._parse_features(data)
+        print_distributions(features, path=self.dir)
         return self._train(features)
 
     def _train(self, features, shuffle=True):
