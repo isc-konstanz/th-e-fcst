@@ -317,27 +317,33 @@ class NeuralNetwork(Model):
                np.array(targets, dtype=float)
 
     def _parse_inputs(self, features, time, update=True):
+        #est. vals of targets for 60 min prior to/corresponding to pred. time
         _features = features.copy()
         resolution_min = self.resolutions[-1]
         resolution_end = time - resolution_min.time_step
+        resolution_prior = resolution_end - resolution_min.time_step
+
+        #range corresponding to pred. time
         resolution_range = features[(features.index > resolution_end) & (features.index <= time)].index
 
-        features_target = self.features['target']
-        _features.loc[resolution_range, features_target] = np.NaN
+        #range corresponding to hour prior to pred. time
+        resolution_range_prior = features[(features.index > resolution_prior) & (features.index <= resolution_end)].index
 
-        # TODO: Replace interpolation with prediction of ANN
-        _features[features_target] = features[features_target].interpolate(method='linear')
+        features_target = self.features['target']
+        estimate = resolution_min.resample(_features.loc[resolution_range_prior, features_target])
+        _features.loc[resolution_range, features_target] = np.squeeze(estimate.loc[:, features_target].values).tolist()
 
         if update:
             # Calculate the doubt for the current time step
             # This is necessary for the recursive iteration
-            _features = self._calc_doubt(features, resolution_range)
+            _features = self._calc_doubt(_features, resolution_range)
 
+        #parse inputs with or without estimate
         data = pd.DataFrame()
         data.index.name = 'time'
         for resolution in self.resolutions:
             resolution_end = time - resolution.time_step if not self._estimate else time
-            resolution_start = time - resolution.time_prior
+            resolution_start = time - resolution.time_prior - resolution.time_step + dt.timedelta(seconds=1)
             resolution_data = _features.loc[resolution_start:resolution_end,
                                            self.features['target'] + self.features['input']]
 
