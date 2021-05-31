@@ -525,7 +525,7 @@ class ConvDilated(NeuralNetwork):
                 kwargs['input_shape'] = self._input_shape
                 kwargs['dilation_rate'] = 1
             else:
-                kwargs['dilation_rate'] = 2**(i+1)
+                kwargs['dilation_rate'] = 2**i
 
             self.model.add(Conv1D(filters[i], int(configs['kernel_size']), **kwargs))
 
