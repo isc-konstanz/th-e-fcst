@@ -70,6 +70,7 @@ def main(args):
         preparation.process_system(system, os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme', 'data', 'OPSD'))
         try:
             if not system.forecast._model.exists():
+                from th_e_sim.iotools import print_distributions
 
                 logging.debug("Beginning training of neural network for system: {}".format(system.name))
                 durations['training'] = {
@@ -79,7 +80,12 @@ def main(args):
                                                         _get_time(settings['Training']['end'])
                                                         + dt.timedelta(hours=23, minutes=59))
 
-                system.forecast._model.train(features)
+                features = system.forecast._model._parse_features(features)
+
+                if settings.getboolean('General', 'verbose', fallback=False):
+                    print_distributions(features, path=system.forecast._model.dir)
+
+                system.forecast._model._train(features)
 
                 durations['training']['end'] = dt.datetime.now()
                 durations['training']['minutes'] = (durations['training']['end'] -
