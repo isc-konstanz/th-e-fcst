@@ -234,9 +234,7 @@ class NeuralNetwork(Model):
         return np.squeeze(result)
 
     def train(self, data):
-        from th_e_sim.iotools import print_distributions
         features = self._parse_features(data)
-        print_distributions(features, path=self.dir)
         return self._train(features)
 
     def _train(self, features, shuffle=True):
@@ -319,16 +317,17 @@ class NeuralNetwork(Model):
                np.array(targets, dtype=float)
 
     def _parse_inputs(self, features, time, update=True):
-        #est. vals of targets for 60 min prior to/corresponding to pred. time
+        # Estimate the value of targets for times corresponding
+        # to the hour to the time to be predicted (prediction time).
         _features = features.copy()
         resolution_min = self.resolutions[-1]
         resolution_end = time - resolution_min.time_step
         resolution_prior = resolution_end - resolution_min.time_step
 
-        #range corresponding to pred. time
+        # Define the range corresponding to the prediction time.
         resolution_range = features[(features.index > resolution_end) & (features.index <= time)].index
 
-        #range corresponding to hour prior to pred. time
+        # Define the range corresponding to the hour prior to prediction time.
         resolution_range_prior = features[(features.index > resolution_prior) & (features.index <= resolution_end)].index
 
         features_target = self.features['target']
