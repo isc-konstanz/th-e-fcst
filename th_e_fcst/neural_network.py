@@ -322,17 +322,13 @@ class NeuralNetwork(Model):
         _features = features.copy()
         resolution_min = self.resolutions[-1]
         resolution_end = time - resolution_min.time_step
-        resolution_prior = resolution_end - resolution_min.time_step
 
         # Define the range corresponding to the prediction time.
         resolution_range = features[(features.index > resolution_end) & (features.index <= time)].index
 
-        # Define the range corresponding to the hour prior to prediction time.
-        resolution_range_prior = features[(features.index > resolution_prior) & (features.index <= resolution_end)].index
-
+        #insert pv_yield values
         features_target = self.features['target']
-        estimate = resolution_min.resample(_features.loc[resolution_range_prior, features_target])
-        _features.loc[resolution_range, features_target] = np.squeeze(estimate.loc[:, features_target].values).tolist()
+        _features.loc[resolution_range, features_target] = _features.loc[resolution_range, 'pv_yield']
 
         if update:
             # Calculate the doubt for the current time step
