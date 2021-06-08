@@ -154,112 +154,64 @@ def main(args):
 
 def simulate(settings, system, features, **kwargs):
     forecast = system.forecast._model
-    results = pd.DataFrame()
 
-    if len(forecast.resolutions) == 1:
-        resolution_min = forecast.resolutions[0]
-    else:
-        for i in range(len(forecast.resolutions)-1, 0, -1):
-            resolution_min = forecast.resolutions[i]
-            if resolution_min.steps_horizon is not None:
-                break
+    #if len(forecast.resolutions) == 1:
+        #resolution_min = forecast.resolutions[0]
+    #else:
+        #for i in range(len(forecast.resolutions)-1, 0, -1):
+            #resolution_min = forecast.resolutions[i]
+            #if resolution_min.steps_horizon is not None:
+                #break
 
     resolution_max = forecast.resolutions[0]
-    resolution_data = resolution_min.resample(features)
 
-    system_dir = system._configs['General']['data_dir']
-    database = copy.deepcopy(system._database)
-    database.dir = system_dir
+    #system_dir = system._configs['General']['data_dir']
+    #database = copy.deepcopy(system._database)
+    #database.dir = system_dir
     # database.format = '%Y%m%d'
-    database.enabled = True
+    #database.enabled = True
 
     # Reactivate this, when multiprocessing will be implemented
     # global logger
     # if process.current_process().name != 'MainProcess':
     #    logger = process.get_logger()
 
-    verbose = settings.getboolean('General', 'verbose', fallback=False)
+    #verbose = settings.getboolean('General', 'verbose', fallback=False)
     interval = settings.getint('General', 'interval')
     date = features.index[0] + resolution_max.time_prior + resolution_max.time_step
     end = features.index[-1] - resolution_max.time_horizon
 
-    training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
+    #training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
     # training_interval = settings.getint('Training', 'interval')
     # training_last = time
 
+    results = {}
     while date <= end:
-        # Check if this step was simulated already and load the results, if so
-        if database.exists(date, subdir='outputs'):
-            result = database.get(date, subdir='outputs')
-            results = pd.concat([results, result], axis=0)
-
-            date += dt.timedelta(minutes=interval)
-            continue
 
         try:
-            step_result = list()
-            step_prior = date - resolution_max.time_step - resolution_max.time_prior + dt.timedelta(seconds=1)
-            step_horizon = date + resolution_max.time_horizon
-            step_features = copy.deepcopy(features[step_prior:step_horizon])
+            # Input index in features
+            target_data_i = date - resolution_max.time_step + dt.timedelta(minutes=resolution_max.resolution)
+            input_i_start = target_data_i - resolution_max.time_prior
+            input_i_end = date + resolution_max.time_horizon
 
-            # Extract target feature reference values and scale them for evaluation later
-            step_reference = resolution_data.loc[date:date+resolution_min.time_horizon, forecast.features['target']]
-            step_reference = forecast._scale_features(step_reference, invert=True)
+            # Strip targets
+            input = copy.deepcopy(features[input_i_start:input_i_end])
+            target = resolution_max.resample(input.loc[date:input_i_end, forecast.features['target']])
 
-            # Remove target values from features, as those will be recursively filled with predictions
-            step_features.loc[date-resolution_max.time_step + dt.timedelta(seconds=1):, forecast.features['target']] = np.NaN
+            # Replace targets with yield values
+            target_range = input.loc[(input.index >= target_data_i) & (input.index <= input_i_end)].index
+            input.loc[target_range, forecast.features['target']] = input.loc[target_range, 'pv_yield']
+            input = resolution_max.resample(input)
 
-            step = date
-            step_index = step_features[step:step+resolution_min.time_horizon].index
-            while step in step_index:
-                step_inputs = forecast._parse_inputs(step_features, step, update=False)
+            prediction = forecast._predict(input)
 
-                if verbose:
-                    database.persist(step_inputs,
-                                     subdir='inputs',
-                                     file=step.strftime('%Y%m%d_%H%M%S') + '.csv')
-
-                inputs = np.squeeze(step_inputs.fillna(0).values)
-                result = forecast._run_step(inputs)
-
-                # Add predicted output to features of next iteration
-                step_last = step - resolution_max.time_step
-                step_range = step_features[(step_features.index > step_last) & (step_features.index <= step)].index
-                step_features.loc[step_range, forecast.features['target']] = result
-
-                step_result.append(result)
-                step = step + resolution_min.time_step
-
-            if training_recursive:
-                training_features = features[step_prior:step_horizon]
-
-                forecast._train(training_features)
-                forecast._save_model()
-
-            result = pd.DataFrame(data=step_result, index=step_reference.index, columns=forecast.features['target'])
-            result = forecast._scale_features(result, invert=True)
-            result.rename('{}_est'.format, axis=1, inplace=True)
-            result = pd.concat([step_reference, result], axis=1)
-
-            for target in forecast.features['target']:
-                result[target + '_err'] = result[target + '_est'] - result[target]
-
-            result = pd.concat([result, resolution_data.loc[result.index, np.setdiff1d(forecast.features['input'],
-                                                                                       forecast.features['target'],
-                                                                                       assume_unique=True)]], axis=1)
-
-            result['horizon'] = pd.Series(range(1, len(result.index) + 1), result.index)
-            result.index.name = 'time'
-
-            database.persist(result, subdir='outputs')
-
-            results = pd.concat([results, result], axis=0)
+            results[date] = (input, target, prediction)
+            date += dt.timedelta(minutes=interval)
 
         except ValueError as e:
             logger.debug("Skipping %s: %s", date, str(e))
             # logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
-
-        date += dt.timedelta(minutes=interval)
+            date += dt.timedelta(minutes=interval)
 
     return results
 

@@ -233,6 +233,43 @@ class NeuralNetwork(Model):
             return float(result)
         return np.squeeze(result)
 
+    def _predict(self, input):
+        import copy
+
+        time_prior = self.resolutions[-1].time_prior
+        time_step = self.resolutions[-1].time_step
+
+        # Work on copy to retain original input vector to be saved.
+        _input = copy.deepcopy(input)
+        _input = self._scale_features(_input)
+
+        input_start = _input.index[0]
+        input_end = _input.index[0] + time_prior
+        end = _input.index[-1]
+
+        prediction = []
+        while input_end <= end:
+            # Parse input for current prediction
+            step_input = _input[input_start: input_end]
+            step_input = step_input.values
+
+            if len(_input.shape) < 3:
+                step_input = step_input.reshape(1, step_input.shape[0], step_input.shape[1])
+
+            _prediction = self.model.predict(step_input, verbose=LOG_VERBOSE)
+
+            prediction.append(pd.DataFrame([np.squeeze(_prediction)], index=[input_end], columns=self.features['target']))
+
+            # Insert in prediction in input to be parsed for the next iteration
+            _input.loc[input_end, self.features['target']] = _prediction
+
+            input_start += time_step
+            input_end += time_step
+
+        prediction = pd.concat(prediction, axis=0)
+        prediction = self._scale_features(prediction, invert=True)
+        return prediction
+
     def train(self, data):
         features = self._parse_features(data)
         return self._train(features)
