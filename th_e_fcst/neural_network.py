@@ -544,11 +544,11 @@ class ConvLSTM(ConvDilated, StackedLSTM):
 
 class Resolution:
 
-    def __init__(self, minutes, steps_prior=None, steps_horizon=None):
+    def __init__(self, resolution, minutes, steps_prior=None, steps_horizon=None):
         self.minutes = int(minutes)
         self.steps_prior = int(steps_prior) if steps_prior else None
         self.steps_horizon = int(steps_horizon) if steps_horizon else None
-
+        self.resolution = int(resolution)
     @property
     def time_step(self):
         return dt.timedelta(minutes=self.minutes)
