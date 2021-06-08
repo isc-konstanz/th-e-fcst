@@ -349,7 +349,7 @@ class NeuralNetwork(Model):
         if data.isnull().values.any():
             raise ValueError("Input data incomplete for %s" % time)
 
-        return data
+        return self._scale_features(data)
 
     def _parse_target(self, features, time):
         _features = features.copy()
@@ -363,7 +363,7 @@ class NeuralNetwork(Model):
         if data.isnull().values.any():
             raise ValueError("Target data incomplete for %s" % time)
 
-        return data
+        return self._scale_features(data)
 
     def _parse_features(self, data):
         columns = self.features['target'] + self.features['input']
@@ -384,7 +384,6 @@ class NeuralNetwork(Model):
         features.index.name = 'time'
 
         features = self._parse_cyclic(features)
-        features = self._scale_features(features)
         features = self._calc_doubt(features)
 
         return features[columns]
