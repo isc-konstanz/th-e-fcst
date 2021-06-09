@@ -466,31 +466,8 @@ class NeuralNetwork(Model):
         if times is None:
             times = features.index
 
-        time_interval = dt.timedelta(minutes=self.features.get('doubt_interval', 60))
-        time_periods = len(features[times[0]:times[0] + time_interval].index) - 1
-        time_range = features[(features.index > times[0] - time_interval) & (features.index <= times[-1])].index
-
         for feature, feature_cor in self.features['doubt'].items():
-            features_cov_key = '{}_{}_cov'.format(feature, feature_cor)
-            features_cov = features.loc[time_range, [feature, feature_cor]] \
-                .rolling(time_periods, min_periods=time_periods) \
-                .cov().unstack()[feature][feature_cor]
 
-            # # Overall covariance of the series series per annum
-            # if features_cov_key not in self.features['covariance_pa']:
-            #     features_cov_pa = features[feature].cov(features[feature_cor])
-            #     self.features['covariance_pa'][features_cov_key] = features_cov_pa
-            #
-            # features_cov_pa = self.features['covariance_pa'][features_cov_key]
-            #
-            # # Std of sample covariance from population covariance estimate
-            # if features_cov_key not in self.features['covariance_std']:
-            #     features_cov_std = np.sqrt(((features_cov - features_cov_pa) ** 2).sum() / (len(features_cov) - 1))
-            #     self.features['covariance_std'][features_cov_key] = features_cov_std
-            #
-            # features_cov_std = self.features['covariance_std'][features_cov_key]
-
-            features.loc[times, features_cov_key] = features_cov[times]
             features.loc[times, feature+'_doubt'] = abs(features[feature] - features[feature_cor])
 
         return features
