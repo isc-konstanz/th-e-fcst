@@ -201,11 +201,13 @@ def simulate(settings, system, features, **kwargs):
             # Replace targets with yield values
             target_range = input.loc[(input.index >= target_data_i) & (input.index <= input_i_end)].index
             input.loc[target_range, forecast.features['target']] = input.loc[target_range, 'pv_yield']
+            forecast._calc_doubt(input, target_range)
             input = resolution_max.resample(input)
 
             prediction = forecast._predict(input)
 
-            results[date] = (input, target, prediction)
+            # Store 0 for doubt
+            results[date] = (input, target, prediction, 0)
             date += dt.timedelta(minutes=interval)
 
         except ValueError as e:
