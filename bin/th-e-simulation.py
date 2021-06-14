@@ -207,7 +207,7 @@ def simulate(settings, system, features, **kwargs):
             prediction = forecast._predict(input)
 
             # Store 0 for doubt
-            results[date] = (input, target, prediction, 0)
+            results[date] = (input, target, prediction)
             date += dt.timedelta(minutes=interval)
 
         except ValueError as e:
@@ -216,7 +216,6 @@ def simulate(settings, system, features, **kwargs):
             date += dt.timedelta(minutes=interval)
 
     return results
-
 
 def evaluate(settings, systems):
     from th_e_sim.iotools import print_boxplot, write_excel
