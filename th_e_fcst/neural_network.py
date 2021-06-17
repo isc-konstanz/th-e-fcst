@@ -298,10 +298,10 @@ class NeuralNetwork(Model):
         inputs = []
 
         end = features.index[-1]
-        time = features.index[0] + self.resolutions[-1].time_prior
+        time = features.index[0] + self.resolutions[-1].time_prior + self.resolutions[-1].time_step
         while time <= end:
             try:
-                input = np.squeeze(self._parse_inputs(features, time, update=False))
+                input = np.squeeze(self._parse_inputs(features, time, update=True))
                 target = np.squeeze(self._parse_target(features, time))
 
                 # If no exception was raised, add the validated data to the set
@@ -317,27 +317,35 @@ class NeuralNetwork(Model):
                np.array(targets, dtype=float)
 
     def _parse_inputs(self, features, time, update=True):
+        # Estimate the value of targets for times corresponding
+        # to the hour to the time to be predicted (prediction time).
+        _features = features.copy()
         resolution_min = self.resolutions[-1]
         resolution_end = time - resolution_min.time_step
+        resolution_prior = resolution_end - resolution_min.time_step
+
+        # Define the range corresponding to the prediction time.
         resolution_range = features[(features.index > resolution_end) & (features.index <= time)].index
 
-        features_target = self.features['target']
-        features.loc[resolution_range, features_target] = np.NaN
+        # Define the range corresponding to the hour prior to prediction time.
+        resolution_range_prior = features[(features.index > resolution_prior) & (features.index <= resolution_end)].index
 
-        # TODO: Replace interpolation with prediction of ANN
-        features[features_target] = features[features_target].interpolate(method='linear')
+        features_target = self.features['target']
+        estimate = resolution_min.resample(_features.loc[resolution_range_prior, features_target])
+        _features.loc[resolution_range, features_target] = np.squeeze(estimate.loc[:, features_target].values).tolist()
 
         if update:
             # Calculate the doubt for the current time step
             # This is necessary for the recursive iteration
-            features = self._calc_doubt(features, resolution_range)
+            _features = self._calc_doubt(_features, resolution_range)
 
+        #parse inputs with or without estimate
         data = pd.DataFrame()
         data.index.name = 'time'
         for resolution in self.resolutions:
             resolution_end = time - resolution.time_step if not self._estimate else time
-            resolution_start = time - resolution.time_prior
-            resolution_data = features.loc[resolution_start:resolution_end,
+            resolution_start = time - resolution.time_prior - resolution.time_step + dt.timedelta(seconds=1)
+            resolution_data = _features.loc[resolution_start:resolution_end,
                                            self.features['target'] + self.features['input']]
 
             data = resolution.resample(resolution_data).combine_first(data)
@@ -348,9 +356,11 @@ class NeuralNetwork(Model):
         return data
 
     def _parse_target(self, features, time):
+        _features = features.copy()
+
         # TODO: Implement horizon resolutions
         resolution = self.resolutions[-1]
-        resolution_target = resolution.resample(features.loc[time - resolution.time_step + dt.timedelta(seconds=1):time,
+        resolution_target = resolution.resample(_features.loc[time - resolution.time_step + dt.timedelta(seconds=1):time,
                                                 self.features['target']])
 
         data = resolution_target.loc[[time], self.features['target']]
@@ -522,7 +532,7 @@ class ConvDilated(NeuralNetwork):
                 kwargs['input_shape'] = self._input_shape
                 kwargs['dilation_rate'] = 1
             else:
-                kwargs['dilation_rate'] = 2**(i+1)
+                kwargs['dilation_rate'] = 2**i
 
             self.model.add(Conv1D(filters[i], int(configs['kernel_size']), **kwargs))
 
