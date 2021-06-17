@@ -22,6 +22,21 @@ class System(SystemCore):
         
         self.forecast = Forecast.read(self, **kwargs)
 
+    @property
+    def _component_types(self):
+        return super()._component_types + ['solar', 'modules', 'configs']
+
+    def _component(self, configs, type, **kwargs):
+        if type in ['pv', 'solar', 'modules', 'configs']:
+            try:
+                from th_e_yield.system import Configurations
+                return Configurations(configs, self, **kwargs)
+
+            except ImportError as e:
+                logger.debug("Unable to instance PV configuration: {}".format(str(e)))
+
+        return super()._component(configs, type, **kwargs)
+
     def run(self, date=None, **kwargs):
         if date is None:
             date = dt.datetime.now(tz.utc)

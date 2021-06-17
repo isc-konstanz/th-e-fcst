@@ -58,6 +58,11 @@ class Forecast(WeatherForecast):
         
         if self._weather is not None:
             weather = self._weather.get(start, end, **kwargs)
+
+            if self._system.contains_type('pv'):
+                solar = self._get_yield(weather)
+                data = pd.concat([data, solar], axis=1)
+
             data = pd.concat([data, weather], axis=0)
         
         return data
@@ -65,11 +70,29 @@ class Forecast(WeatherForecast):
     def _get_history(self, start, end, **kwargs):
         data = self._system._database.get(start, end, **kwargs)
         data = data[data.columns.drop(list(data.filter(regex='_energy')))]
-        
+
         if self._weather is not None:
             weather = self._weather._database.get(start, end, **kwargs)
+
+            if self._system.contains_type('pv'):
+                solar = self._get_yield(weather)
+                data = pd.concat([data, solar], axis=1)
+
             data = pd.concat([data, weather], axis=1)
-        
+
+        return data
+
+    def _get_yield(self, weather, **kwargs):
+        data = pd.DataFrame(index=weather.index, columns=['pv_yield']).fillna(0)
+        try:
+            from th_e_yield.model import Model
+            for system in self._system.get_type('pv'):
+                model = Model(system, self._system.location, self._model.configs, section='Yield', **kwargs)
+                data['pv_yield'] += model.run(weather)['p_ac']
+
+        except ImportError as e:
+            logger.warning("Unable to calculate PV yield: {}".format(str(e)))
+
         return data
 
 

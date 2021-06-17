@@ -96,6 +96,10 @@ def main(args):
 
             data = system._database.get(start, end)
             weather = system.forecast._weather._database.get(start, end)
+            if system.contains_type('pv'):
+                solar = system.forecast._get_yield(weather)
+                data = pd.concat([data, solar], axis=1)
+
             features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
             features_file = os.path.join('evaluation', 'features')
             write_csv(system, features, features_file)
@@ -104,11 +108,11 @@ def main(args):
             }
             logging.debug("Beginning predictions for system: {}".format(system.name))
 
+            results = simulate(settings, system, features)
+
             durations['prediction']['end'] = dt.datetime.now()
             durations['prediction']['minutes'] = (durations['prediction']['end'] -
                                                   durations['prediction']['start']).total_seconds() / 60.0
-
-            results = simulate(settings, system, features)
 
             for results_err in [c for c in results.columns if c.endswith('_err')]:
                 results_file = os.path.join('results', results_err.replace('_err', '').replace('_power', ''))
