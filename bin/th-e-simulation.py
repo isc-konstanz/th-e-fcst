@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import datetime as dt
 import calendar as cal
+import json
 
 from argparse import ArgumentParser, RawTextHelpFormatter
 from configparser import ConfigParser
@@ -60,6 +61,14 @@ def main(args):
 
     systems = System.read(**kwargs)
     for system in systems:
+
+        # Initialize dictionary to save info for later evaluation.
+        system.simulation = {
+            'results': 0,
+            'durations': 0,
+            'evaluation': 0
+        }
+
         logger.info('Starting TH-E-Simulation of system {}'.format(system.name))
         durations = {
             'simulation': {
@@ -101,11 +110,14 @@ def main(args):
                 data = pd.concat([data, solar], axis=1)
 
             features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
+            features_R = system.forecast._model.resolutions[0].resample(features)
             features_file = os.path.join('evaluation', 'features')
             write_csv(system, features, features_file)
             durations['prediction'] = {
                 'start': dt.datetime.now()
             }
+
+            structure_err(settings, system, features_R)
             logging.debug("Beginning predictions for system: {}".format(system.name))
 
             results = simulate(settings, system, features)
@@ -113,10 +125,6 @@ def main(args):
             durations['prediction']['end'] = dt.datetime.now()
             durations['prediction']['minutes'] = (durations['prediction']['end'] -
                                                   durations['prediction']['start']).total_seconds() / 60.0
-
-            for results_err in [c for c in results.columns if c.endswith('_err')]:
-                results_file = os.path.join('results', results_err.replace('_err', '').replace('_power', ''))
-                write_csv(system, results, results_file)
 
             logging.debug("Predictions for system {} complete after {} minutes"
                           .format(system.name, durations['prediction']['minutes']))
@@ -126,10 +134,12 @@ def main(args):
                                                   durations['simulation']['start']).total_seconds() / 60.0
 
             # Store results with its system, to summarize it later on
-            system.simulation = {
-                'results': results,
-                'durations': durations
-            }
+            system.simulation['results'] = results
+            system.simulation['durations'] = durations
+            #system.simulation = {
+            #    'results': results,
+            #    'durations': durations
+            #}
 
         except Exception as e:
             error = True
@@ -138,8 +148,9 @@ def main(args):
 
     logger.info("Finished TH-E Simulation{0}".format('s' if len(systems) > 1 else ''))
 
+    # OUTPUT OF THE PROGRAM IS GENERATED HERE
     if not error:
-        evaluate(settings, systems)
+        my_evaluation(systems)
 
         if tensorboard:
             logger.info("TensorBoard will be kept running")
@@ -168,7 +179,7 @@ def simulate(settings, system, features, **kwargs):
     #system_dir = system._configs['General']['data_dir']
     #database = copy.deepcopy(system._database)
     #database.dir = system_dir
-    # database.format = '%Y%m%d'
+    #database.format = '%Y%m%d'
     #database.enabled = True
 
     # Reactivate this, when multiprocessing will be implemented
@@ -181,12 +192,18 @@ def simulate(settings, system, features, **kwargs):
     date = features.index[0] + resolution_max.time_prior + resolution_max.time_step
     end = features.index[-1] - resolution_max.time_horizon
 
-    #training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
+    # training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
     # training_interval = settings.getint('Training', 'interval')
     # training_last = time
 
     results = {}
     while date <= end:
+
+        #if database.exists(date, subdir='outputs'):
+            #results[date] = database.get(date, subdir='outputs')
+
+            #date += dt.timedelta(minutes=interval)
+            #continue
 
         try:
             # Input index in features
@@ -206,7 +223,6 @@ def simulate(settings, system, features, **kwargs):
 
             prediction = forecast._predict(input)
 
-            # Store 0 for doubt
             results[date] = (input, target, prediction)
             date += dt.timedelta(minutes=interval)
 
@@ -216,6 +232,253 @@ def simulate(settings, system, features, **kwargs):
             date += dt.timedelta(minutes=interval)
 
     return results
+
+def structure_err(settings, system, features):
+
+    def gen_index(grid_dict):
+        assert isinstance(grid_dict, dict)
+
+        # The first step is to create a list of tuples which iterate through the range
+        # of possible label values. To this end for continuous variables I choose
+        # the label to be the left end of the interval; this is a
+        # a natural choice since the function range() doesn't iterate to the last element.
+
+        axes = {}
+        for attribute, info in grid_dict.items():
+            axes[attribute] = [x / info['Magnitude'] for x in range(info['Min'], info['Max'], info['Width'])]
+
+        # The next step generates the appropriate Multiindex object.
+        names = []
+        index = []
+        for axis, values in axes.items():
+            names.append(axis)
+            index.append(values)
+
+        index = pd.MultiIndex.from_product(index, names=names)
+
+        return index
+
+    def sort_data(features, labels):
+
+        # Initialize the dataframe object.
+        labeled_err = pd.DataFrame()
+
+
+        for date in features.index:
+
+            # For each datapoint we must extract the values by which we wish to
+            # group our prediction data for evaluation.
+            # ToDo: don't hardcode 24hrs or 1hr.
+            label = []
+            for name in labels.names:
+                    condition = features.loc[date, name]
+                    assert isinstance(condition, np.float64)
+                    label.append(condition)
+            label = tuple(label)
+
+            # We must now utilize these values stored in the label tuple to determine,
+            # the index with which we will label this timepoint. This label will be
+            # chosen to be the index value whose lay to the left of the real label value
+            # and whose distance to the real values is the smallest.
+            find_index = list(labels)
+            distance = 10000
+            for ind in find_index:
+                lower_bound = all(x <= y for x, y in zip(ind, label))
+                distance_condition = (sum(np.subtract(label, ind)) == min(distance, sum(np.subtract(label, ind))))
+                if lower_bound and distance_condition:
+                    distance = min(distance, sum(np.subtract(label, ind)))
+                    _index = ind
+                else:
+                    continue
+
+            # The real value of the timepoint is replaced with the appropriate label
+            # determined above. The result (label, timepoint) is saved in a
+            # pd.DataFrame.
+            label = _index
+            labeled_err = pd.concat([labeled_err, pd.DataFrame({'dates': date},
+                                                   index=pd.MultiIndex.from_tuples([label],
+                                                   names=labels.names))]).dropna()
+        return labeled_err
+
+    # This function must always be carried out following sort_data. This function
+    # calculates the average doubt values as well as their standard deviation in
+    # the various regions defined in settings. This information is saved in the
+    # evaluation dataframe output by sort_data.
+    def regional_doubt(evaluation, features):
+
+        for index in evaluation.index:
+            region_dates = evaluation.loc[index, :]
+            doubt_avg = features.loc[list(region_dates['dates']), 'pv_power_doubt'].mean()
+            doubt_std = features.loc[list(region_dates['dates']), 'pv_power_doubt'].std()
+            evaluation.loc[index, 'doubt_avg'] = doubt_avg
+            evaluation.loc[index, 'doubt_std'] = doubt_std
+
+        return evaluation
+
+    # This function utilizes the regional doubt
+    def resolve_doubt(evaluation, features):
+
+        for date in list(evaluation['dates']):
+            # Retrieve the conditions forecasted for the current timepoint.
+            weather_conditions = evaluation.index[evaluation['dates'] == date]
+            weather_conditions = weather_conditions[0]
+
+            # Retrieve the doubt and calculate the regional doubt of this timepoint
+            # utilizing the std and mean of the doubt values for the region to which
+            # this timepoint belongs.
+            doubt = float(features.loc[date, 'pv_power_doubt'])
+            doubt_avg = float(evaluation.loc[weather_conditions, 'doubt_avg'].iloc[0])
+            doubt_std = float(evaluation.loc[weather_conditions, 'doubt_std'].iloc[0])
+
+            if doubt_std == 0:
+                features.loc[date, 'regional_doubt'] = 0
+            else:
+                features.loc[date, 'regional_doubt'] = abs(doubt - doubt_avg) / doubt_std
+
+    # First group the timepoints appearing in features according to their weather conditions
+    attributes = json.loads(settings.get('Evaluation', 'Features'))
+    attributes.pop('regional_doubt', None)
+    index = gen_index(attributes)
+    system.simulation['evaluation'] = sort_data(features, index)
+
+    # Now used these groupings to calculate the std deviation and mean value of the doubt values
+    # in each of the regions defined in settings.
+    system.simulation['evaluation'] = regional_doubt(system.simulation['evaluation'], features)
+
+    # Use the std and mean values of the doubt in each region to calculate the deviation of the doubt
+    # value for a singular timepoint from the average doubt value in the region it belongs, in units of
+    # the regions standard deviation. This information is added to a new column named regional doubt in
+    # the features dataframe.
+    resolve_doubt(system.simulation['evaluation'], features)
+
+    # re-sort the data now into their appropriate regions now that the required information is
+    # now available in the features dataframe.
+    attributes = json.loads(settings.get('Evaluation', 'Features'))
+    index = gen_index(attributes)
+    system.simulation['evaluation'] = sort_data(features, index)
+
+def my_evaluation(systems):
+
+    def save_pickle(dir, name, data):
+        import pickle
+
+        with open(os.path.join(dir, name) + '.pkl', 'wb') as f:
+            pickle.dump(data, f)
+
+    def _parse_regions(system):
+
+        # Initialize dataframe to which all forecasts with the appropriate indices will
+        # be appended.
+        evaluation_data = pd.DataFrame()
+
+        # Iterate through all results and concatenate target and predictions into one
+        # DataFrame object (output).
+        for date, info in system.simulation['results'].items():
+
+            input, targets, predictions = info
+
+            targets.columns = [target + '_target' for target in targets.columns]
+            predictions.columns = [predict + '_predict' for predict in predictions.columns]
+
+            # Concatenate results into one dataframe and assign the appropriate index
+            # values.
+            output = pd.concat([targets, predictions], axis=1)
+
+            # Extract the index from the evaluation for each hourly prediction made in the
+            # forecast.
+            regions = []
+            i = 1
+
+            for date_2 in output.index:
+
+                conditions = system.simulation['evaluation'].index[system.simulation['evaluation']['dates'] == date_2]
+                conditions = conditions[0]
+
+                # Manually add the forecast horizon to the extracted index for the current
+                # prediction.
+                region = (i, ) + conditions
+                regions.append(region)
+                i += 1
+
+            region_names = ['horizon'] + system.simulation['evaluation'].index.names
+            output.index = pd.MultiIndex.from_tuples(regions, names=region_names)
+
+            # Calculate the error of the prediction for this forecast
+            for target, prediction in zip(targets.columns, predictions.columns):
+                output[prediction + '_err'] = output[target] - output[prediction]
+
+            evaluation_data = pd.concat([evaluation_data, output])
+
+        # Save evaluation object to allow for the purpose of future evaluations.
+        save_pickle(os.path.join(system_dir, 'evaluation'), 'evaluation_data', evaluation_data)
+        assert isinstance(evaluation_data.index, pd.MultiIndex)
+
+        return evaluation_data
+
+    # [evaluate_regions]:
+    # This function takes err data of a network, labeled according to chosen features,
+    # as input. The labels of this err data are described by the MultiIndex indexing it.
+    # This function assumes that the bottom level is called regional_doubt.
+    # With this err data the function creates a directory tree; each directory of this
+    # directory tree corresponds to one value of one level of the MultiIndex grouping,
+    # chosen for the error data. Therefore, the path of the bottom directory of this file tree
+    # can be ordered a partial index of the the MultiIndex (including a value for each level
+    # but the last, that being the index determining the regional doubt value). To
+    # structure the error along the regional doubt axis of our MultiIndex grouping
+    # we create a boxplot which visually displays the error given by the directory path and the
+    # various doubt values which arise with this partial index. This same set of errors is further
+    # summarized with a .csv describing the error's distribution.
+
+    def evaluate_regions(system, evaluation_data, dir):
+        from copy import deepcopy
+        assert isinstance(evaluation_data.index, pd.MultiIndex)
+
+        # Here we create a copy of the data so that transformations potentially carried out in
+        # this function don't harm the object on which we are performing our analysis.
+        data = deepcopy(evaluation_data)
+
+        # We then retrieve the partial index values which will be used to create the directory
+        # tree as well as to select segments of our error data for evaluation.
+        control_names = list(evaluation_data.index.names)
+        control_names.remove('regional_doubt')
+        control_index = {}
+        for name in control_names:
+            control_index[name] = data.index.get_level_values(name)
+
+        control_index = list(zip(*list(control_index.values())))
+        control_index = pd.MultiIndex.from_tuples(control_index, names=control_names)
+
+        # Here we use the previously defined partial index to create a filetree and then at the
+        # bottom of this filetree to output the boxplot and csv files described above.
+        for index in control_index:
+            sub_dir = dir
+            for level, value in zip(control_names, list(index)):
+                sub_dir = os.path.join(sub_dir, level + '_{}'.format(value))
+
+            if not os.path.isdir(sub_dir):
+                os.makedirs(sub_dir)
+                file = os.path.join(sub_dir, 'regional_doubt')
+                partial_index = index + (slice(None),)
+                _evaluate_data(system, data.loc[partial_index, :], 'regional_doubt', evaluation_data.columns[-1], file)
+
+    for system in systems:
+        # Extract important variables from system.
+        system_dir = system._configs['General']['data_dir']
+        targets = system.forecast._model.features['target']
+
+        # Create data object summarizing network performance error in the various regions defined
+        # in settings.cfg.
+        evaluation_data = _parse_regions(system)
+
+        # Iterate through targets and create a directory in the evaluation directory
+        # corresponding to each individual target.
+        for target in targets:
+
+            dir = os.path.join(system_dir, 'evaluation', target)
+
+            if not os.path.isdir(dir):
+                os.mkdir(dir)
+                evaluate_regions(system, evaluation_data, dir)
 
 def evaluate(settings, systems):
     from th_e_sim.iotools import print_boxplot, write_excel
@@ -366,29 +629,30 @@ def evaluate(settings, systems):
     write_excel(settings, summary, evaluations)
 
 
-def _evaluate_data(system, data, index, column, file, **kwargs):
+def _evaluate_data(system, data, level, column, file, **kwargs):
     from th_e_sim.iotools import print_boxplot
     try:
-
-        print_boxplot(system, data, index, column, file, **kwargs)
+        _data = copy.deepcopy(data)
+        _data.index = data.index.get_level_values(level)
+        print_boxplot(system, _data, _data.index, column, file, **kwargs)
 
     except ImportError as e:
         logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
                                                                              str(e)))
 
-    return _describe_data(system, data, index, column, file)
+    return _describe_data(system, data, data.index, column, file)
 
 
-def _describe_data(system, data, index, column, file):
+def _describe_data(system, data, level, column, file):
     from th_e_sim.iotools import write_csv
 
     data = data[column]
-    group = data.groupby([index])
+    group = data.groupby(level)
     median = group.median()
     median.name = 'median'
-    mae = data.abs().groupby([index]).mean()
+    mae = data.abs().groupby(level).mean()
     mae.name = 'mae'
-    rmse = (data ** 2).groupby([index]).mean() ** .5
+    rmse = (data ** 2).groupby(level).mean() ** .5
     rmse.name = 'rmse'
     description = pd.concat([rmse, mae, median, group.describe()], axis=1)
     description.index.name = 'index'
