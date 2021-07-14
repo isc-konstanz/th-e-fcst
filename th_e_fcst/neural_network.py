@@ -224,15 +224,6 @@ class NeuralNetwork(Model):
 
         return self._scale_features(result, invert=True)
 
-    def _run_step(self, inputs):
-        if len(inputs.shape) < 3:
-            inputs = inputs.reshape(1, inputs.shape[0], inputs.shape[1])
-
-        result = self.model.predict(inputs, verbose=LOG_VERBOSE)
-        if len(result) == 1:
-            return float(result)
-        return np.squeeze(result)
-
     def _predict(self, input):
         import copy
 
