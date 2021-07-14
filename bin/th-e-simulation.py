@@ -235,6 +235,19 @@ def simulate(settings, system, features, **kwargs):
 
 def structure_err(settings, system, features):
 
+    def save_pickle(dir, name, data):
+        import pickle
+
+        with open(os.path.join(dir, name) + '.pkl', 'wb') as f:
+            pickle.dump(data, f)
+
+    def load_pickle(dir, name):
+        import pickle
+        with open(os.path.join(dir, name) + '.pkl', 'rb') as f:
+            dict_frame = pickle.load(f)
+
+        return dict_frame
+
     def gen_index(grid_dict):
         assert isinstance(grid_dict, dict)
 
@@ -335,27 +348,43 @@ def structure_err(settings, system, features):
             else:
                 features.loc[date, 'regional_doubt'] = abs(doubt - doubt_avg) / doubt_std
 
-    # First group the timepoints appearing in features according to their weather conditions
-    attributes = json.loads(settings.get('Evaluation', 'Features'))
-    attributes.pop('regional_doubt', None)
-    index = gen_index(attributes)
-    system.simulation['evaluation'] = sort_data(features, index)
+    system_dir = system._configs['General']['data_dir']
+    eval_dir = os.path.join(system_dir, 'evaluation')
 
-    # Now used these groupings to calculate the std deviation and mean value of the doubt values
-    # in each of the regions defined in settings.
-    system.simulation['evaluation'] = regional_doubt(system.simulation['evaluation'], features)
+    if not os.path.isdir(eval_dir):
+        os.mkdir(eval_dir)
 
-    # Use the std and mean values of the doubt in each region to calculate the deviation of the doubt
-    # value for a singular timepoint from the average doubt value in the region it belongs, in units of
-    # the regions standard deviation. This information is added to a new column named regional doubt in
-    # the features dataframe.
-    resolve_doubt(system.simulation['evaluation'], features)
+    if not os.path.isfile(os.path.join(eval_dir, 'sorted_times') + '.pkl'):
 
-    # re-sort the data now into their appropriate regions now that the required information is
-    # now available in the features dataframe.
-    attributes = json.loads(settings.get('Evaluation', 'Features'))
-    index = gen_index(attributes)
-    system.simulation['evaluation'] = sort_data(features, index)
+        # First group the timepoints appearing in features according to their weather conditions
+        attributes = json.loads(settings.get('Evaluation', 'Features'))
+        attributes.pop('regional_doubt', None)
+        index = gen_index(attributes)
+        system.simulation['evaluation'] = sort_data(features, index)
+
+        # Now used these groupings to calculate the std deviation and mean value of the doubt values
+        # in each of the regions defined in settings.
+        system.simulation['evaluation'] = regional_doubt(system.simulation['evaluation'], features)
+
+        # Use the std and mean values of the doubt in each region to calculate the deviation of the doubt
+        # value for a singular timepoint from the average doubt value in the region it belongs, in units of
+        # the regions standard deviation. This information is added to a new column named regional doubt in
+        # the features dataframe.
+        resolve_doubt(system.simulation['evaluation'], features)
+
+        # re-sort the data now into their appropriate regions now that the required information is
+        # now available in the features dataframe.
+        attributes = json.loads(settings.get('Evaluation', 'Features'))
+        index = gen_index(attributes)
+        system.simulation['evaluation'] = sort_data(features, index)
+
+        # save the sorted database object for future runs.
+        save_pickle(eval_dir, 'sorted_times', system.simulation['evaluation'])
+
+    else:
+        dir = os.path.join (system_dir, 'evaluation')
+        system.simulation['evaluation'] = load_pickle(dir, 'sorted_times')
+
 
 def my_evaluation(systems):
 
