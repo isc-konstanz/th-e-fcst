@@ -164,6 +164,41 @@ def main(args):
 
 
 def simulate(settings, system, features, **kwargs):
+
+    def save_to_database(date, input, target, prediction, database):
+        # take a prediction output by the simulate function and save it to
+        # the appropriate database.
+        condition_cols = [col for col in input.columns if col not in target.columns]
+        target.columns = [target + '_t' for target in target.columns]
+        prediction.columns = [predict + '_p' for predict in prediction.columns]
+
+        out_cond = input.loc[date: , condition_cols]
+
+        data_out = pd.concat([target, prediction, out_cond], axis=1)
+        data_out.index.name = 'time'
+        data_in = input
+        data_in.index.name = 'time'
+
+        database.persist(data_in, subdir='inputs', file=date.strftime(database.format) + '.csv')
+        database.persist(data_out, subdir='outputs')
+
+    def load_from_database(date, database):
+
+        data = database.get(date, subdir='outputs')
+        target_cols = [col for col in data.columns if 't' == col.split('_')[-1]]
+        predict_cols = [col for col in data.columns if 'p' == col.split('_')[-1]]
+        cols = ['_'.join(col.split('_')[:-1]) for col in target_cols]
+
+        target = data[target_cols]
+        target.columns = cols
+
+        prediction = data[predict_cols]
+        prediction.columns = cols
+
+        input = database.get(date, subdir='inputs')
+
+        return input, target, prediction
+
     forecast = system.forecast._model
 
     #if len(forecast.resolutions) == 1:
@@ -176,11 +211,11 @@ def simulate(settings, system, features, **kwargs):
 
     resolution_max = forecast.resolutions[0]
 
-    #system_dir = system._configs['General']['data_dir']
-    #database = copy.deepcopy(system._database)
-    #database.dir = system_dir
+    system_dir = system._configs['General']['data_dir']
+    database = copy.deepcopy(system._database)
+    database.dir = system_dir
     #database.format = '%Y%m%d'
-    #database.enabled = True
+    database.enabled = True
 
     # Reactivate this, when multiprocessing will be implemented
     # global logger
@@ -199,11 +234,11 @@ def simulate(settings, system, features, **kwargs):
     results = {}
     while date <= end:
 
-        #if database.exists(date, subdir='outputs'):
-            #results[date] = database.get(date, subdir='outputs')
+        if database.exists(date, subdir='outputs') and database.exists(date, subdir='inputs'):
 
-            #date += dt.timedelta(minutes=interval)
-            #continue
+            results[date] = load_from_database(date, database)
+            date += dt.timedelta(minutes=interval)
+            continue
 
         try:
             # Input index in features
@@ -224,6 +259,8 @@ def simulate(settings, system, features, **kwargs):
             prediction = forecast._predict(input)
 
             results[date] = (input, target, prediction)
+            save_to_database(date, input, target, prediction, database)
+
             date += dt.timedelta(minutes=interval)
 
         except ValueError as e:
