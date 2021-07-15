@@ -721,7 +721,7 @@ def _describe_data(system, data, level, column, file):
     rmse = (data ** 2).groupby(level).mean() ** .5
     rmse.name = 'rmse'
     description = pd.concat([rmse, mae, median, group.describe()], axis=1)
-    description.index.name = 'index'
+    description.index = pd.MultiIndex.from_tuples(description.index, names=data.index.names)
     del description['count']
 
     write_csv(system, description, file)
