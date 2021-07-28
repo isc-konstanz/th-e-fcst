@@ -431,6 +431,13 @@ def my_evaluation(systems):
         with open(os.path.join(dir, name) + '.pkl', 'wb') as f:
             pickle.dump(data, f)
 
+    def load_pickle(dir, name):
+        import pickle
+        with open(os.path.join(dir, name) + '.pkl', 'rb') as f:
+            dict_frame = pickle.load(f)
+
+        return dict_frame
+
     def _parse_regions(system):
 
         # Initialize dataframe to which all forecasts with the appropriate indices will
@@ -530,11 +537,18 @@ def my_evaluation(systems):
     for system in systems:
         # Extract important variables from system.
         system_dir = system._configs['General']['data_dir']
+        eval_dir = os.path.join(system_dir, 'evaluation')
         targets = system.forecast._model.features['target']
 
         # Create data object summarizing network performance error in the various regions defined
         # in settings.cfg.
-        evaluation_data = _parse_regions(system)
+
+        evaluation_file = os.path.join(eval_dir, 'evaluation_data.pkl')
+
+        if not os.path.isfile(evaluation_file):
+            system.simulation['evaluation'] = _parse_regions(system)
+        else:
+            system.simulation['evaluation'] = load_pickle(eval_dir, 'evaluation_data')
 
         # Iterate through targets and create a directory in the evaluation directory
         # corresponding to each individual target.
