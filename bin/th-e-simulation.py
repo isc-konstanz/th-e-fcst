@@ -558,106 +558,71 @@ def my_evaluation(systems):
 
             if not os.path.isdir(dir):
                 os.mkdir(dir)
-                evaluate_regions(system, evaluation_data, dir)
+                evaluate_regions(system, system.simulation['evaluation'], dir)
 
 def evaluate(settings, systems):
     from th_e_sim.iotools import print_boxplot, write_excel
 
-    def apollo(data, data_target):
-        data_doubt = data_target + '_doubt'
-        data_doubts = system.forecast._model.features.get('doubt', {})
-        if data_target not in data_doubts:
-            return
+    def standard_kpi(data, data_target):
+        #ToDo: Change to _p_err
+        data_column = data_target + '_predict_err'
 
-        data_column = data_target + '_err'
-        data_name = data_target.replace('_power', '')
-        data_file = os.path.join('evaluation', data_name + '_apollo')
+        mbe = data[data_column].mean()
+        mae = data[data_column].abs().mean()
+        rmse = (data[data_column] ** 2).mean() ** 0.5
+        nrmse = rmse / 10000
 
-        doubt = data[data_doubt]
-        data.loc[:, data_column] = data[data_column] - data[data_column] * doubt
+        return mbe, mae, rmse, nrmse
 
-        data_dates = pd.DataFrame(index=list(set(data.index.date)))
-        for date in data_dates.index:
-            data_dates.loc[date, data_doubt] = data.loc[data.index.date == date, data_doubt].mean()
-            data_dates.loc[date, data_target] = data.loc[data.index.date == date, data_target].mean()
-        data_dates = data_dates.loc[data_dates[data_target] > data_dates[data_target].quantile(0.75), data_doubt]
+    def doubt_kpi(data, data_target):
+        # ToDo: Change to _p_err
+        region_names = data.index.names
+        data_column = data_target + '_predict_err'
 
-        logger.debug("Most accurately forecasted days: \n%s", "\n".join(
-                    ["{}. {}".format(i+1, d) for i, d in enumerate(data_dates.abs().sort_values().head(10).index)]))
+        doubt = pd.Series(data.index.get_level_values('regional_doubt'), name='regional_doubt')
+        low_doubt = doubt.quantile(0.25)
+        hi_doubt = doubt.quantile(0.75)
 
-        data_desc = _evaluate_data(system, data, data.index.hour, data_column, data_file,
-                                   label='Hours', title='Apollo')
+        if 'solar_elevation' in region_names:
 
-        data_rmse = data_desc.transpose().loc[['rmse']]
-        data_rmse.columns = ['Hour {}'.format(c + 1) for c in data_rmse.columns]
-        data_rmse.index = [system.name]
+            solar_mbe = data[data_column].groupby(level=['horizon', 'solar_elevation', 'regional_doubt']).mean()
+            solar_mae = (data[data_column].abs()).groupby(level=['horizon', 'solar_elevation', 'regional_doubt']).mean()
+            solar_rmse = (data[data_column] ** 2).groupby(level=['horizon', 'solar_elevation', 'regional_doubt']).mean() ** 0.5
+            solar_nrmse = solar_rmse / 10000
 
-        return (data[data_column] ** 2).mean() ** .5, data_rmse
+            horizon_cond = (solar_mbe.index.get_level_values('horizon') == 1)
+            peak_solar_cond = solar_mbe.index.get_level_values('solar_elevation') >= 35
+            low_doubt_cond = solar_mbe.index.get_level_values('regional_doubt') <= low_doubt
+            condition = horizon_cond & peak_solar_cond & low_doubt_cond
 
-    def astraea(data, data_target):
-        data_column = data_target + '_err'
-        data_name = data_target.replace('_power', '')
-        data_file = os.path.join('evaluation', data_name + '_astraea')
-        data_desc = _evaluate_data(system, data, data.index.hour, data_column, data_file,
-                                   label='Hours', title='Astraea')
+            peak_solar_mbe_low_doubt = solar_mbe.iloc[condition].mean()
+            peak_solar_mae_low_doubt = solar_mae.iloc[condition].mean()
+            peak_solar_rmse_low_doubt = solar_rmse.iloc[condition].mean()
+            peak_solar_nrmse_low_doubt = solar_nrmse.iloc[condition].mean()
 
-        data_mae = data_desc.transpose().loc[['mae']]
-        data_mae.columns = ['Hour {}'.format(c + 1) for c in data_mae.columns]
-        data_mae.index = [system.name]
+            med_doubt_cond = (low_doubt < solar_mbe.index.get_level_values('regional_doubt')) & \
+                             (solar_mbe.index.get_level_values('regional_doubt') < hi_doubt)
+            condition = horizon_cond & peak_solar_cond & med_doubt_cond
 
-        data_rmse = pd.Series(index=range(7), dtype='float64')
-        for day in data_rmse.index:
-            day_data = data[data.index.day_of_week == day]
-            day_file = os.path.join('evaluation', data_name + '_astraea_{}'.format(day + 1))
-            day_desc = _evaluate_data(system, day_data, day_data.index.hour, data_column, day_file,
-                                      label='Hours', title='Astraea ({})'.format(cal.day_name[day]))
+            peak_solar_mbe_med_doubt = solar_mbe.iloc[condition].mean()
+            peak_solar_mae_med_doubt = solar_mae.iloc[condition].mean()
+            peak_solar_rmse_med_doubt = solar_rmse.iloc[condition].mean()
+            peak_solar_nrmse_med_doubt = solar_nrmse.iloc[condition].mean()
 
-            data_rmse[day] = (day_desc['mean'] ** 2).mean() ** .5
+            hi_doubt_cond = solar_mbe.index.get_level_values('regional_doubt') >= hi_doubt
+            condition = horizon_cond & peak_solar_cond & hi_doubt_cond
 
-        return (data_rmse ** 2).mean() ** .5, data_mae
+            peak_solar_mbe_hi_doubt = solar_mbe.iloc[condition].mean()
+            peak_solar_mae_hi_doubt = solar_mae.iloc[condition].mean()
+            peak_solar_rmse_hi_doubt = solar_rmse.iloc[condition].mean()
+            peak_solar_nrmse_hi_doubt = solar_nrmse.iloc[condition].mean()
 
-    def prometheus(data, data_target):
-        data_column = data_target + '_err'
-        data_name = data_target.replace('_power', '')
-        data_file = os.path.join('evaluation', data_name + '_prometheus')
+            solar_doubt_kpi = {'low_doubt': [peak_solar_mbe_low_doubt, peak_solar_mae_low_doubt, peak_solar_rmse_low_doubt, peak_solar_nrmse_low_doubt],
+                               'med_doubt': [peak_solar_mbe_med_doubt, peak_solar_mae_med_doubt, peak_solar_rmse_med_doubt, peak_solar_nrmse_med_doubt],
+                               'hi_doubt': [peak_solar_mbe_hi_doubt, peak_solar_mae_hi_doubt, peak_solar_rmse_hi_doubt, peak_solar_nrmse_hi_doubt]}
 
-        data_mae = pd.DataFrame(index=[system.name])
-        data_mae_weighted = []
-        for horizon in range(24):
-            horizon_mae = data.loc[data['horizon'] == horizon + 1, data_column].abs().mean()
-            data_mae.loc[system.name, 'Horizon {}'.format(horizon + 1)] = horizon_mae
-            data_mae_weighted.append(horizon_mae * (0.75 ** horizon))
-
-        horizons = {}
-        for horizon in [1, 3, 6, 12, 24]:
-            horizon_data = data[data['horizon'] == horizon].assign(horizon=horizon)
-            horizon_file = os.path.join('evaluation', data_name + '_prometheus_{}'.format(horizon))
-            # horizon_desc = describe_data(horizon_data, horizon_data['horizon'], data_column, horizon_file)
-            horizon_desc = _evaluate_data(system, horizon_data, horizon_data.index.hour, data_column, horizon_file,
-                                          label='Horizons', title='Prometheus ({})'.format(horizon))
-
-            horizons[horizon] = horizon_data
-
-        try:
-            horizons_data = pd.concat([horizons[1], horizons[12], horizons[24]])
-            print_boxplot(system, horizons_data, horizons_data.index.hour, data_column, data_file,
-                          label='Horizons', title='Prometheus', hue='horizon', colors=5)
-
-        except ImportError as e:
-            logger.debug(
-                "Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(data_file), system.name,
-                                                                        str(e)))
-
-        return (np.array(data_mae_weighted) ** 2).mean() ** .5, data_mae
-
-    # def weights(data, data_target):
-    #     trainable_count = int(
-    #         np.sum([K.count_params(p) for p in system.forecast._model.model.trainable_weights]))
-    #     non_trainable_count = int(
-    #         np.sum([K.count_params(p) for p in system.forecast._model.model.non_trainable_weights]))
-    #     total_count = trainable_count + non_trainable_count
-    #
-    #     return None, total_count
+            return solar_doubt_kpi, low_doubt, hi_doubt
+        return
 
     summary = pd.DataFrame(index=[s.name for s in systems],
                            columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
@@ -665,7 +630,7 @@ def evaluate(settings, systems):
 
     evaluations = {}
     for system in systems:
-        results = system.simulation['results']
+        evaluation_data = system.simulation['evaluation']
         durations = system.simulation['durations']
 
         # index = pd.IndexSlice
@@ -694,17 +659,33 @@ def evaluate(settings, systems):
             target_id = target.replace('_power', '')
             target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
 
-            if target+'_err' not in results.columns:
-                continue
+            #if target+'_err' not in results.columns:
+            #    continue
 
-            if target_id in ['pv']:
-                columns_daylight = np.intersect1d(results.columns, ['ghi', 'dni', 'dhi', 'solar_elevation'])
-                if len(columns_daylight) > 0:
-                    results = results[(results[columns_daylight] > 0).any(axis=1)]
+            #if target_id in ['pv']:
+            #    columns_daylight = np.intersect1d(results.columns, ['ghi', 'dni', 'dhi', 'solar_elevation'])
+            #    if len(columns_daylight) > 0:
+            #        results = results[(results[columns_daylight] > 0).any(axis=1)]
 
-            add_evaluation('Apollo', target_name, *apollo(results, target))
-            add_evaluation('Astraea', target_name, *astraea(results, target))
-            add_evaluation('Prometheus', target_name, *prometheus(results, target))
+            mbe, mae, rmse, nrmse = standard_kpi(evaluation_data, target)
+            add_evaluation('mbe', target_name, mbe)
+            add_evaluation('mae', target_name, mae)
+            add_evaluation('rmse', target_name, rmse)
+            add_evaluation('nrmse', target_name, nrmse)
+
+            solar_doubt_kpi, low_doubt, hi_doubt = doubt_kpi(evaluation_data, target)
+
+            add_evaluation('low_doubt', target_name, low_doubt)
+            add_evaluation('hi_doubt', target_name, hi_doubt)
+            
+            metric_names = ['mbe', 'mae', 'rmse', 'nrmse']
+            for doubt_level, metrics in solar_doubt_kpi.items():
+
+                i = 0
+                for metric in metrics:
+                    add_evaluation(doubt_level+' '+metric_names[i], target_name, metric)
+                    i += 1
+
 
     write_excel(settings, summary, evaluations)
 
