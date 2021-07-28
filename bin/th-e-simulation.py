@@ -450,8 +450,8 @@ def my_evaluation(systems):
 
             input, targets, predictions = info
 
-            targets.columns = [target + '_target' for target in targets.columns]
-            predictions.columns = [predict + '_predict' for predict in predictions.columns]
+            targets.columns = [target + '_t' for target in targets.columns]
+            predictions.columns = [predict + '_p' for predict in predictions.columns]
 
             # Concatenate results into one dataframe and assign the appropriate index
             # values.
