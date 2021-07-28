@@ -151,6 +151,7 @@ def main(args):
     # OUTPUT OF THE PROGRAM IS GENERATED HERE
     if not error:
         my_evaluation(systems)
+        evaluate(settings, systems)
 
         if tensorboard:
             logger.info("TensorBoard will be kept running")
