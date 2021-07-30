@@ -117,10 +117,11 @@ def main(args):
                 'start': dt.datetime.now()
             }
 
-            structure_err(settings, system, features_R)
             logging.debug("Beginning predictions for system: {}".format(system.name))
 
-            results = simulate(settings, system, features)
+            system.simulation['results'] = simulate(settings, system, features)
+
+            structure_err(settings, system, features_R)
 
             durations['prediction']['end'] = dt.datetime.now()
             durations['prediction']['minutes'] = (durations['prediction']['end'] -
@@ -134,12 +135,7 @@ def main(args):
                                                   durations['simulation']['start']).total_seconds() / 60.0
 
             # Store results with its system, to summarize it later on
-            system.simulation['results'] = results
             system.simulation['durations'] = durations
-            #system.simulation = {
-            #    'results': results,
-            #    'durations': durations
-            #}
 
         except Exception as e:
             error = True
@@ -150,7 +146,6 @@ def main(args):
 
     # OUTPUT OF THE PROGRAM IS GENERATED HERE
     if not error:
-        my_evaluation(systems)
         evaluate(settings, systems)
 
         if tensorboard:
@@ -386,59 +381,6 @@ def structure_err(settings, system, features):
             else:
                 features.loc[date, 'regional_doubt'] = abs(doubt - doubt_avg) / doubt_std
 
-    system_dir = system._configs['General']['data_dir']
-    eval_dir = os.path.join(system_dir, 'evaluation')
-
-    if not os.path.isdir(eval_dir):
-        os.mkdir(eval_dir)
-
-    if not os.path.isfile(os.path.join(eval_dir, 'sorted_times') + '.pkl'):
-
-        # First group the timepoints appearing in features according to their weather conditions
-        attributes = json.loads(settings.get('Evaluation', 'Features'))
-        attributes.pop('regional_doubt', None)
-        index = gen_index(attributes)
-        system.simulation['evaluation'] = sort_data(features, index)
-
-        # Now used these groupings to calculate the std deviation and mean value of the doubt values
-        # in each of the regions defined in settings.
-        system.simulation['evaluation'] = regional_doubt(system.simulation['evaluation'], features)
-
-        # Use the std and mean values of the doubt in each region to calculate the deviation of the doubt
-        # value for a singular timepoint from the average doubt value in the region it belongs, in units of
-        # the regions standard deviation. This information is added to a new column named regional doubt in
-        # the features dataframe.
-        resolve_doubt(system.simulation['evaluation'], features)
-
-        # re-sort the data now into their appropriate regions now that the required information is
-        # now available in the features dataframe.
-        attributes = json.loads(settings.get('Evaluation', 'Features'))
-        index = gen_index(attributes)
-        system.simulation['evaluation'] = sort_data(features, index)
-
-        # save the sorted database object for future runs.
-        save_pickle(eval_dir, 'sorted_times', system.simulation['evaluation'])
-
-    else:
-        dir = os.path.join (system_dir, 'evaluation')
-        system.simulation['evaluation'] = load_pickle(dir, 'sorted_times')
-
-
-def my_evaluation(systems):
-
-    def save_pickle(dir, name, data):
-        import pickle
-
-        with open(os.path.join(dir, name) + '.pkl', 'wb') as f:
-            pickle.dump(data, f)
-
-    def load_pickle(dir, name):
-        import pickle
-        with open(os.path.join(dir, name) + '.pkl', 'rb') as f:
-            dict_frame = pickle.load(f)
-
-        return dict_frame
-
     def _parse_regions(system):
 
         # Initialize dataframe to which all forecasts with the appropriate indices will
@@ -489,6 +431,50 @@ def my_evaluation(systems):
 
         return evaluation_data
 
+    system_dir = system._configs['General']['data_dir']
+    eval_dir = os.path.join(system_dir, 'evaluation')
+
+    if not os.path.isdir(eval_dir):
+        os.mkdir(eval_dir)
+
+    if not os.path.isfile(os.path.join(eval_dir, 'evaluation_data') + '.pkl'):
+
+        # First group the timepoints appearing in features according to their weather conditions
+        attributes = json.loads(settings.get('Evaluation', 'Features'))
+        attributes.pop('regional_doubt', None)
+        index = gen_index(attributes)
+        system.simulation['evaluation'] = sort_data(features, index)
+
+        # Now used these groupings to calculate the std deviation and mean value of the doubt values
+        # in each of the regions defined in settings.
+        system.simulation['evaluation'] = regional_doubt(system.simulation['evaluation'], features)
+
+        # Use the std and mean values of the doubt in each region to calculate the deviation of the doubt
+        # value for a singular timepoint from the average doubt value in the region it belongs, in units of
+        # the regions standard deviation. This information is added to a new column named regional doubt in
+        # the features dataframe.
+        resolve_doubt(system.simulation['evaluation'], features)
+
+        # re-sort the data now into their appropriate regions now that the required information is
+        # now available in the features dataframe.
+        attributes = json.loads(settings.get('Evaluation', 'Features'))
+        index = gen_index(attributes)
+        system.simulation['evaluation'] = sort_data(features, index)
+
+        # Now use the sorted timepoints to provide the various predictions in results
+        # their appropriate indices
+        system.simulation['evaluation'] = _parse_regions(system)
+
+        # save this object for future runs.
+        save_pickle(eval_dir, 'evaluation_data', system.simulation['evaluation'])
+
+    else:
+        dir = os.path.join (system_dir, 'evaluation')
+        system.simulation['evaluation'] = load_pickle(dir, 'evaluation_data')
+
+def evaluate(settings, systems):
+    from th_e_sim.iotools import print_boxplot, write_excel
+
     # [evaluate_regions]:
     # This function takes err data of a network, labeled according to chosen features,
     # as input. The labels of this err data are described by the MultiIndex indexing it.
@@ -503,7 +489,7 @@ def my_evaluation(systems):
     # various doubt values which arise with this partial index. This same set of errors is further
     # summarized with a .csv describing the error's distribution.
 
-    def evaluate_regions(system, evaluation_data, dir):
+    def evaluate_regions(system, evaluation_data, target):
         from copy import deepcopy
         assert isinstance(evaluation_data.index, pd.MultiIndex)
 
@@ -525,7 +511,11 @@ def my_evaluation(systems):
         # Here we use the previously defined partial index to create a filetree and then at the
         # bottom of this filetree to output the boxplot and csv files described above.
         for index in control_index:
-            sub_dir = dir
+
+            sub_dir = os.path.join(system._configs['General']['data_dir'], 'evaluation', target)
+            if not os.path.isdir(sub_dir):
+                os.mkdir(sub_dir)
+
             for level, value in zip(control_names, list(index)):
                 sub_dir = os.path.join(sub_dir, level + '_{}'.format(value))
 
@@ -535,38 +525,8 @@ def my_evaluation(systems):
                 partial_index = index + (slice(None),)
                 _evaluate_data(system, data.loc[partial_index, :], 'regional_doubt', evaluation_data.columns[-1], file)
 
-    for system in systems:
-        # Extract important variables from system.
-        system_dir = system._configs['General']['data_dir']
-        eval_dir = os.path.join(system_dir, 'evaluation')
-        targets = system.forecast._model.features['target']
-
-        # Create data object summarizing network performance error in the various regions defined
-        # in settings.cfg.
-
-        evaluation_file = os.path.join(eval_dir, 'evaluation_data.pkl')
-
-        if not os.path.isfile(evaluation_file):
-            system.simulation['evaluation'] = _parse_regions(system)
-        else:
-            system.simulation['evaluation'] = load_pickle(eval_dir, 'evaluation_data')
-
-        # Iterate through targets and create a directory in the evaluation directory
-        # corresponding to each individual target.
-        for target in targets:
-
-            dir = os.path.join(system_dir, 'evaluation', target)
-
-            if not os.path.isdir(dir):
-                os.mkdir(dir)
-                evaluate_regions(system, system.simulation['evaluation'], dir)
-
-def evaluate(settings, systems):
-    from th_e_sim.iotools import print_boxplot, write_excel
-
     def standard_kpi(data, data_target):
-        #ToDo: Change to _p_err
-        data_column = data_target + '_predict_err'
+        data_column = data_target + '_p_err'
 
         mbe = data[data_column].mean()
         mae = data[data_column].abs().mean()
@@ -576,9 +536,8 @@ def evaluate(settings, systems):
         return mbe, mae, rmse, nrmse
 
     def doubt_kpi(data, data_target):
-        # ToDo: Change to _p_err
         region_names = data.index.names
-        data_column = data_target + '_predict_err'
+        data_column = data_target + '_p_err'
 
         doubt = pd.Series(data.index.get_level_values('regional_doubt'), name='regional_doubt')
         low_doubt = doubt.quantile(0.25)
@@ -657,6 +616,9 @@ def evaluate(settings, systems):
                 summary.loc[system.name, (header, name)] = kpi
 
         for target in system.forecast._model.features['target']:
+
+            evaluate_regions(system, system.simulation['evaluation'], target)
+
             target_id = target.replace('_power', '')
             target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
 
@@ -678,7 +640,7 @@ def evaluate(settings, systems):
 
             add_evaluation('low_doubt', target_name, low_doubt)
             add_evaluation('hi_doubt', target_name, hi_doubt)
-            
+
             metric_names = ['mbe', 'mae', 'rmse', 'nrmse']
             for doubt_level, metrics in solar_doubt_kpi.items():
 
