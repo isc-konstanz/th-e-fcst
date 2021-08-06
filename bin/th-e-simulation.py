@@ -164,13 +164,16 @@ def simulate(settings, system, features, **kwargs):
     def save_to_database(date, input, target, prediction, database):
         # take a prediction output by the simulate function and save it to
         # the appropriate database.
+        _target = copy.deepcopy(target)
+        _prediction = copy.deepcopy(prediction)
+
         condition_cols = [col for col in input.columns if col not in target.columns]
-        target.columns = [target + '_t' for target in target.columns]
-        prediction.columns = [predict + '_p' for predict in prediction.columns]
+        _target.columns = [target + '_t' for target in _target.columns]
+        _prediction.columns = [predict + '_p' for predict in _prediction.columns]
 
         out_cond = input.loc[date: , condition_cols]
 
-        data_out = pd.concat([target, prediction, out_cond], axis=1)
+        data_out = pd.concat([_target, _prediction, out_cond], axis=1)
         data_out.index.name = 'time'
         data_in = input
         data_in.index.name = 'time'
