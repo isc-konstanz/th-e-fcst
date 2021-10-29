@@ -75,11 +75,17 @@ def main(args):
                 durations['training'] = {
                     'start': dt.datetime.now()
                 }
+                features_path = os.path.join(system.configs.get('General', 'data_dir'), 'model', 'features')
+                if os.path.isfile(features_path + '.h5'):
+                    hdf = pd.HDFStore(features_path + '.h5', mode='r')
+                    features = hdf.get('features')
+                else:
                 features = system.forecast._get_history(_get_time(settings['Training']['start']),
                                                         _get_time(settings['Training']['end'])
                                                         + dt.timedelta(hours=23, minutes=59))
 
                 features = system.forecast._model._parse_features(features)
+                    features.to_hdf(features_path + '.h5', 'features', mode='w')
 
                 if settings.getboolean('General', 'verbose', fallback=False):
                     print_distributions(features, path=system.forecast._model.dir)
@@ -93,15 +99,21 @@ def main(args):
                 logging.debug("Training of neural network for system {} complete after {} minutes"
                               .format(system.name, durations['training']['minutes']))
 
-            data = system._database.get(start, end)
-            weather = system.forecast._weather._database.get(start, end)
+            features_path = os.path.join(system.configs.get('General', 'data_dir'), 'evaluation', 'features')
+            if os.path.isfile(features_path + '.h5'):
+                hdf = pd.HDFStore(features_path + '.h5', mode='r')
+                features = hdf.get('features')
+            else:
+                data = system._database.read(start, end)
+                weather = system.forecast._weather._database.read(start, end)
             if system.contains_type('pv'):
                 solar = system.forecast._get_yield(weather)
                 data = pd.concat([data, solar], axis=1)
 
             features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
-            features_file = os.path.join('evaluation', 'features')
-            write_csv(system, features, features_file)
+                features.to_hdf(features_path + '.h5', 'features', mode='w')
+                write_csv(system, features, features_path)
+
             durations['prediction'] = {
                 'start': dt.datetime.now()
             }
