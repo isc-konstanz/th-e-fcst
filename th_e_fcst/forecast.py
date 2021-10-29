@@ -5,45 +5,38 @@
     
     
 """
-import logging
-logger = logging.getLogger(__name__)
+from __future__ import annotations
 
+import logging
 import pandas as pd
 import datetime as dt
+import th_e_core
 
 from configparser import ConfigParser
-from th_e_core import Forecast as WeatherForecast
+from th_e_core import System
 from th_e_fcst import NeuralNetwork
 
+logger = logging.getLogger(__name__)
 
-class Forecast(WeatherForecast):
 
-    @staticmethod
-    def from_configs(context, configs, **kwargs):
-        return Forecast(configs, context, **kwargs)
+class Forecast(th_e_core.Forecast):
 
-    def __init__(self, configs, context, **kwargs):
-        if not isinstance(configs, ConfigParser):
-            raise ValueError('Invalid configuration type: {}'.format(type(configs)))
-        
-        self._context = context
-        self._activate(context, configs, **kwargs)
+    @classmethod
+    def read(cls, system: System, **kwargs) -> Forecast:
+        return cls(system, cls._read_configs(system, **kwargs), **kwargs)
 
-    def _activate(self, context, configs, **kwargs): #@UnusedVariable
+    def _activate(self, system, configs, **kwargs):
+        super()._activate(system, configs, **kwargs)
         if configs.get('General', 'type', fallback='default').lower() == 'default':
             self._weather = None
         else:
-            config_weather = ConfigParser()
-            config_weather.read_dict(configs)
+            self._weather = super().read(system, **kwargs)
 
-            self._weather = WeatherForecast.from_configs(context, config_weather, **kwargs)
-
-        self._model = NeuralNetwork.read(context, **kwargs)
-        self._context = context
+        self._model = NeuralNetwork.read(system, **kwargs)
 
     def _get(self, *args, **kwargs):
         data = self._get_data(*args, **kwargs)
-        return self._get_range(self._model.run(data, **kwargs), 
+        return self._get_range(self._model.predict(data, **kwargs),
                                kwargs.get('start', None), 
                                kwargs.get('end', None))
 
@@ -68,11 +61,11 @@ class Forecast(WeatherForecast):
         return data
 
     def _get_history(self, start, end, **kwargs):
-        data = self._system._database.get(start, end, **kwargs)
+        data = self._system._database.read(start, end, **kwargs)
         data = data[data.columns.drop(list(data.filter(regex='_energy')))]
 
         if self._weather is not None:
-            weather = self._weather._database.get(start, end, **kwargs)
+            weather = self._weather._database.read(start, end, **kwargs)
 
             if self._system.contains_type('pv'):
                 solar = self._get_yield(weather)
@@ -86,8 +79,8 @@ class Forecast(WeatherForecast):
         data = pd.DataFrame(index=weather.index, columns=['pv_yield']).fillna(0)
         try:
             from th_e_yield.model import Model
-            for system in self._system.get_type('pv'):
-                model = Model(system, self._system.location, self._model.configs, section='Yield', **kwargs)
+            for árray in self._system.get_type('pv'):
+                model = Model(self._system, árray, self._model.configs, section='Yield', **kwargs)
                 data['pv_yield'] += model.run(weather)['p_ac']
 
         except ImportError as e:

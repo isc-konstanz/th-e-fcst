@@ -14,7 +14,6 @@ import time
 import copy
 import shutil
 import inspect
-import logging
 import traceback
 import pytz as tz
 import numpy as np
@@ -216,6 +215,7 @@ def simulate(settings, system, features, **kwargs):
             date += dt.timedelta(minutes=interval)
 
     return results
+
 
 def evaluate(settings, systems):
     from th_e_sim.iotools import print_boxplot, write_excel
@@ -462,20 +462,20 @@ def _get_parser(root_dir):
 
 
 if __name__ == "__main__":
-    root_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(main)))
-    if os.path.basename(root_dir) == 'bin':
-        root_dir = os.path.dirname(root_dir)
+    run_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(main)))
+    if os.path.basename(run_dir) == 'bin':
+        run_dir = os.path.dirname(run_dir)
 
-    os.chdir(root_dir)
+    os.chdir(run_dir)
 
     if not os.path.exists('log'):
         os.makedirs('log')
 
     # Load the logging configuration
+    import logging
     import logging.config
-    logging_file = os.path.join(os.path.join(root_dir, 'conf'), 'logging.cfg')
+    logging_file = os.path.join(os.path.join(run_dir, 'conf'), 'logging.cfg')
     logging.config.fileConfig(logging_file)
     logger = logging.getLogger('th-e-simulation')
 
-    main(_get_parser(root_dir).parse_args())
-
+    main(_get_parser(run_dir).parse_args())

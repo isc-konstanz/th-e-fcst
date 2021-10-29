@@ -5,6 +5,8 @@
     
     
 """
+from __future__ import annotations
+
 import os
 import json
 import numpy as np
@@ -12,14 +14,14 @@ import pandas as pd
 import datetime as dt
 import logging
 
+from copy import deepcopy
 from pandas.tseries.frequencies import to_offset
 from pvlib.solarposition import get_solarposition
 from keras.callbacks import History, EarlyStopping, TensorBoard
 from keras.models import Sequential
 from keras.layers import Dense, Dropout, LeakyReLU, Flatten, Conv1D, MaxPooling1D, LSTM
 from keras.models import model_from_json
-from tensorflow import summary
-from th_e_core import Model
+from th_e_core import System, Model
 
 logger = logging.getLogger(__name__)
 
@@ -30,24 +32,24 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 class NeuralNetwork(Model):
 
-    @staticmethod
-    def from_configs(context, configs, **kwargs):
-        model = configs.get('General', 'model', fallback='default').lower()
+    @classmethod
+    def read(cls, system: System, **kwargs) -> NeuralNetwork:
+        configs = cls._read_configs(system, **kwargs)
+        model = configs.get('General', 'type', fallback='default')
 
         if model in ['mlp', 'ann', 'dense', 'default']:
-            return NeuralNetwork(configs, context, **kwargs)
+            return NeuralNetwork(system, configs, **kwargs)
 
         elif model in ['convdilated', 'conv', 'cnn']:
-            return ConvDilated(configs, context, **kwargs)
+            return ConvDilated(system, configs, **kwargs)
 
         elif model == 'convlstm':
-            return ConvLSTM(configs, context, **kwargs)
+            return ConvLSTM(system, configs, **kwargs)
 
         elif model == 'lstm':
-            return StackedLSTM(configs, context, **kwargs)
+            return StackedLSTM(system, configs, **kwargs)
 
-        else:
-            return Model.from_configs(context, configs, **kwargs)
+        raise TypeError('Invalid model: {}'.format(type))
 
     def _configure(self, configs, **kwargs):
         super()._configure(configs, **kwargs)
