@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
     th-e-fcst.forecast
-    ~~~~~
+    ~~~~~~~~~~~~~~~~~~
     
     
 """
@@ -36,19 +36,18 @@ class Forecast(th_e_core.Forecast):
 
     def _get(self, *args, **kwargs):
         data = self._get_data(*args, **kwargs)
-        return self._get_range(self._model.predict(data, **kwargs),
+        return self._get_range(self._model.predict(data, *args, **kwargs),
                                kwargs.get('start', None), 
                                kwargs.get('end', None))
 
     def _get_data(self, start, end=None, **kwargs):
-        resolution = self._model._resolutions[0]
+        resolution = self._model.resolutions[0]
         prior_end = start - resolution.time_step
         prior_start = start - resolution.time_prior\
-                            - resolution.time_step\
-                            + dt.timedelta(seconds=1)
-        
+                            - resolution.time_step + dt.timedelta(minutes=1)
+
         data = self._get_history(prior_start, prior_end, **kwargs)
-        
+
         if self._weather is not None:
             weather = self._weather.get(start, end, **kwargs)
 
@@ -57,7 +56,7 @@ class Forecast(th_e_core.Forecast):
                 data = pd.concat([data, solar], axis=1)
 
             data = pd.concat([data, weather], axis=0)
-        
+
         return data
 
     def _get_history(self, start, end, **kwargs):

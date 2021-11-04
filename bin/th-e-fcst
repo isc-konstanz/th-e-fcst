@@ -7,9 +7,7 @@
     To learn how to configure the prediction of timeseries, see "th-e-fcst --help"
 
 """
-import logging #@UnusedImport
 import os
-
 import datetime as dt
 
 from argparse import ArgumentParser, RawTextHelpFormatter
@@ -36,37 +34,41 @@ def main(args):
     elif args.action == 'start':
         start(systems, **kwargs)
 
+
 def start(systems, interval=1, **kwargs):
-    import sched, time
+    import time
+    import sched
     
     logger.info('Starting th-e-fcst')
     
     scheduler = sched.scheduler(time.time, time.sleep)
-    schedule_first, _ = schedule_time(interval, **kwargs)
+    schedule_first, _ = schedule_date(interval, **kwargs)
     schedule_first -= dt.timedelta(seconds=int(interval))
     schedule_run(systems, scheduler, schedule_first, interval)
     scheduler.run()
 
-def schedule_run(systems, scheduler, time, interval, **kwargs):
+
+def schedule_run(systems, scheduler, date, interval, **kwargs):
     logger.info("Running th-e-fcst for {0} systems".format(len(systems)))
     
     for system in systems:
-        system.run(start=time)
+        system.run(start=date)
     
-    time, delay = schedule_time(interval, **kwargs)
+    date, delay = schedule_date(interval, **kwargs)
     scheduler.enter(delay, 1, schedule_run,
-                    (systems, scheduler, time, interval))
+                    (systems, scheduler, date, interval))
     
-    logger.info("Schedule next execution in {0} seconds: {1}".format(round(delay), time))
+    logger.info("Schedule next execution in {0} seconds: {1}".format(round(delay), date))
 
-def schedule_time(interval, delay=0, **_):
-    if isinstance(interval, str) :
+
+def schedule_date(interval, delay=0, **_):
+    if isinstance(interval, str):
         interval = int(interval)
     
     now = dt.datetime.now()
-    time = now + ((dt.datetime.min - now) % dt.timedelta(seconds=interval))
+    date = now + ((dt.datetime.min - now) % dt.datedelta(seconds=interval))
     
-    return time, (time - now).total_seconds() + int(delay)
+    return date, (date - now).total_seconds() + int(delay)
 
 
 def _get_parser(root_dir):
@@ -74,27 +76,27 @@ def _get_parser(root_dir):
     
     parser = ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
     parser.add_argument('-v', '--version',
-                         action='version',
-                         version='%(prog)s {version}'.format(version=__version__))
+                        action='version',
+                        version='%(prog)s {version}'.format(version=__version__))
     
     subparsers = parser.add_subparsers(dest='action')
     subparsers.required = True
     subparsers.add_parser('run', help='Retrieve weather information and provide the calculated photovoltaic yield')
     subparsers.add_parser('start', help='Starts the ongoing calculation of photovoltaic yield in a regular interval')
     
-    parser.add_argument('-r','--root-directory',
+    parser.add_argument('-r', '--root-directory',
                         dest='root_dir',
                         help="directory where the package and related libraries are located",
                         default=root_dir,
                         metavar='DIR')
     
-    parser.add_argument('-c','--config-directory',
+    parser.add_argument('-c', '--config-directory',
                         dest='config_dir',
                         help="directory to expect configuration files",
                         default='conf',
                         metavar='DIR')
     
-    parser.add_argument('-d','--data-directory',
+    parser.add_argument('-d', '--data-directory',
                         dest='data_dir',
                         help="directory to expect and write result files to",
                         default='data',
@@ -102,21 +104,22 @@ def _get_parser(root_dir):
     
     return parser
 
+
 if __name__ == "__main__":
-    root_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.realpath(__file__))))
-    if os.path.basename(root_dir) == 'bin':
-        root_dir = os.path.dirname(root_dir)
+    run_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.realpath(__file__))))
+    if os.path.basename(run_dir) == 'bin':
+        run_dir = os.path.dirname(run_dir)
     
-    os.chdir(root_dir)
+    os.chdir(run_dir)
     
     if not os.path.exists('log'):
         os.makedirs('log')
     
     # Load the logging configuration
+    import logging
     import logging.config
-    logging_file = os.path.join(os.path.join(root_dir, 'conf'), 'logging.cfg')
+    logging_file = os.path.join(os.path.join(run_dir, 'conf'), 'logging.cfg')
     logging.config.fileConfig(logging_file)
     logger = logging.getLogger('th-e-fcst')
     
-    main(_get_parser(root_dir).parse_args())
-
+    main(_get_parser(run_dir).parse_args())

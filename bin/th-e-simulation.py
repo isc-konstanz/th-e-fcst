@@ -11,8 +11,6 @@
 import os
 import sys
 import time
-import copy
-import shutil
 import inspect
 import traceback
 import pytz as tz
@@ -21,9 +19,17 @@ import pandas as pd
 import datetime as dt
 import calendar as cal
 
+from copy import deepcopy
 from argparse import ArgumentParser, RawTextHelpFormatter
 from configparser import ConfigParser
 from tensorboard import program
+from typing import Union
+
+from th_e_core.tools import floor_date, ceil_date
+
+from tables import NaturalNameWarning
+import warnings
+warnings.filterwarnings('ignore', category=NaturalNameWarning)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
 
@@ -34,6 +40,7 @@ TARGETS = {
 }
 
 
+# noinspection PyProtectedMember
 def main(args):
     from th_e_sim.iotools import write_csv
     from th_e_sim import preparation
@@ -54,8 +61,8 @@ def main(args):
 
     tensorboard = _launch_tensorboard(**kwargs)
 
-    start = _get_time(settings['General']['start'])
-    end = _get_time(settings['General']['end']) + dt.timedelta(hours=23, minutes=59)
+    start = _get_date(settings['General']['start'])
+    end = _get_date(settings['General']['end']) + dt.timedelta(hours=23, minutes=59)
 
     systems = System.read(**kwargs)
     for system in systems:
@@ -65,8 +72,9 @@ def main(args):
                 'start': dt.datetime.now()
             }
         }
-        preparation.process_weather(system, os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme', 'data', 'Meteoblue'))
-        preparation.process_system(system, os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme', 'data', 'OPSD'))
+        zentrale = os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme')
+        preparation.process_weather(system, os.path.join(zentrale, 'data', 'Meteoblue'))
+        preparation.process_system(system, os.path.join(zentrale, 'data', 'OPSD'))
         try:
             if not system.forecast._model.exists():
                 from th_e_sim.iotools import print_distributions
@@ -77,18 +85,19 @@ def main(args):
                 }
                 features_path = os.path.join(system.configs.get('General', 'data_dir'), 'model', 'features')
                 if os.path.isfile(features_path + '.h5'):
-                    hdf = pd.HDFStore(features_path + '.h5', mode='r')
-                    features = hdf.get('features')
+                    with pd.HDFStore(features_path + '.h5', mode='r') as hdf:
+                        features = hdf.get('features')
                 else:
-                features = system.forecast._get_history(_get_time(settings['Training']['start']),
-                                                        _get_time(settings['Training']['end'])
-                                                        + dt.timedelta(hours=23, minutes=59))
+                    features = system.forecast._get_history(_get_date(settings['Training']['start']),
+                                                            _get_date(settings['Training']['end'])
+                                                            + dt.timedelta(hours=23, minutes=59))
 
-                features = system.forecast._model._parse_features(features)
+                    features = system.forecast._model._parse_features(features)
                     features.to_hdf(features_path + '.h5', 'features', mode='w')
+                    write_csv(system, features, features_path)
 
-                if settings.getboolean('General', 'verbose', fallback=False):
-                    print_distributions(features, path=system.forecast._model.dir)
+                    if settings.getboolean('General', 'verbose', fallback=False):
+                        print_distributions(features, path=system.forecast._model.dir)
 
                 system.forecast._model._train(features)
 
@@ -99,18 +108,20 @@ def main(args):
                 logging.debug("Training of neural network for system {} complete after {} minutes"
                               .format(system.name, durations['training']['minutes']))
 
-            features_path = os.path.join(system.configs.get('General', 'data_dir'), 'evaluation', 'features')
+            features_dir = os.path.join(system.configs.get('General', 'data_dir'), 'results')
+            features_path = os.path.join(features_dir, 'features')
+            os.makedirs(features_dir, exist_ok=True)
             if os.path.isfile(features_path + '.h5'):
-                hdf = pd.HDFStore(features_path + '.h5', mode='r')
-                features = hdf.get('features')
+                with pd.HDFStore(features_path + '.h5', mode='r') as hdf:
+                    features = hdf.get('features')
             else:
                 data = system._database.read(start, end)
                 weather = system.forecast._weather._database.read(start, end)
-            if system.contains_type('pv'):
-                solar = system.forecast._get_yield(weather)
-                data = pd.concat([data, solar], axis=1)
+                if system.contains_type('pv'):
+                    solar = system.forecast._get_yield(weather)
+                    data = pd.concat([data, solar], axis=1)
 
-            features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
+                features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
                 features.to_hdf(features_path + '.h5', 'features', mode='w')
                 write_csv(system, features, features_path)
 
@@ -163,75 +174,116 @@ def main(args):
             tensorboard = False
 
 
+# noinspection PyProtectedMember
 def simulate(settings, system, features, **kwargs):
     forecast = system.forecast._model
 
-    #if len(forecast.resolutions) == 1:
-        #resolution_min = forecast.resolutions[0]
-    #else:
-        #for i in range(len(forecast.resolutions)-1, 0, -1):
-            #resolution_min = forecast.resolutions[i]
-            #if resolution_min.steps_horizon is not None:
-                #break
+    resolution_min = forecast.resolutions[0]
+    if len(forecast.resolutions) > 1:
+        for i in range(len(forecast.resolutions)-1, 0, -1):
+            resolution_min = forecast.resolutions[i]
+            if resolution_min.steps_horizon is not None:
+                break
 
     resolution_max = forecast.resolutions[0]
+    resolution_data = resolution_min.resample(features)
 
-    #system_dir = system._configs['General']['data_dir']
-    #database = copy.deepcopy(system._database)
-    #database.dir = system_dir
+    system_dir = system._configs['General']['data_dir']
+    database = deepcopy(system._database)
+    database.dir = os.path.join(system_dir, 'results')
     # database.format = '%Y%m%d'
-    #database.enabled = True
+    database.enabled = True
+    datastore = pd.HDFStore(os.path.join(system_dir, 'results', 'results.h5'))
 
     # Reactivate this, when multiprocessing will be implemented
     # global logger
     # if process.current_process().name != 'MainProcess':
     #    logger = process.get_logger()
 
-    #verbose = settings.getboolean('General', 'verbose', fallback=False)
-    interval = settings.getint('General', 'interval')
-    date = features.index[0] + resolution_max.time_prior + resolution_max.time_step
-    end = features.index[-1] - resolution_max.time_horizon
+    verbose = settings.getboolean('General', 'verbose', fallback=False)
 
-    #training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
+    interval = settings.getint('General', 'interval')
+    date = floor_date(features.index[0] + resolution_max.time_prior, timezone=system.location.tz)
+    end = ceil_date(features.index[-1] - resolution_max.time_horizon, timezone=system.location.tz)
+
+    # training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
     # training_interval = settings.getint('Training', 'interval')
     # training_last = time
 
-    results = {}
+    # results = {}
+    results = pd.DataFrame()
     while date <= end:
+        # Check if this step was simulated already and load the results, if so
+        date_str = date.strftime('%Y%m%d_%H%M%S')
+        date_dir = os.path.join(system_dir, 'results', date.strftime('%Y%m%d'))
+        date_path = '/{0}.'.format(date)
+        if date_path in datastore:
+            result = datastore.get(date_path+'/outputs')
+            # inputs = datastore.get(date_path+'/inputs')
+            # targets = datastore.get(date_path+'/targets')
+
+            # results[date] = (inputs, targets, prediction)
+            results = pd.concat([results, result], axis=0)
+
+            date = _increment_date(date, interval)
+            continue
 
         try:
-            # Input index in features
-            target_data_i = date - resolution_max.time_step + dt.timedelta(minutes=resolution_max.resolution)
-            input_i_start = target_data_i - resolution_max.time_prior
-            input_i_end = date + resolution_max.time_horizon
+            date_prior = date - resolution_max.time_prior
+            date_start = date + resolution_max.time_step
+            date_horizon = date + resolution_max.time_horizon
+            date_features = deepcopy(resolution_data[date_prior:date_horizon])
+            date_range = date_features[date_start:date_horizon].index
 
-            # Strip targets
-            input = copy.deepcopy(features[input_i_start:input_i_end])
-            target = resolution_max.resample(input.loc[date:input_i_end, forecast.features['target']])
+            inputs = forecast._parse_inputs(date_features, date_range)
+            targets = forecast._parse_targets(date_features, date_range)
+            prediction = forecast._predict(date_features, date)
 
-            # Replace targets with yield values
-            target_range = input.loc[(input.index >= target_data_i) & (input.index <= input_i_end)].index
-            input.loc[target_range, forecast.features['target']] = input.loc[target_range, 'pv_yield']
-            forecast._calc_doubt(input, target_range)
-            input = resolution_max.resample(input)
+            # results[date] = (inputs, targets, prediction)
+            result = pd.concat([targets,
+                                prediction.rename(columns={
+                                    target: target+'_est' for target in forecast.features['target']
+                                })],
+                               axis=1)
 
-            prediction = forecast._predict(input)
+            for target in forecast.features['target']:
+                result[target + '_err'] = result[target + '_est'] - result[target]
 
-            # Store 0 for doubt
-            results[date] = (input, target, prediction)
-            date += dt.timedelta(minutes=interval)
+            result = pd.concat([result, resolution_data.loc[result.index, np.setdiff1d(forecast.features['input'],
+                                                                                       forecast.features['target'],
+                                                                                       assume_unique=True)]], axis=1)
+
+            result.index.name = 'time'
+            result['horizon'] = pd.Series(range(1, len(result.index) + 1), result.index)
+            results = pd.concat([results, result], axis=0)
+
+            result.to_hdf(datastore, date_path+'/outputs')
+            inputs.to_hdf(datastore, date_path+'/inputs')
+            targets.to_hdf(datastore, date_path+'/targets')
+            if verbose:
+                os.makedirs(date_dir, exist_ok=True)
+                database.write(result,  file=date_str+'_outputs.csv', subdir=date_dir)
+                database.write(inputs,  file=date_str+'_inputs.csv',  subdir=date_dir)
+                database.write(targets, file=date_str+'_targets.csv', subdir=date_dir)
+
+            date = _increment_date(date, interval)
 
         except ValueError as e:
             logger.debug("Skipping %s: %s", date, str(e))
             # logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
-            date += dt.timedelta(minutes=interval)
+            date = _increment_date(date, interval)
+
+    database.close()
+    datastore.close()
 
     return results
 
 
+# noinspection PyProtectedMember
 def evaluate(settings, systems):
     from th_e_sim.iotools import print_boxplot, write_excel
 
+    # noinspection PyProtectedMember
     def apollo(data, data_target):
         data_doubt = data_target + '_doubt'
         data_doubts = system.forecast._model.features.get('doubt', {})
@@ -258,11 +310,12 @@ def evaluate(settings, systems):
                                    label='Hours', title='Apollo')
 
         data_rmse = data_desc.transpose().loc[['rmse']]
-        data_rmse.columns = ['Hour {}'.format(c + 1) for c in data_rmse.columns]
+        data_rmse.columns = ['Hour {}'.format(int(c) + 1) for c in data_rmse.columns]
         data_rmse.index = [system.name]
 
         return (data[data_column] ** 2).mean() ** .5, data_rmse
 
+    # noinspection PyProtectedMember
     def astraea(data, data_target):
         data_column = data_target + '_err'
         data_name = data_target.replace('_power', '')
@@ -271,7 +324,7 @@ def evaluate(settings, systems):
                                    label='Hours', title='Astraea')
 
         data_mae = data_desc.transpose().loc[['mae']]
-        data_mae.columns = ['Hour {}'.format(c + 1) for c in data_mae.columns]
+        data_mae.columns = ['Hour {}'.format(int(c) + 1) for c in data_mae.columns]
         data_mae.index = [system.name]
 
         data_rmse = pd.Series(index=range(7), dtype='float64')
@@ -285,6 +338,7 @@ def evaluate(settings, systems):
 
         return (data_rmse ** 2).mean() ** .5, data_mae
 
+    # noinspection PyProtectedMember
     def prometheus(data, data_target):
         data_column = data_target + '_err'
         data_name = data_target.replace('_power', '')
@@ -371,9 +425,9 @@ def evaluate(settings, systems):
                 if len(columns_daylight) > 0:
                     results = results[(results[columns_daylight] > 0).any(axis=1)]
 
-            add_evaluation('Apollo', target_name, *apollo(results, target))
-            add_evaluation('Astraea', target_name, *astraea(results, target))
-            add_evaluation('Prometheus', target_name, *prometheus(results, target))
+            add_evaluation('Apollo', target_name, *apollo(deepcopy(results), target))
+            add_evaluation('Astraea', target_name, *astraea(deepcopy(results), target))
+            add_evaluation('Prometheus', target_name, *prometheus(deepcopy(results), target))
 
     write_excel(settings, summary, evaluations)
 
@@ -431,28 +485,37 @@ def _launch_tensorboard(**kwargs):
     return launch
 
 
-def _get_time(time_str):
-    return tz.utc.localize(dt.datetime.strptime(time_str, '%d.%m.%Y'))
+def _increment_date(date: Union[dt.datetime, pd.Timestamp], interval: int) -> Union[dt.datetime, pd.Timestamp]:
+    freq = '{}min'.format(interval)
+    delta = dt.timedelta(minutes=interval)
+    date_inc = (date + delta).floor(freq)
+    if date_inc <= date:
+        date_inc = (date + 2*delta).floor(freq)
+    return date_inc
 
 
-def _get_parser(root_dir):
+def _get_date(date_str: str) -> dt.datetime:
+    return tz.utc.localize(dt.datetime.strptime(date_str, '%d.%m.%Y'))
+
+
+def _get_parser(root_dir: str) -> ArgumentParser:
     from th_e_fcst import __version__
 
-    def _to_bool(v):
+    def _to_bool(v: str) -> bool:
         return v.lower() in ("yes", "true", "1")
 
     parser = ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
     parser.add_argument('-v', '--version',
-                         action='version',
-                         version='%(prog)s {version}'.format(version=__version__))
+                        action='version',
+                        version='%(prog)s {version}'.format(version=__version__))
 
-    parser.add_argument('-r','--root-directory',
+    parser.add_argument('-r', '--root-directory',
                         dest='root_dir',
                         help="directory where the package and related libraries are located",
                         default=root_dir,
                         metavar='DIR')
 
-    parser.add_argument('-c','--config-directory',
+    parser.add_argument('-c', '--config-directory',
                         dest='config_dir',
                         help="directory to expect configuration files",
                         default='conf',
