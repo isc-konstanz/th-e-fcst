@@ -360,11 +360,11 @@ class NeuralNetwork(Model):
             index = [self.resolutions[-1].time_step + index]
         inputs = self.resolutions[-1].resample(deepcopy(features))
 
-        # Make sure that no future target values exist
-        inputs.loc[index[0]:, self.features['target']] = np.NaN
-
         # TODO: Optionally replace the estimate with the prediction of an ANN
         if self._estimate:
+            # Make sure that no future target values exist
+            inputs.loc[index[0]:, self.features['target']] = np.NaN
+
             # TODO: Implement horizon resolutions
             estimate = inputs.loc[index, self.features['target']]
             for estimate_step in estimate.index:
@@ -394,8 +394,8 @@ class NeuralNetwork(Model):
         data = pd.DataFrame()
         data.index.name = 'time'
         for resolution in self.resolutions:
-            resolution_end = index[0] if not self._estimate else index[-1]
-            resolution_start = index[0] - resolution.time_prior - resolution.time_step + dt.timedelta(minutes=1)
+            resolution_end = index[0] - resolution.time_step if not self._estimate else index[-1]
+            resolution_start = index[0] - resolution.time_step - resolution.time_prior + dt.timedelta(minutes=1)
             resolution_data = inputs.loc[resolution_start:resolution_end,
                                          self.features['target'] + self.features['input']]
 
