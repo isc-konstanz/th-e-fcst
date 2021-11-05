@@ -61,6 +61,8 @@ def main(args):
 
     tensorboard = _launch_tensorboard(**kwargs)
 
+    verbose = settings.getboolean('General', 'verbose', fallback=False)
+
     start = _get_date(settings['General']['start'])
     end = _get_date(settings['General']['end']) + dt.timedelta(hours=23, minutes=59)
 
@@ -96,7 +98,7 @@ def main(args):
                     features.to_hdf(features_path + '.h5', 'features', mode='w')
                     write_csv(system, features, features_path)
 
-                    if settings.getboolean('General', 'verbose', fallback=False):
+                    if verbose:
                         print_distributions(features, path=system.forecast._model.dir)
 
                 system.forecast._model._train(features)
@@ -123,7 +125,9 @@ def main(args):
 
                 features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
                 features.to_hdf(features_path + '.h5', 'features', mode='w')
-                write_csv(system, features, features_path)
+
+                if verbose:
+                    write_csv(system, features, features_path)
 
             durations['prediction'] = {
                 'start': dt.datetime.now()
@@ -294,7 +298,7 @@ def evaluate(settings, systems):
         data_name = data_target.replace('_power', '')
         data_file = os.path.join('evaluation', data_name + '_apollo')
 
-        doubt = data[data_doubt]
+        doubt = (data[data_doubt]/data[data_target]).replace(np.inf, 0).abs().clip(upper=1)
         data.loc[:, data_column] = data[data_column] - data[data_column] * doubt
 
         data_dates = pd.DataFrame(index=list(set(data.index.date)))
@@ -486,12 +490,16 @@ def _launch_tensorboard(**kwargs):
 
 
 def _increment_date(date: Union[dt.datetime, pd.Timestamp], interval: int) -> Union[dt.datetime, pd.Timestamp]:
-    freq = '{}min'.format(interval)
-    delta = dt.timedelta(minutes=interval)
-    date_inc = (date + delta).floor(freq)
-    if date_inc <= date:
-        date_inc = (date + 2*delta).floor(freq)
-    return date_inc
+    increment_freq = '{}min'.format(interval)
+    increment_delta = dt.timedelta(minutes=interval)
+    increment_count = 1
+
+    increment_date = pd.NaT
+    while increment_date is pd.NaT or increment_date <= date:
+        increment_date = (date + increment_count*increment_delta).floor(increment_freq, ambiguous='NaT')
+        increment_count += 1
+
+    return increment_date
 
 
 def _get_date(date_str: str) -> dt.datetime:
@@ -552,5 +560,8 @@ if __name__ == "__main__":
     logging_file = os.path.join(os.path.join(run_dir, 'conf'), 'logging.cfg')
     logging.config.fileConfig(logging_file)
     logger = logging.getLogger('th-e-simulation')
+
+    logging.getLogger('matplotlib')\
+           .setLevel(logging.WARN)
 
     main(_get_parser(run_dir).parse_args())
