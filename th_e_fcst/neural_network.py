@@ -245,9 +245,10 @@ class NeuralNetwork(Model):
             inputs = inputs.reshape((1, inputs.shape[0], inputs.shape[1]))
 
         result = self.model.predict(inputs, verbose=LOG_VERBOSE)
-        if len(result) == 1:
-            return float(result)
-        return np.squeeze(result)
+        if (len(result.shape) > 1 and result.shape[1] > 1) or result.shape[0] > 1:
+            return np.squeeze(result)
+
+        return float(result)
 
     def train(self, data: pd.DataFrame) -> History:
         features = self._parse_features(data)
