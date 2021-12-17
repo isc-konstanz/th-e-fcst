@@ -540,7 +540,9 @@ def evaluate(settings, systems):
         shadows = shadows[['mbe', 'mbe_r']]
 
         mi = shadows.index
-        c = mi.get_level_values('solar_elevation') < 15
+        c_1 = mi.get_level_values('solar_elevation') <= 15
+        c_2 = mi.get_level_values('solar_elevation') >= 0
+        c = c_1 & c_2
 
         shadows = shadows.iloc[c].mean()
 
@@ -627,7 +629,7 @@ def evaluate(settings, systems):
             #    columns_daylight = np.intersect1d(results.columns, ['ghi', 'dni', 'dhi', 'solar_elevation'])
             #    if len(columns_daylight) > 0:
             #        results = results[(results[columns_daylight] > 0).any(axis=1)]
-            add_evaluation('astrea', target_name, astrea['mbe'])
+            add_evaluation('astrea', target_name, astrea['mbe'].values)
             #add_evaluation('mae', target_name, mae)
             #add_evaluation('rmse', target_name, rmse)
             #add_evaluation('nrmse', target_name, nrmse)
