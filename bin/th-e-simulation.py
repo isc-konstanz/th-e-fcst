@@ -453,38 +453,32 @@ def mi_results(settings, system, features):
 
     if not os.path.isfile(os.path.join(eval_dir, 'evaluation_data') + '.pkl'):
 
-        # First group the timepoints appearing in features according to their weather conditions
-        attributes = json.loads(settings.get('Evaluation', 'Features'))
-        attributes.pop('regional_doubt', None)
-        index = gen_index(attributes)
-        system.simulation['evaluation'] = sort_data(features, index)
+        results = system.simulation['results']
+        grid_features = json.loads(settings.get('Evaluation', 'Features'))
+        regions, grid_spaces = gen_index(data=features, steps=50, features=grid_features)
+        mi_rs = bin_results(results, regions, grid_spaces)
+        mi_rs = regional_doubt(mi_rs)
 
-        # Now used these groupings to calculate the std deviation and mean value of the doubt values
-        # in each of the regions defined in settings.
-        system.simulation['evaluation'] = regional_doubt(system.simulation['evaluation'], features)
+        reindex = list()
+        reindex.append(mi_rs['horizon'].values)
+        for name in mi_rs.index.names:
 
-        # Use the std and mean values of the doubt in each region to calculate the deviation of the doubt
-        # value for a singular timepoint from the average doubt value in the region it belongs, in units of
-        # the regions standard deviation. This information is added to a new column named regional doubt in
-        # the features dataframe.
-        resolve_doubt(system.simulation['evaluation'], features)
+            values = mi_rs.index.get_level_values(level=name)
+            reindex.append(values)
+        reindex.append(mi_rs['pv_power_doubt_r'].values)
 
-        # re-sort the data now into their appropriate regions now that the required information is
-        # now available in the features dataframe.
-        attributes = json.loads(settings.get('Evaluation', 'Features'))
-        index = gen_index(attributes)
-        system.simulation['evaluation'] = sort_data(features, index)
+        names = 'horizon' + mi_rs.index.names + 'pv_power_doubt_r'
+        mi_rs.index = pd.MultiIndex.from_arrays(reindex, names=names)
 
-        # Now use the sorted timepoints to provide the various predictions in results
-        # their appropriate indices
-        system.simulation['evaluation'] = _parse_regions(system)
-
-        # save this object for future runs.
         save_pickle(eval_dir, 'evaluation_data', system.simulation['evaluation'])
+        save_pickle(eval_dir, 'grid_info', grid_spaces)
 
     else:
-        dir = os.path.join (system_dir, 'evaluation')
-        system.simulation['evaluation'] = load_pickle(dir, 'evaluation_data')
+        dir = os.path.join(system_dir, 'evaluation')
+        mi_rs = load_pickle(dir, 'evaluation_data')
+
+    return mi_rs
+
 
 def evaluate(settings, systems):
     from th_e_sim.iotools import print_boxplot, write_excel
