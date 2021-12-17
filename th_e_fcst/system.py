@@ -6,31 +6,31 @@
     
 """
 import logging
-logger = logging.getLogger(__name__)
-
 import pytz as tz
 import datetime as dt
-
-from th_e_core import System as SystemCore
+import th_e_core
 from th_e_fcst import Forecast
 
+logger = logging.getLogger(__name__)
 
-class System(SystemCore):
 
-    def _activate(self, componens, *args, **kwargs):
-        super()._activate(componens, *args, **kwargs)
+class System(th_e_core.System):
+
+    def _activate(self, components, *args, **kwargs):
+        super()._activate(components, *args, **kwargs)
         
         self.forecast = Forecast.read(self, **kwargs)
 
     @property
     def _component_types(self):
-        return super()._component_types + ['solar', 'modules', 'configs']
+        return super()._component_types + ['solar', 'array', 'modules', 'configs']
 
+    # noinspection PyShadowingBuiltins
     def _component(self, configs, type, **kwargs):
-        if type in ['pv', 'solar', 'modules', 'configs']:
+        if type in ['pv', 'solar', 'array', 'modules', 'configs']:
             try:
-                from th_e_yield.system import Configurations
-                return Configurations(configs, self, **kwargs)
+                from th_e_core.pvsystem import PVSystem
+                return PVSystem(self, configs, **kwargs)
 
             except ImportError as e:
                 logger.debug("Unable to instance PV configuration: {}".format(str(e)))
@@ -50,4 +50,3 @@ class System(SystemCore):
             self._database.persist(data, **kwargs)
         
         return data
-

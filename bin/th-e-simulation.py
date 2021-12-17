@@ -11,10 +11,7 @@
 import os
 import sys
 import time
-import copy
-import shutil
 import inspect
-import logging
 import traceback
 import pytz as tz
 import numpy as np
@@ -23,9 +20,17 @@ import datetime as dt
 import calendar as cal
 import json
 
+from copy import deepcopy
 from argparse import ArgumentParser, RawTextHelpFormatter
 from configparser import ConfigParser
 from tensorboard import program
+from typing import Union
+
+from th_e_core.tools import floor_date, ceil_date
+
+from tables import NaturalNameWarning
+import warnings
+warnings.filterwarnings('ignore', category=NaturalNameWarning)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
 
@@ -36,6 +41,7 @@ TARGETS = {
 }
 
 
+# noinspection PyProtectedMember
 def main(args):
     from th_e_sim.iotools import write_csv
     from th_e_sim import preparation
@@ -56,8 +62,10 @@ def main(args):
 
     tensorboard = _launch_tensorboard(**kwargs)
 
-    start = _get_time(settings['General']['start'])
-    end = _get_time(settings['General']['end']) + dt.timedelta(hours=23, minutes=59)
+    verbose = settings.getboolean('General', 'verbose', fallback=False)
+
+    start = _get_date(settings['General']['start'])
+    end = _get_date(settings['General']['end']) + dt.timedelta(hours=23, minutes=59)
 
     systems = System.read(**kwargs)
     for system in systems:
@@ -75,8 +83,9 @@ def main(args):
                 'start': dt.datetime.now()
             }
         }
-        preparation.process_weather(system, os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme', 'data', 'Meteoblue'))
-        preparation.process_system(system, os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme', 'data', 'OPSD'))
+        zentrale = os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme')
+        preparation.process_weather(system, os.path.join(zentrale, 'data', 'Meteoblue'))
+        preparation.process_system(system, os.path.join(zentrale, 'data', 'OPSD'))
         try:
             if not system.forecast._model.exists():
                 from th_e_sim.iotools import print_distributions
@@ -85,14 +94,21 @@ def main(args):
                 durations['training'] = {
                     'start': dt.datetime.now()
                 }
-                features = system.forecast._get_history(_get_time(settings['Training']['start']),
-                                                        _get_time(settings['Training']['end'])
-                                                        + dt.timedelta(hours=23, minutes=59))
+                features_path = os.path.join(system.configs.get('General', 'data_dir'), 'model', 'features')
+                if os.path.isfile(features_path + '.h5'):
+                    with pd.HDFStore(features_path + '.h5', mode='r') as hdf:
+                        features = hdf.get('features')
+                else:
+                    features = system.forecast._get_history(_get_date(settings['Training']['start']),
+                                                            _get_date(settings['Training']['end'])
+                                                            + dt.timedelta(hours=23, minutes=59))
 
-                features = system.forecast._model._parse_features(features)
+                    features = system.forecast._model._parse_features(features)
+                    features.to_hdf(features_path + '.h5', 'features', mode='w')
+                    write_csv(system, features, features_path)
 
-                if settings.getboolean('General', 'verbose', fallback=False):
-                    print_distributions(features, path=system.forecast._model.dir)
+                    if verbose:
+                        print_distributions(features, path=system.forecast._model.dir)
 
                 system.forecast._model._train(features)
 
@@ -103,16 +119,26 @@ def main(args):
                 logging.debug("Training of neural network for system {} complete after {} minutes"
                               .format(system.name, durations['training']['minutes']))
 
-            data = system._database.get(start, end)
-            weather = system.forecast._weather._database.get(start, end)
-            if system.contains_type('pv'):
-                solar = system.forecast._get_yield(weather)
-                data = pd.concat([data, solar], axis=1)
+            features_dir = os.path.join(system.configs.get('General', 'data_dir'), 'results')
+            features_path = os.path.join(features_dir, 'features')
+            os.makedirs(features_dir, exist_ok=True)
+            if os.path.isfile(features_path + '.h5'):
+                with pd.HDFStore(features_path + '.h5', mode='r') as hdf:
+                    features = hdf.get('features')
+            else:
+                data = system._database.read(start, end)
+                weather = system.forecast._weather._database.read(start, end)
+                if system.contains_type('pv'):
+                    solar = system.forecast._get_yield(weather)
+                    data = pd.concat([data, solar], axis=1)
 
-            features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
-            features_R = system.forecast._model.resolutions[0].resample(features)
-            features_file = os.path.join('evaluation', 'features')
-            write_csv(system, features, features_file)
+                features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
+                features.to_hdf(features_path + '.h5', 'features', mode='w')
+
+                if verbose:
+                    write_csv(system, features, features_path)
+
+            features_r = system.forecast._model.resolutions[0].resample(features)
             durations['prediction'] = {
                 'start': dt.datetime.now()
             }
@@ -121,7 +147,7 @@ def main(args):
 
             system.simulation['results'] = simulate(settings, system, features)
 
-            structure_err(settings, system, features_R)
+            system.simulation['evaluation'] = mi_results(settings, system, features_r)
 
             durations['prediction']['end'] = dt.datetime.now()
             durations['prediction']['minutes'] = (durations['prediction']['end'] -
@@ -159,117 +185,109 @@ def main(args):
             tensorboard = False
 
 
+# noinspection PyProtectedMember
 def simulate(settings, system, features, **kwargs):
-
-    def save_to_database(date, input, target, prediction, database):
-        # take a prediction output by the simulate function and save it to
-        # the appropriate database.
-        _target = copy.deepcopy(target)
-        _prediction = copy.deepcopy(prediction)
-
-        condition_cols = [col for col in input.columns if col not in target.columns]
-        _target.columns = [target + '_t' for target in _target.columns]
-        _prediction.columns = [predict + '_p' for predict in _prediction.columns]
-
-        out_cond = input.loc[date: , condition_cols]
-
-        data_out = pd.concat([_target, _prediction, out_cond], axis=1)
-        data_out.index.name = 'time'
-        data_in = input
-        data_in.index.name = 'time'
-
-        database.persist(data_in, subdir='inputs', file=date.strftime(database.format) + '.csv')
-        database.persist(data_out, subdir='outputs')
-
-    def load_from_database(date, database):
-
-        data = database.get(date, subdir='outputs')
-        target_cols = [col for col in data.columns if 't' == col.split('_')[-1]]
-        predict_cols = [col for col in data.columns if 'p' == col.split('_')[-1]]
-        cols = ['_'.join(col.split('_')[:-1]) for col in target_cols]
-
-        target = data[target_cols]
-        target.columns = cols
-
-        prediction = data[predict_cols]
-        prediction.columns = cols
-
-        input = database.get(date, subdir='inputs')
-
-        return input, target, prediction
 
     forecast = system.forecast._model
 
-    #if len(forecast.resolutions) == 1:
-        #resolution_min = forecast.resolutions[0]
-    #else:
-        #for i in range(len(forecast.resolutions)-1, 0, -1):
-            #resolution_min = forecast.resolutions[i]
-            #if resolution_min.steps_horizon is not None:
-                #break
+    resolution_min = forecast.resolutions[0]
+    if len(forecast.resolutions) > 1:
+        for i in range(len(forecast.resolutions)-1, 0, -1):
+            resolution_min = forecast.resolutions[i]
+            if resolution_min.steps_horizon is not None:
+                break
 
     resolution_max = forecast.resolutions[0]
+    resolution_data = resolution_min.resample(features)
 
     system_dir = system._configs['General']['data_dir']
-    database = copy.deepcopy(system._database)
-    database.dir = system_dir
-    #database.format = '%Y%m%d'
+
+    database = deepcopy(system._database)
+    database.dir = os.path.join(system_dir, 'results')
+    # database.format = '%Y%m%d'
     database.enabled = True
+    datastore = pd.HDFStore(os.path.join(system_dir, 'results', 'results.h5'))
+
 
     # Reactivate this, when multiprocessing will be implemented
     # global logger
     # if process.current_process().name != 'MainProcess':
     #    logger = process.get_logger()
 
-    #verbose = settings.getboolean('General', 'verbose', fallback=False)
+    verbose = settings.getboolean('General', 'verbose', fallback=False)
+
     interval = settings.getint('General', 'interval')
-    date = features.index[0] + resolution_max.time_prior + resolution_max.time_step
-    end = features.index[-1] - resolution_max.time_horizon
+    date = floor_date(features.index[0] + resolution_max.time_prior, timezone=system.location.tz)
+    end = ceil_date(features.index[-1] - resolution_max.time_horizon, timezone=system.location.tz)
 
     # training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
     # training_interval = settings.getint('Training', 'interval')
     # training_last = time
 
-    results = {}
+    results = pd.DataFrame()
     while date <= end:
+        # Check if this step was simulated already and load the results, if so
+        date_str = date.strftime('%Y%m%d_%H%M%S')
+        date_dir = os.path.join(system_dir, 'results', date.strftime('%Y%m%d'))
+        date_path = '/{0}.'.format(date)
+        if date_path in datastore:
+            result = datastore.get(date_path+'/outputs')
+            results = pd.concat([results, result], axis=0)
 
-        if database.exists(date, subdir='outputs') and database.exists(date, subdir='inputs'):
-
-            results[date] = load_from_database(date, database)
-            date += dt.timedelta(minutes=interval)
+            date = _increment_date(date, interval)
             continue
 
         try:
-            # Input index in features
-            target_data_i = date - resolution_max.time_step + dt.timedelta(minutes=resolution_max.resolution)
-            input_i_start = target_data_i - resolution_max.time_prior
-            input_i_end = date + resolution_max.time_horizon
+            date_prior = date - resolution_max.time_prior
+            date_start = date + resolution_max.time_step
+            date_horizon = date + resolution_max.time_horizon
+            date_features = deepcopy(resolution_data[date_prior:date_horizon])
+            date_range = date_features[date_start:date_horizon].index
 
-            # Strip targets
-            input = copy.deepcopy(features[input_i_start:input_i_end])
-            target = resolution_max.resample(input.loc[date:input_i_end, forecast.features['target']])
+            inputs = forecast._parse_inputs(date_features, date_range)
+            targets = forecast._parse_targets(date_features, date_range)
+            prediction = forecast._predict(date_features, date)
 
-            # Replace targets with yield values
-            target_range = input.loc[(input.index >= target_data_i) & (input.index <= input_i_end)].index
-            input.loc[target_range, forecast.features['target']] = input.loc[target_range, 'pv_yield']
-            forecast._calc_doubt(input, target_range)
-            input = resolution_max.resample(input)
+            # results[date] = (inputs, targets, prediction)
+            result = pd.concat([targets,
+                                prediction.rename(columns={
+                                    target: target+'_est' for target in forecast.features['target']
+                                })],
+                               axis=1)
 
-            prediction = forecast._predict(input)
+            for target in forecast.features['target']:
+                result[target + '_err'] = result[target + '_est'] - result[target]
 
-            results[date] = (input, target, prediction)
-            save_to_database(date, input, target, prediction, database)
+            result = pd.concat([result, resolution_data.loc[result.index, np.setdiff1d(forecast.features['input'],
+                                                                                       forecast.features['target'],
+                                                                                       assume_unique=True)]], axis=1)
 
-            date += dt.timedelta(minutes=interval)
+            result.index.name = 'time'
+            result['horizon'] = pd.Series(range(1, len(result.index) + 1), result.index)
+            results = pd.concat([results, result], axis=0)
+
+            result.to_hdf(datastore, date_path+'/outputs')
+            inputs.to_hdf(datastore, date_path+'/inputs')
+            targets.to_hdf(datastore, date_path+'/targets')
+            if verbose:
+                os.makedirs(date_dir, exist_ok=True)
+                database.write(result,  file=date_str+'_outputs.csv', subdir=date_dir)
+                database.write(inputs,  file=date_str+'_inputs.csv',  subdir=date_dir)
+                database.write(targets, file=date_str+'_targets.csv', subdir=date_dir)
+
+            date = _increment_date(date, interval)
 
         except ValueError as e:
             logger.debug("Skipping %s: %s", date, str(e))
             # logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
-            date += dt.timedelta(minutes=interval)
+            date = _increment_date(date, interval)
+
+    database.close()
+    datastore.close()
 
     return results
 
-def structure_err(settings, system, features):
+def mi_results(settings, system, features):
 
     def save_pickle(dir, name, data):
         import pickle
@@ -284,155 +302,148 @@ def structure_err(settings, system, features):
 
         return dict_frame
 
-    def gen_index(grid_dict):
-        assert isinstance(grid_dict, dict)
+    def check_bins(mi_data, data):
 
-        # The first step is to create a list of tuples which iterate through the range
-        # of possible label values. To this end for continuous variables I choose
-        # the label to be the left end of the interval; this is a
-        # a natural choice since the function range() doesn't iterate to the last element.
+        # Testing Code
+        sorted_data = mi_data
+        ground_truth = data
 
-        axes = {}
-        for attribute, info in grid_dict.items():
-            axes[attribute] = [x / info['Magnitude'] for x in range(info['Min'], info['Max'], info['Width'])]
+        assert len(sorted_data) == len(ground_truth)
 
-        # The next step generates the appropriate Multiindex object.
-        names = []
-        index = []
-        for axis, values in axes.items():
-            names.append(axis)
-            index.append(values)
+        for col in sorted_data.index.names:
 
-        index = pd.MultiIndex.from_product(index, names=names)
+            if col == 'horizon':
 
-        return index
+                labels = sorted_data.index.get_level_values(level=col)
+                labels = pd.Series(labels, name=col)
+                values = sorted_data[col]
+                values.index = labels.index
 
-    def sort_data(features, labels):
+                condition = not (values != labels).any()
+                assert condition
+                continue
 
-        # Initialize the dataframe object.
-        labeled_err = pd.DataFrame()
+            labels = sorted_data.index.get_level_values(level=col)
+            labels = pd.Series(labels, name=col)
+            values = sorted_data[col]
+            values.index = labels.index
+
+            next_labels = labels + grid_spaces[col]['step_size']
+
+            c1 = (values < labels).any()
+            c1 = not c1
+            c2 = (values >= next_labels).any()
+            c2 = not c2
+
+            assert c1 & c2
+
+    def gen_index(data, steps, features):
+        from math import floor, ceil
+
+        keys = ['step_size', 'max', 'min']
+        values = 0
+        step_sizes = {feature: dict.fromkeys(keys, values) for feature in features}
+        mi_arrays = []
+
+        for feature in features:
+
+            total_steps = steps
+            f_max = ceil(data[feature].max())
+            f_min = floor(data[feature].min())
+            big_delta = f_max - f_min
+
+            small_delta = floor(big_delta/total_steps * 10) / 10
+            if small_delta == 0:
+                raise ValueError("The axis {} cannot be analyzed with the regular grid spacing of {} between"
+                                 "grid points. Please choose a smaller number of steps".format(feature, small_delta))
+
+            to_edge = big_delta - small_delta * total_steps
+
+            if not to_edge == 0:
+
+                # Assure logic is correct: if step_size != 0 then to_edge < small_delta
+                assert to_edge < small_delta
+                # Assure f_max and f_min are rounded to the nearest .2%f
+                assert floor(to_edge * 100) / 100 == to_edge
+
+                total_steps = total_steps + 1
+                f_max = f_max + (small_delta - to_edge)/2
+                f_min = f_min - (small_delta - to_edge)/2
+
+                # Assure f_max and f_min are rounded to the nearest .2%f
+                assert f_max == floor(f_max * 100) / 100
+                assert f_min == ceil(f_min * 100) / 100
+
+            mi_array = [round(f_min + small_delta*x, 1) for x in range(total_steps + 1)]
+
+            # second check of logic (if step_size != 0 then to_edge < small_delta),
+            # as well as check of intermediate operations.
+            assert mi_array[-1] == f_max
+
+            mi_arrays.append(mi_array)
+
+            step_sizes[feature]['step_size'] = small_delta
+            step_sizes[feature]['max'] = f_max
+            step_sizes[feature]['min'] = f_min
+
+        mi = pd.MultiIndex.from_product(mi_arrays, names=features)
+
+        return mi, step_sizes
 
 
-        for date in features.index:
+    def bin_results(results, mi, grid_info):
 
-            # For each datapoint we must extract the values by which we wish to
-            # group our prediction data for evaluation.
-            # ToDo: don't hardcode 24hrs or 1hr.
-            label = []
-            for name in labels.names:
-                    condition = features.loc[date, name]
-                    assert isinstance(condition, np.float64)
-                    label.append(condition)
-            label = tuple(label)
+        binned_rs = pd.DataFrame(index=mi, columns=results.columns)
 
-            # We must now utilize these values stored in the label tuple to determine,
-            # the index with which we will label this timepoint. This label will be
-            # chosen to be the index value whose lay to the left of the real label value
-            # and whose distance to the real values is the smallest.
-            find_index = list(labels)
-            distance = 10000
-            for ind in find_index:
-                lower_bound = all(x <= y for x, y in zip(ind, label))
-                distance_condition = (sum(np.subtract(label, ind)) == min(distance, sum(np.subtract(label, ind))))
-                if lower_bound and distance_condition:
-                    distance = min(distance, sum(np.subtract(label, ind)))
-                    _index = ind
-                else:
-                    continue
+        cols = mi.names
+        grid_results = results[cols]
 
-            # The real value of the timepoint is replaced with the appropriate label
-            # determined above. The result (label, timepoint) is saved in a
-            # pd.DataFrame.
-            label = _index
-            labeled_err = pd.concat([labeled_err, pd.DataFrame({'dates': date},
-                                                   index=pd.MultiIndex.from_tuples([label],
-                                                   names=labels.names))]).dropna()
-        return labeled_err
+        nd_step = []
+        for col in cols:
+            nd_step.append(grid_info[col]['step_size'])
 
-    # This function must always be carried out following sort_data. This function
-    # calculates the average doubt values as well as their standard deviation in
-    # the various regions defined in settings. This information is saved in the
-    # evaluation dataframe output by sort_data.
-    def regional_doubt(evaluation, features):
+        nd_step = np.array(nd_step)
 
-        for index in evaluation.index:
-            region_dates = evaluation.loc[index, :]
-            doubt_avg = features.loc[list(region_dates['dates']), 'pv_power_doubt'].mean()
-            doubt_std = features.loc[list(region_dates['dates']), 'pv_power_doubt'].std()
-            evaluation.loc[index, 'doubt_avg'] = doubt_avg
-            evaluation.loc[index, 'doubt_std'] = doubt_std
+        for i in mi:
 
-        return evaluation
+            left_bound = np.array(list(i))
+            right_bound = left_bound + nd_step
 
-    # This function utilizes the regional doubt
-    def resolve_doubt(evaluation, features):
+            c_1 = left_bound <= grid_results
+            c_2 = right_bound > grid_results
+            c = c_1 & c_2
+            bin_condition = pd.Series([True]*len(c), name='n')
+            c.index = bin_condition.index
 
-        for date in list(evaluation['dates']):
-            # Retrieve the conditions forecasted for the current timepoint.
-            weather_conditions = evaluation.index[evaluation['dates'] == date]
-            weather_conditions = weather_conditions[0]
+            for col in c.columns:
 
-            # Retrieve the doubt and calculate the regional doubt of this timepoint
-            # utilizing the std and mean of the doubt values for the region to which
-            # this timepoint belongs.
-            doubt = float(features.loc[date, 'pv_power_doubt'])
-            doubt_avg = float(evaluation.loc[weather_conditions, 'doubt_avg'].iloc[0])
-            doubt_std = float(evaluation.loc[weather_conditions, 'doubt_std'].iloc[0])
+                bin_condition = bin_condition & c[col]
 
-            if doubt_std == 0:
-                features.loc[date, 'regional_doubt'] = 0
-            else:
-                features.loc[date, 'regional_doubt'] = abs(doubt - doubt_avg) / doubt_std
+            bin = results.iloc[bin_condition.values]
+            bin.index = pd.MultiIndex.from_tuples([i]*len(bin), names=mi.names)
+            binned_rs = pd.concat([binned_rs, bin])
 
-    def _parse_regions(system):
+        binned_rs = binned_rs.dropna()
+        binned_rs.sort_index(level=mi.names[0])
 
-        # Initialize dataframe to which all forecasts with the appropriate indices will
-        # be appended.
-        evaluation_data = pd.DataFrame()
+        return binned_rs
 
-        # Iterate through all results and concatenate target and predictions into one
-        # DataFrame object (output).
-        for date, info in system.simulation['results'].items():
+    def regional_doubt(mi_data):
 
-            input, targets, predictions = info
+        cols = [col for col in mi_data.columns if col.endswith('doubt')]
+        new_cols = [col + '_r' for col in cols]
+        epsilon = 10e-7
+        index = set(mi_data.index)
 
-            targets.columns = [target + '_t' for target in targets.columns]
-            predictions.columns = [predict + '_p' for predict in predictions.columns]
+        for i in index:
 
-            # Concatenate results into one dataframe and assign the appropriate index
-            # values.
-            output = pd.concat([targets, predictions], axis=1)
+            d_avg = mi_data.loc[i, cols].mean()
+            d_std = mi_data.loc[i, cols].std()
 
-            # Extract the index from the evaluation for each hourly prediction made in the
-            # forecast.
-            regions = []
-            i = 1
+            doubt_data = (mi_data.loc[i, cols] - d_avg) / (d_std + epsilon)
+            mi_data.loc[i, new_cols] = doubt_data.values
 
-            for date_2 in output.index:
-
-                conditions = system.simulation['evaluation'].index[system.simulation['evaluation']['dates'] == date_2]
-                conditions = conditions[0]
-
-                # Manually add the forecast horizon to the extracted index for the current
-                # prediction.
-                region = (i, ) + conditions
-                regions.append(region)
-                i += 1
-
-            region_names = ['horizon'] + system.simulation['evaluation'].index.names
-            output.index = pd.MultiIndex.from_tuples(regions, names=region_names)
-
-            # Calculate the error of the prediction for this forecast
-            for target, prediction in zip(targets.columns, predictions.columns):
-                output[prediction + '_err'] = output[target] - output[prediction]
-
-            evaluation_data = pd.concat([evaluation_data, output])
-
-        # Save evaluation object to allow for the purpose of future evaluations.
-        save_pickle(os.path.join(system_dir, 'evaluation'), 'evaluation_data', evaluation_data)
-        assert isinstance(evaluation_data.index, pd.MultiIndex)
-
-        return evaluation_data
+        return mi_data
 
     system_dir = system._configs['General']['data_dir']
     eval_dir = os.path.join(system_dir, 'evaluation')
@@ -710,28 +721,41 @@ def _launch_tensorboard(**kwargs):
     return launch
 
 
-def _get_time(time_str):
-    return tz.utc.localize(dt.datetime.strptime(time_str, '%d.%m.%Y'))
+def _increment_date(date: Union[dt.datetime, pd.Timestamp], interval: int) -> Union[dt.datetime, pd.Timestamp]:
+    increment_freq = '{}min'.format(interval)
+    increment_delta = dt.timedelta(minutes=interval)
+    increment_count = 1
+
+    increment_date = pd.NaT
+    while increment_date is pd.NaT or increment_date <= date:
+        increment_date = (date + increment_count*increment_delta).floor(increment_freq, ambiguous='NaT')
+        increment_count += 1
+
+    return increment_date
 
 
-def _get_parser(root_dir):
+def _get_date(date_str: str) -> dt.datetime:
+    return tz.utc.localize(dt.datetime.strptime(date_str, '%d.%m.%Y'))
+
+
+def _get_parser(root_dir: str) -> ArgumentParser:
     from th_e_fcst import __version__
 
-    def _to_bool(v):
+    def _to_bool(v: str) -> bool:
         return v.lower() in ("yes", "true", "1")
 
     parser = ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
     parser.add_argument('-v', '--version',
-                         action='version',
-                         version='%(prog)s {version}'.format(version=__version__))
+                        action='version',
+                        version='%(prog)s {version}'.format(version=__version__))
 
-    parser.add_argument('-r','--root-directory',
+    parser.add_argument('-r', '--root-directory',
                         dest='root_dir',
                         help="directory where the package and related libraries are located",
                         default=root_dir,
                         metavar='DIR')
 
-    parser.add_argument('-c','--config-directory',
+    parser.add_argument('-c', '--config-directory',
                         dest='config_dir',
                         help="directory to expect configuration files",
                         default='conf',
@@ -753,20 +777,23 @@ def _get_parser(root_dir):
 
 
 if __name__ == "__main__":
-    root_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(main)))
-    if os.path.basename(root_dir) == 'bin':
-        root_dir = os.path.dirname(root_dir)
+    run_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(main)))
+    if os.path.basename(run_dir) == 'bin':
+        run_dir = os.path.dirname(run_dir)
 
-    os.chdir(root_dir)
+    os.chdir(run_dir)
 
     if not os.path.exists('log'):
         os.makedirs('log')
 
     # Load the logging configuration
+    import logging
     import logging.config
-    logging_file = os.path.join(os.path.join(root_dir, 'conf'), 'logging.cfg')
+    logging_file = os.path.join(os.path.join(run_dir, 'conf'), 'logging.cfg')
     logging.config.fileConfig(logging_file)
     logger = logging.getLogger('th-e-simulation')
 
-    main(_get_parser(root_dir).parse_args())
+    logging.getLogger('matplotlib')\
+           .setLevel(logging.WARN)
 
+    main(_get_parser(run_dir).parse_args())
