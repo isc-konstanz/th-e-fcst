@@ -459,16 +459,16 @@ def mi_results(settings, system, features):
         mi_rs = bin_results(results, regions, grid_spaces)
         mi_rs = regional_doubt(mi_rs)
 
-        reindex = list()
-        reindex.append(mi_rs['horizon'].values)
-        for name in mi_rs.index.names:
+        #reindex = list()
+        #reindex.append(mi_rs['horizon'].values)
+        #for name in mi_rs.index.names:
 
-            values = mi_rs.index.get_level_values(level=name)
-            reindex.append(values)
-        reindex.append(mi_rs['pv_power_doubt_r'].values)
+            #values = mi_rs.index.get_level_values(level=name)
+            #reindex.append(values)
+        #reindex.append(mi_rs['pv_power_doubt_r'].values)
 
-        names = 'horizon' + mi_rs.index.names + 'pv_power_doubt_r'
-        mi_rs.index = pd.MultiIndex.from_arrays(reindex, names=names)
+        #names = 'horizon' + mi_rs.index.names + 'pv_power_doubt_r'
+        #mi_rs.index = pd.MultiIndex.from_arrays(reindex, names=names)
 
         save_pickle(eval_dir, 'evaluation_data', system.simulation['evaluation'])
         save_pickle(eval_dir, 'grid_info', grid_spaces)
@@ -481,81 +481,84 @@ def mi_results(settings, system, features):
 
 
 def evaluate(settings, systems):
-    from th_e_sim.iotools import print_boxplot, write_excel
+    from th_e_sim.iotools import write_excel
 
-    # [evaluate_regions]:
-    # This function takes err data of a network, labeled according to chosen features,
-    # as input. The labels of this err data are described by the MultiIndex indexing it.
-    # This function assumes that the bottom level is called regional_doubt.
-    # With this err data the function creates a directory tree; each directory of this
-    # directory tree corresponds to one value of one level of the MultiIndex grouping,
-    # chosen for the error data. Therefore, the path of the bottom directory of this file tree
-    # can be ordered a partial index of the the MultiIndex (including a value for each level
-    # but the last, that being the index determining the regional doubt value). To
-    # structure the error along the regional doubt axis of our MultiIndex grouping
-    # we create a boxplot which visually displays the error given by the directory path and the
-    # various doubt values which arise with this partial index. This same set of errors is further
-    # summarized with a .csv describing the error's distribution.
+    def concat_evaluation(name, header, data):
+        if data is None:
+            return
 
-    def evaluate_regions(system, evaluation_data, target):
-        from copy import deepcopy
-        assert isinstance(evaluation_data.index, pd.MultiIndex)
+        data.columns = pd.MultiIndex.from_product([[header], data.columns])
+        if name not in evaluations.keys():
+            evaluations[name] = pd.DataFrame(columns=data.columns)
 
-        # Here we create a copy of the data so that transformations potentially carried out in
-        # this function don't harm the object on which we are performing our analysis.
-        data = deepcopy(evaluation_data)
+        evaluations[name] = pd.concat([evaluations[name], data], axis=0)
 
-        # We then retrieve the partial index values which will be used to create the directory
-        # tree as well as to select segments of our error data for evaluation.
-        control_names = list(evaluation_data.index.names)
-        control_names.remove('regional_doubt')
-        control_index = {}
-        for name in control_names:
-            control_index[name] = data.index.get_level_values(name)
+    def add_evaluation(name, header, kpi, data=None):
+        concat_evaluation(name, header, data)
+        if kpi is not None:
+            summary.loc[system.name, (header, name)] = kpi
 
-        control_index = list(zip(*list(control_index.values())))
-        control_index = pd.MultiIndex.from_tuples(control_index, names=control_names)
+    def mi_kpi(mi_data, targets):
 
-        # Here we use the previously defined partial index to create a filetree and then at the
-        # bottom of this filetree to output the boxplot and csv files described above.
-        for index in control_index:
+        err_cols = [target + '_err' for target in targets]
 
-            sub_dir = os.path.join(system._configs['General']['data_dir'], 'evaluation', target)
-            if not os.path.isdir(sub_dir):
-                os.mkdir(sub_dir)
+        mi = mi_data.index
+        groups = mi.names
 
-            for level, value in zip(control_names, list(index)):
-                sub_dir = os.path.join(sub_dir, level + '_{}'.format(value))
+        mbe = mi_data[err_cols].groupby(level=groups).mean()
+        mbe.columns = pd.MultiIndex.from_product([['mbe'], targets], names=['kpi', 'targets'])
+        mae = mi_data[err_cols].abs().groupby(level=groups).mean()
+        mae.columns = pd.MultiIndex.from_product([['mae'], targets], names=['kpi', 'targets'])
+        rmse = ((mi_data[err_cols] ** 2).groupby(level=groups).mean() ** 0.5)
+        rmse.columns = pd.MultiIndex.from_product([['rmse'], targets], names=['kpi', 'targets'])
+        nrmse = (rmse / 10000)
+        nrmse.columns = pd.MultiIndex.from_product([['nrmse'], targets], names=['kpi', 'targets'])
+        mi_kpi = pd.concat([mbe, mae, rmse, nrmse], axis=1)
 
-            if not os.path.isdir(sub_dir):
-                os.makedirs(sub_dir)
-                file = os.path.join(sub_dir, 'regional_doubt')
-                partial_index = index + (slice(None),)
-                _evaluate_data(system, data.loc[partial_index, :], 'regional_doubt', evaluation_data.columns[-1], file)
+        mi_kpi_r = relative_performance(mi_kpi)
+        r_cols = pd.MultiIndex.from_tuples([(col[0] + '_r', col[1]) for col in mi_kpi.columns])
+        mi_kpi_r.columns = r_cols
+        mi_kpi = pd.concat([mi_kpi, mi_kpi_r], axis=1)
 
-    def standard_kpi(data, data_target):
-        data_column = data_target + '_p_err'
+        return mi_kpi
 
-        mbe = data[data_column].mean()
-        mae = data[data_column].abs().mean()
-        rmse = (data[data_column] ** 2).mean() ** 0.5
-        nrmse = rmse / 10000
+    def relative_performance(mi_kpi):
 
-        return mbe, mae, rmse, nrmse
+        m = mi_kpi.mean()
+        std = mi_kpi.std()
 
-    def doubt_kpi(data, data_target):
-        region_names = data.index.names
-        data_column = data_target + '_p_err'
+        mi_rkpi = (mi_kpi - m)/std
+        return round(mi_rkpi, 2)
 
-        doubt = pd.Series(data.index.get_level_values('regional_doubt'), name='regional_doubt')
+    def shadows(mi_kpi):
+
+        if not {'solar_elevation'}.issubset(mi_kpi.index.names):
+            raise ValueError('The regions horizon, and solar_elevation must be present in the evaluation config file'
+                             'in order to calculate this kpi')
+
+        shadows = mi_kpi.groupby(level='solar_elevation').mean()
+        shadows = shadows[['mbe', 'mbe_r']]
+
+        mi = shadows.index
+        c = mi.get_level_values('solar_elevation') < 15
+
+        shadows = shadows.iloc[c].mean()
+
+        return shadows
+
+    def doubt_kpi(mi_data, target):
+        region_names = mi_data.index.names
+        data_column = target + '_p_err'
+
+        doubt = pd.Series(mi_data.index.get_level_values('regional_doubt'), name='regional_doubt')
         low_doubt = doubt.quantile(0.25)
         hi_doubt = doubt.quantile(0.75)
 
         if 'solar_elevation' in region_names:
 
-            solar_mbe = data[data_column].groupby(level=['horizon', 'solar_elevation', 'regional_doubt']).mean()
-            solar_mae = (data[data_column].abs()).groupby(level=['horizon', 'solar_elevation', 'regional_doubt']).mean()
-            solar_rmse = (data[data_column] ** 2).groupby(level=['horizon', 'solar_elevation', 'regional_doubt']).mean() ** 0.5
+            solar_mbe = mi_data[data_column].groupby(level=['horizon', 'solar_elevation', 'regional_doubt']).mean()
+            solar_mae = (mi_data[data_column].abs()).groupby(level=['horizon', 'solar_elevation', 'regional_doubt']).mean()
+            solar_rmse = (mi_data[data_column] ** 2).groupby(level=['horizon', 'solar_elevation', 'regional_doubt']).mean() ** 0.5
             solar_nrmse = solar_rmse / 10000
 
             horizon_cond = (solar_mbe.index.get_level_values('horizon') == 1)
@@ -608,24 +611,11 @@ def evaluate(settings, systems):
         if 'training' in durations.keys():
             summary.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
 
-        def concat_evaluation(name, header, data):
-            if data is None:
-                return
+        targets = system.forecast._model.features['target']
+        mi_kpi = mi_kpi(evaluation_data, targets)
+        astrea = shadows(mi_kpi)
 
-            data.columns = pd.MultiIndex.from_product([[header], data.columns])
-            if name not in evaluations.keys():
-                evaluations[name] = pd.DataFrame(columns=data.columns)
-
-            evaluations[name] = pd.concat([evaluations[name], data], axis=0)
-
-        def add_evaluation(name, header, kpi, data=None):
-            concat_evaluation(name, header, data)
-            if kpi is not None:
-                summary.loc[system.name, (header, name)] = kpi
-
-        for target in system.forecast._model.features['target']:
-
-            evaluate_regions(system, system.simulation['evaluation'], target)
+        for target in targets:
 
             target_id = target.replace('_power', '')
             target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
@@ -637,34 +627,17 @@ def evaluate(settings, systems):
             #    columns_daylight = np.intersect1d(results.columns, ['ghi', 'dni', 'dhi', 'solar_elevation'])
             #    if len(columns_daylight) > 0:
             #        results = results[(results[columns_daylight] > 0).any(axis=1)]
-
-            mbe, mae, rmse, nrmse = standard_kpi(evaluation_data, target)
-            add_evaluation('mbe', target_name, mbe)
-            add_evaluation('mae', target_name, mae)
-            add_evaluation('rmse', target_name, rmse)
-            add_evaluation('nrmse', target_name, nrmse)
-
-            solar_doubt_kpi, low_doubt, hi_doubt = doubt_kpi(evaluation_data, target)
-
-            add_evaluation('low_doubt', target_name, low_doubt)
-            add_evaluation('hi_doubt', target_name, hi_doubt)
-
-            metric_names = ['mbe', 'mae', 'rmse', 'nrmse']
-            for doubt_level, metrics in solar_doubt_kpi.items():
-
-                i = 0
-                for metric in metrics:
-                    add_evaluation(doubt_level+' '+metric_names[i], target_name, metric)
-                    i += 1
-
+            add_evaluation('astrea', target_name, astrea['mbe'])
+            #add_evaluation('mae', target_name, mae)
+            #add_evaluation('rmse', target_name, rmse)
+            #add_evaluation('nrmse', target_name, nrmse)
 
     write_excel(settings, summary, evaluations)
-
 
 def _evaluate_data(system, data, level, column, file, **kwargs):
     from th_e_sim.iotools import print_boxplot
     try:
-        _data = copy.deepcopy(data)
+        _data = deepcopy(data)
         _data.index = data.index.get_level_values(level)
         print_boxplot(system, _data, _data.index, column, file, **kwargs)
 
