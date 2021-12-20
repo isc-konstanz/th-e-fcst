@@ -566,55 +566,6 @@ def evaluate(settings, systems):
 
         return shadows
 
-    def doubt_kpi(mi_data, target):
-        region_names = mi_data.index.names
-        data_column = target + '_p_err'
-
-        doubt = pd.Series(mi_data.index.get_level_values('regional_doubt'), name='regional_doubt')
-        low_doubt = doubt.quantile(0.25)
-        hi_doubt = doubt.quantile(0.75)
-
-        if 'solar_elevation' in region_names:
-
-            solar_mbe = mi_data[data_column].groupby(level=['horizon', 'solar_elevation', 'regional_doubt']).mean()
-            solar_mae = (mi_data[data_column].abs()).groupby(level=['horizon', 'solar_elevation', 'regional_doubt']).mean()
-            solar_rmse = (mi_data[data_column] ** 2).groupby(level=['horizon', 'solar_elevation', 'regional_doubt']).mean() ** 0.5
-            solar_nrmse = solar_rmse / 10000
-
-            horizon_cond = (solar_mbe.index.get_level_values('horizon') == 1)
-            peak_solar_cond = solar_mbe.index.get_level_values('solar_elevation') >= 35
-            low_doubt_cond = solar_mbe.index.get_level_values('regional_doubt') <= low_doubt
-            condition = horizon_cond & peak_solar_cond & low_doubt_cond
-
-            peak_solar_mbe_low_doubt = solar_mbe.iloc[condition].mean()
-            peak_solar_mae_low_doubt = solar_mae.iloc[condition].mean()
-            peak_solar_rmse_low_doubt = solar_rmse.iloc[condition].mean()
-            peak_solar_nrmse_low_doubt = solar_nrmse.iloc[condition].mean()
-
-            med_doubt_cond = (low_doubt < solar_mbe.index.get_level_values('regional_doubt')) & \
-                             (solar_mbe.index.get_level_values('regional_doubt') < hi_doubt)
-            condition = horizon_cond & peak_solar_cond & med_doubt_cond
-
-            peak_solar_mbe_med_doubt = solar_mbe.iloc[condition].mean()
-            peak_solar_mae_med_doubt = solar_mae.iloc[condition].mean()
-            peak_solar_rmse_med_doubt = solar_rmse.iloc[condition].mean()
-            peak_solar_nrmse_med_doubt = solar_nrmse.iloc[condition].mean()
-
-            hi_doubt_cond = solar_mbe.index.get_level_values('regional_doubt') >= hi_doubt
-            condition = horizon_cond & peak_solar_cond & hi_doubt_cond
-
-            peak_solar_mbe_hi_doubt = solar_mbe.iloc[condition].mean()
-            peak_solar_mae_hi_doubt = solar_mae.iloc[condition].mean()
-            peak_solar_rmse_hi_doubt = solar_rmse.iloc[condition].mean()
-            peak_solar_nrmse_hi_doubt = solar_nrmse.iloc[condition].mean()
-
-            solar_doubt_kpi = {'low_doubt': [peak_solar_mbe_low_doubt, peak_solar_mae_low_doubt, peak_solar_rmse_low_doubt, peak_solar_nrmse_low_doubt],
-                               'med_doubt': [peak_solar_mbe_med_doubt, peak_solar_mae_med_doubt, peak_solar_rmse_med_doubt, peak_solar_nrmse_med_doubt],
-                               'hi_doubt': [peak_solar_mbe_hi_doubt, peak_solar_mae_hi_doubt, peak_solar_rmse_hi_doubt, peak_solar_nrmse_hi_doubt]}
-
-            return solar_doubt_kpi, low_doubt, hi_doubt
-        return
-
     summary = pd.DataFrame(index=[s.name for s in systems],
                            columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
                                                               ('Durations [min]', 'Prediction')]))
