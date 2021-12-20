@@ -420,6 +420,12 @@ def mi_results(settings, system, features):
                 bin_condition = bin_condition & c[col]
 
             bin = results.iloc[bin_condition.values]
+
+            if len(bin) < 10:
+                resolutions = [grid_info[col]['step_size'] for col in mi.names]
+                raise ValueError('The chosen resolution of the grid ({}) distributes '
+                                 'the data over to many bins. Please decrease its value'.format(resolutions))
+
             bin.index = pd.MultiIndex.from_tuples([i]*len(bin), names=mi.names)
             binned_rs = pd.concat([binned_rs, bin])
 
@@ -427,6 +433,7 @@ def mi_results(settings, system, features):
         binned_rs.sort_index(level=mi.names[0])
 
         return binned_rs
+
 
     def regional_doubt(mi_data):
 
@@ -457,7 +464,8 @@ def mi_results(settings, system, features):
         grid_features = json.loads(settings.get('Evaluation', 'Features'))
         regions, grid_spaces = gen_index(data=features, steps=50, features=grid_features)
         mi_rs = bin_results(results, regions, grid_spaces)
-        mi_rs = regional_doubt(mi_rs)
+        count = bin_count(regions, mi_rs)
+        #mi_rs = regional_doubt(mi_rs)
 
         #reindex = list()
         #reindex.append(mi_rs['horizon'].values)
@@ -498,6 +506,14 @@ def evaluate(settings, systems):
         if kpi is not None:
             summary.loc[system.name, (header, name)] = kpi
 
+    def bin_count(mi_data):
+
+        n = pd.Series([1 for x in range(len(mi_data))], index=mi_data.index, name='count')
+        groups = mi_data.index.names
+        n = n.groupby(level=groups).sum()
+
+        return n
+
     def mi_kpi(mi_data, targets):
 
         err_cols = [target + '_err' for target in targets]
@@ -515,14 +531,16 @@ def evaluate(settings, systems):
         nrmse.columns = pd.MultiIndex.from_product([['nrmse'], targets], names=['kpi', 'targets'])
         mi_kpi = pd.concat([mbe, mae, rmse, nrmse], axis=1)
 
-        mi_kpi_r = relative_performance(mi_kpi)
+        mi_kpi_r = _relative_kpi(mi_kpi)
         r_cols = pd.MultiIndex.from_tuples([(col[0] + '_r', col[1]) for col in mi_kpi.columns])
         mi_kpi_r.columns = r_cols
-        mi_kpi = pd.concat([mi_kpi, mi_kpi_r], axis=1)
+
+        n = bin_count(mi_data)
+        mi_kpi = pd.concat([mi_kpi, mi_kpi_r, n], axis=1)
 
         return mi_kpi
 
-    def relative_performance(mi_kpi):
+    def _relative_kpi(mi_kpi):
 
         m = mi_kpi.mean()
         std = mi_kpi.std()
