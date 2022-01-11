@@ -465,20 +465,21 @@ def mi_results(settings, system, features):
         grid_features = json.loads(settings.get('Evaluation', 'Features'))
         regions, grid_spaces = gen_index(data=features, steps=50, features=grid_features)
         mi_rs = bin_results(results, regions, grid_spaces)
-        #mi_rs = regional_doubt(mi_rs)
+        mi_rs = regional_doubt(mi_rs)
 
-        #reindex = list()
-        #reindex.append(mi_rs['horizon'].values)
-        #for name in mi_rs.index.names:
+        reindex = list()
+        reindex.append(mi_rs['horizon'].values)
+        for name in mi_rs.index.names:
 
-            #values = mi_rs.index.get_level_values(level=name)
-            #reindex.append(values)
-        #reindex.append(mi_rs['pv_power_doubt_r'].values)
+            values = mi_rs.index.get_level_values(level=name)
+            reindex.append(values)
 
-        #names = 'horizon' + mi_rs.index.names + 'pv_power_doubt_r'
-        #mi_rs.index = pd.MultiIndex.from_arrays(reindex, names=names)
+        names = ['horizon'] + mi_rs.index.names
+        mi_rs.index = pd.MultiIndex.from_arrays(reindex, names=names)
 
-        save_pickle(eval_dir, 'evaluation_data', system.simulation['evaluation'])
+        #check_bins(mi_rs, results)
+
+        save_pickle(eval_dir, 'evaluation_data', mi_rs)
         save_pickle(eval_dir, 'grid_info', grid_spaces)
 
     else:
