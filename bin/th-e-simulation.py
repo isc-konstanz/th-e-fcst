@@ -421,7 +421,8 @@ def mi_results(settings, system, features):
 
             bin = results.iloc[bin_condition.values]
 
-            if len(bin) < 10:
+            if len(bin) < 10 and len(bin) != 0:
+
                 resolutions = [grid_info[col]['step_size'] for col in mi.names]
                 raise ValueError('The chosen resolution of the grid ({}) distributes '
                                  'the data over to many bins. Please decrease its value'.format(resolutions))
@@ -535,6 +536,8 @@ def evaluate(settings, systems):
         mi_kpi_r.columns = r_cols
 
         n = bin_count(mi_data)
+        n_col = pd.MultiIndex.from_product([['count'], ['na']], names=['kpi', 'targets'])
+        n = pd.DataFrame(n.values, index=n.index, columns=n_col)
         mi_kpi = pd.concat([mi_kpi, mi_kpi_r, n], axis=1)
 
         return mi_kpi
