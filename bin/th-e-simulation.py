@@ -507,14 +507,6 @@ def evaluate(settings, systems):
         if kpi is not None:
             summary.loc[system.name, (header, name)] = kpi
 
-    def bin_count(mi_data):
-
-        n = pd.Series([1 for x in range(len(mi_data))], index=mi_data.index, name='count')
-        groups = mi_data.index.names
-        n = n.groupby(level=groups).sum()
-
-        return n
-
     def mi_kpi(mi_data, targets):
 
         err_cols = [target + '_err' for target in targets]
@@ -536,9 +528,14 @@ def evaluate(settings, systems):
         r_cols = pd.MultiIndex.from_tuples([(col[0] + '_r', col[1]) for col in mi_kpi.columns])
         mi_kpi_r.columns = r_cols
 
-        n = bin_count(mi_data)
-        n_col = pd.MultiIndex.from_product([['count'], ['na']], names=['kpi', 'targets'])
-        n = pd.DataFrame(n.values, index=n.index, columns=n_col)
+        n_col = pd.MultiIndex.from_product([['count'], targets], names=['kpi', 'targets'])
+        n = pd.DataFrame(index=mi_data.index, columns=n_col)
+        _n = [1 for x in range(len(mi_data))]
+
+        for col in n_col:
+            n[col] = _n
+        n = n.groupby(level=groups).sum()
+
         mi_kpi = pd.concat([mi_kpi, mi_kpi_r, n], axis=1)
 
         return mi_kpi
