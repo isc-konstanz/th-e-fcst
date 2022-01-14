@@ -550,21 +550,30 @@ def evaluate(settings, systems):
 
     def shadows(mi_kpi):
 
-        if not {'solar_elevation'}.issubset(mi_kpi.index.names):
+        if not {'solar_elevation', 'horizon'}.issubset(mi_kpi.index.names):
             raise ValueError('The regions horizon, and solar_elevation must be present in the evaluation config file'
                              'in order to calculate this kpi')
 
-        shadows = mi_kpi.groupby(level='solar_elevation').mean()
-        shadows = shadows[['mbe', 'mbe_r']]
+        if 'pv_power' not in mi_kpi.columns.get_level_values('targets'):
+            raise ValueError('This kpi is intended for predictions made on photovoltaic modules.')
 
-        mi = shadows.index
-        c_1 = mi.get_level_values('solar_elevation') <= 15
+        mi = mi_kpi.index
+        c_1 = mi.get_level_values('solar_elevation') <= 5
         c_2 = mi.get_level_values('solar_elevation') >= 0
         c = c_1 & c_2
 
-        shadows = shadows.iloc[c].mean()
+        shadow_kpi = mi_kpi[[('mbe', 'pv_power'), ('mbe_r', 'pv_power')]]
+        shadow_data = shadow_kpi.iloc[c]
+        shadow_kpi = shadow_data.groupby(level='horizon').mean()
 
-        return shadows
+        n = mi_kpi[('count', 'pv_power')]
+        n = n.iloc[c]
+        n = n.groupby(level=['horizon']).sum()
+
+        shadow_kpi = pd.concat([shadow_kpi, n], axis=1)
+        shadow_kpi.columns = ['mbe', 'mbe_r', 'count']
+
+        return shadow_kpi
 
     summary = pd.DataFrame(index=[s.name for s in systems],
                            columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
@@ -598,7 +607,7 @@ def evaluate(settings, systems):
             #    columns_daylight = np.intersect1d(results.columns, ['ghi', 'dni', 'dhi', 'solar_elevation'])
             #    if len(columns_daylight) > 0:
             #        results = results[(results[columns_daylight] > 0).any(axis=1)]
-            add_evaluation('astrea', target_name, astrea['mbe'].values)
+            add_evaluation('astrea', target_name, astrea.loc[6, 'mbe'], astrea)
             #add_evaluation('mae', target_name, mae)
             #add_evaluation('rmse', target_name, rmse)
             #add_evaluation('nrmse', target_name, nrmse)
