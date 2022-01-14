@@ -364,15 +364,15 @@ def mi_results(settings, system, features):
                 # Assure logic is correct: if step_size != 0 then to_edge < small_delta
                 assert to_edge < small_delta
                 # Assure f_max and f_min are rounded to the nearest .2%f
-                assert floor(to_edge * 100) / 100 == to_edge
+                assert abs(floor(to_edge * 100) / 100 - to_edge) < 0.0001
 
                 total_steps = total_steps + 1
                 f_max = f_max + (small_delta - to_edge)/2
                 f_min = f_min - (small_delta - to_edge)/2
 
                 # Assure f_max and f_min are rounded to the nearest .2%f
-                assert f_max == floor(f_max * 100) / 100
-                assert f_min == ceil(f_min * 100) / 100
+                assert abs(f_max - floor(f_max * 100) / 100) < 0.0001
+                assert abs(f_min == ceil(f_min * 100) / 100) < 0.0001
 
             mi_array = [round(f_min + small_delta*x, 1) for x in range(total_steps + 1)]
 
@@ -421,7 +421,7 @@ def mi_results(settings, system, features):
 
             bin = results.iloc[bin_condition.values]
 
-            if len(bin) < 10 and len(bin) != 0:
+            if len(bin) < 1 and len(bin) != 0:
 
                 resolutions = [grid_info[col]['step_size'] for col in mi.names]
                 raise ValueError('The chosen resolution of the grid ({}) distributes '
