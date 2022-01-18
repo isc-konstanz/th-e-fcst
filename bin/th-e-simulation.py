@@ -463,7 +463,7 @@ def mi_results(settings, system, features):
 
         results = system.simulation['results']
         grid_features = json.loads(settings.get('Evaluation', 'Features'))
-        regions, grid_spaces = gen_index(data=features, steps=50, features=grid_features)
+        regions, grid_spaces = gen_index(data=features, steps=20, features=grid_features)
         mi_rs = bin_results(results, regions, grid_spaces)
         mi_rs = regional_doubt(mi_rs)
 
