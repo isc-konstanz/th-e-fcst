@@ -591,6 +591,94 @@ def evaluate(settings, systems):
         mi_rkpi = (mi_kpi - m)/std
         return round(mi_rkpi, 2)
 
+    def sunny(mi_kpi, boxplot=False):
+
+        if not {'solar_elevation', 'horizon'}.issubset(mi_kpi.index.names):
+            raise ValueError('The regions horizon, and solar_elevation must be present in the evaluation config file'
+                             'in order to calculate this kpi')
+
+        if 'pv_power' not in mi_kpi.columns.get_level_values('targets'):
+            raise ValueError('This kpi is intended for predictions made on photovoltaic modules.')
+
+        mi = mi_kpi.index
+        c = mi.get_level_values('solar_elevation') >= 33
+
+        sunny_kpi = mi_kpi[[('mae', 'pv_power'), ('mae_r', 'pv_power')]]
+        sunny_data = sunny_kpi.iloc[c]
+        sunny_kpi = sunny_data.groupby(level='horizon').mean()
+
+        n = mi_kpi[('count', 'pv_power')]
+        n = n.iloc[c]
+        n = n.groupby(level=['horizon']).sum()
+
+        sunny_kpi = pd.concat([sunny_kpi, n], axis=1)
+        sunny_kpi.columns = ['mae', 'mae_r', 'count']
+
+        if boxplot == True:
+            sunny_data.columns = ['mae', 'mae_r']
+            _print_boxplot(system, sunny_data, 'horizon', 'mae', 'evaluation/sunny')
+
+        return sunny_kpi
+
+    def astrea(mi_kpi, boxplot=False):
+
+        if not {'horizon'}.issubset(mi_kpi.index.names):
+            raise ValueError('The regions horizon, and solar_elevation must be present in the evaluation config file'
+                             'in order to calculate this kpi')
+
+        if 'pv_power' not in mi_kpi.columns.get_level_values('targets'):
+            raise ValueError('This kpi is intended for predictions made on photovoltaic modules.')
+
+        mi = mi_kpi.index
+        c = mi.get_level_values('solar_elevation') >= 0
+
+        astrea_kpi = mi_kpi[['mae', 'rmse']]
+        astrea_data = astrea_kpi.loc[c]
+        astrea_kpi = astrea_data.groupby(level='horizon').mean()
+
+        n = mi_kpi[('count', 'pv_power')]
+        n = n.groupby(level='horizon').sum()
+
+        astrea_kpi = pd.concat([astrea_kpi, n], axis=1)
+        astrea_kpi.columns = ['mae', 'rmse', 'count']
+
+        if boxplot == True:
+
+            astrea_data.columns = ['mae', 'rmse']
+            _print_boxplot(system, astrea_data, 'horizon', 'mae', 'evaluation/astrea')
+
+        return astrea_kpi
+
+    def night(mi_kpi, boxplot=False):
+
+
+        if not {'solar_elevation', 'horizon'}.issubset(mi_kpi.index.names):
+            raise ValueError('The regions horizon, and solar_elevation must be present in the evaluation config file'
+                             'in order to calculate this kpi')
+
+        if 'pv_power' not in mi_kpi.columns.get_level_values('targets'):
+            raise ValueError('This kpi is intended for predictions made on photovoltaic modules.')
+
+        mi = mi_kpi.index
+        c = mi.get_level_values('solar_elevation') < 0
+
+        night_kpi = mi_kpi[[('mae', 'pv_power'), ('mae_r', 'pv_power')]]
+        night_data = night_kpi.iloc[c]
+        night_kpi = night_data.groupby(level='horizon').mean()
+
+        n = mi_kpi[('count', 'pv_power')]
+        n = n.iloc[c]
+        n = n.groupby(level=['horizon']).sum()
+
+        night_kpi = pd.concat([night_kpi, n], axis=1)
+        night_kpi.columns = ['mae', 'mae_r', 'count']
+
+        if boxplot == True:
+            night_data.columns = ['mae', 'mae_r']
+            _print_boxplot(system, night_data, 'horizon', 'mae', 'evaluation/nights')
+
+        return night_kpi
+
     def shadows(mi_kpi, boxplot=False):
 
         if not {'solar_elevation', 'horizon'}.issubset(mi_kpi.index.names):
@@ -641,9 +729,9 @@ def evaluate(settings, systems):
         targets = system.forecast._model.features['target']
 
         mi_kpi = mi_kpi(evaluation_data, targets)
-        #days = astrea(mi_kpi, boxplot=True)
-        #nights = night(mi_kpi, boxplot=True)
-        #sun = sunny(mi_kpi, boxplot=True)
+        days = astrea(mi_kpi, boxplot=True)
+        nights = night(mi_kpi, boxplot=True)
+        sun = sunny(mi_kpi, boxplot=True)
         shadow = shadows(mi_kpi, boxplot=True)
 
 
@@ -659,9 +747,9 @@ def evaluate(settings, systems):
             #    columns_daylight = np.intersect1d(results.columns, ['ghi', 'dni', 'dhi', 'solar_elevation'])
             #    if len(columns_daylight) > 0:
             #        results = results[(results[columns_daylight] > 0).any(axis=1)]
-            #add_evaluation('days', target_name, days.loc[1, 'mae'], days)
-            #add_evaluation('nights', target_name, nights.loc[1, 'mae'], nights)
-            #add_evaluation('sun', target_name, sun.loc[12, 'mae'], sun)
+            add_evaluation('days', target_name, days.loc[1, 'mae'], days)
+            add_evaluation('nights', target_name, nights.loc[1, 'mae'], nights)
+            add_evaluation('sun', target_name, sun.loc[12, 'mae'], sun)
             add_evaluation('shadow', target_name, shadow.loc[6, 'mbe'], shadow)
 
             #add_evaluation('mae', target_name, mae)
