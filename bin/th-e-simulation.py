@@ -507,6 +507,49 @@ def evaluate(settings, systems):
         if kpi is not None:
             summary.loc[system.name, (header, name)] = kpi
 
+    def _evaluate_data(system, data, level, column, file, **kwargs):
+        from th_e_sim.iotools import print_boxplot
+        try:
+            _data = deepcopy(data)
+            _data.index = data.index.get_level_values(level)
+            print_boxplot(system, _data, _data.index, column, file, **kwargs)
+
+        except ImportError as e:
+            logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
+                                                                                 str(e)))
+
+        return _describe_data(system, data, data.index, column, file)
+
+    def _print_boxplot(system, data, level, column, file, **kwargs):
+        from th_e_sim.iotools import print_boxplot
+        try:
+            _data = deepcopy(data)
+            _data.index = data.index.get_level_values(level)
+            print_boxplot(system, _data, _data.index, column, file, **kwargs)
+
+        except ImportError as e:
+            logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
+                                                                                 str(e)))
+
+    def _describe_data(system, data, level, column, file):
+        from th_e_sim.iotools import write_csv
+
+        data = data[column]
+        group = data.groupby(level)
+        median = group.median()
+        median.name = 'median'
+        mae = data.abs().groupby(level).mean()
+        mae.name = 'mae'
+        rmse = (data ** 2).groupby(level).mean() ** .5
+        rmse.name = 'rmse'
+        description = pd.concat([rmse, mae, median, group.describe()], axis=1)
+        description.index = pd.MultiIndex.from_tuples(description.index, names=data.index.names)
+        del description['count']
+
+        write_csv(system, description, file)
+
+        return description
+
     def mi_kpi(mi_data, targets):
 
         err_cols = [target + '_err' for target in targets]
@@ -548,7 +591,7 @@ def evaluate(settings, systems):
         mi_rkpi = (mi_kpi - m)/std
         return round(mi_rkpi, 2)
 
-    def shadows(mi_kpi):
+    def shadows(mi_kpi, boxplot=False):
 
         if not {'solar_elevation', 'horizon'}.issubset(mi_kpi.index.names):
             raise ValueError('The regions horizon, and solar_elevation must be present in the evaluation config file'
@@ -558,7 +601,7 @@ def evaluate(settings, systems):
             raise ValueError('This kpi is intended for predictions made on photovoltaic modules.')
 
         mi = mi_kpi.index
-        c_1 = mi.get_level_values('solar_elevation') <= 5
+        c_1 = mi.get_level_values('solar_elevation') <= 6.6
         c_2 = mi.get_level_values('solar_elevation') >= 0
         c = c_1 & c_2
 
@@ -572,6 +615,10 @@ def evaluate(settings, systems):
 
         shadow_kpi = pd.concat([shadow_kpi, n], axis=1)
         shadow_kpi.columns = ['mbe', 'mbe_r', 'count']
+
+        if boxplot == True:
+            shadow_data.columns = ['mbe', 'mbe_r']
+            _print_boxplot(system, shadow_data, 'horizon', 'mbe', 'evaluation/shadow')
 
         return shadow_kpi
 
@@ -592,8 +639,13 @@ def evaluate(settings, systems):
             summary.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
 
         targets = system.forecast._model.features['target']
+
         mi_kpi = mi_kpi(evaluation_data, targets)
-        astrea = shadows(mi_kpi)
+        #days = astrea(mi_kpi, boxplot=True)
+        #nights = night(mi_kpi, boxplot=True)
+        #sun = sunny(mi_kpi, boxplot=True)
+        shadow = shadows(mi_kpi, boxplot=True)
+
 
         for target in targets:
 
@@ -607,46 +659,16 @@ def evaluate(settings, systems):
             #    columns_daylight = np.intersect1d(results.columns, ['ghi', 'dni', 'dhi', 'solar_elevation'])
             #    if len(columns_daylight) > 0:
             #        results = results[(results[columns_daylight] > 0).any(axis=1)]
-            add_evaluation('astrea', target_name, astrea.loc[6, 'mbe'], astrea)
+            #add_evaluation('days', target_name, days.loc[1, 'mae'], days)
+            #add_evaluation('nights', target_name, nights.loc[1, 'mae'], nights)
+            #add_evaluation('sun', target_name, sun.loc[12, 'mae'], sun)
+            add_evaluation('shadow', target_name, shadow.loc[6, 'mbe'], shadow)
+
             #add_evaluation('mae', target_name, mae)
             #add_evaluation('rmse', target_name, rmse)
             #add_evaluation('nrmse', target_name, nrmse)
 
     write_excel(settings, summary, evaluations)
-
-def _evaluate_data(system, data, level, column, file, **kwargs):
-    from th_e_sim.iotools import print_boxplot
-    try:
-        _data = deepcopy(data)
-        _data.index = data.index.get_level_values(level)
-        print_boxplot(system, _data, _data.index, column, file, **kwargs)
-
-    except ImportError as e:
-        logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
-                                                                             str(e)))
-
-    return _describe_data(system, data, data.index, column, file)
-
-
-def _describe_data(system, data, level, column, file):
-    from th_e_sim.iotools import write_csv
-
-    data = data[column]
-    group = data.groupby(level)
-    median = group.median()
-    median.name = 'median'
-    mae = data.abs().groupby(level).mean()
-    mae.name = 'mae'
-    rmse = (data ** 2).groupby(level).mean() ** .5
-    rmse.name = 'rmse'
-    description = pd.concat([rmse, mae, median, group.describe()], axis=1)
-    description.index = pd.MultiIndex.from_tuples(description.index, names=data.index.names)
-    del description['count']
-
-    write_csv(system, description, file)
-
-    return description
-
 
 def _launch_tensorboard(**kwargs):
     launch = kwargs['tensorboard'] if isinstance(kwargs['tensorboard'], bool) \
