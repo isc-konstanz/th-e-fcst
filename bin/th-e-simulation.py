@@ -462,6 +462,7 @@ def mi_results(settings, system, features):
     if not os.path.isfile(os.path.join(eval_dir, 'evaluation_data') + '.pkl'):
 
         results = system.simulation['results']
+        results['time'] = results.index
         grid_features = json.loads(settings.get('Evaluation', 'Features'))
         regions, grid_spaces = gen_index(data=features, steps=20, features=grid_features)
         mi_rs = bin_results(results, regions, grid_spaces)
