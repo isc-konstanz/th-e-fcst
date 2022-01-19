@@ -550,26 +550,30 @@ def evaluate(settings, systems):
 
         return description
 
-    def mi_kpi(mi_data, targets):
+    def mi_moments(mi_data, targets):
 
         err_cols = [target + '_err' for target in targets]
 
         mi = mi_data.index
         groups = mi.names
-
-        mbe = mi_data[err_cols].groupby(level=groups).mean()
+        
+        be = mi_data[err_cols].groupby(level=groups)
+        mbe = be.mean()
+        be_std = be.std()
         mbe.columns = pd.MultiIndex.from_product([['mbe'], targets], names=['kpi', 'targets'])
-        mae = mi_data[err_cols].abs().groupby(level=groups).mean()
+        be_std.columns = pd.MultiIndex.from_product([['mbe_std'], targets], names=['kpi', 'targets'])
+        
+        ae = mi_data[err_cols].abs().groupby(level=groups)
+        mae = ae.mean()
+        ae_std = ae.std()
         mae.columns = pd.MultiIndex.from_product([['mae'], targets], names=['kpi', 'targets'])
-        rmse = ((mi_data[err_cols] ** 2).groupby(level=groups).mean() ** 0.5)
+        ae_std.columns = pd.MultiIndex.from_product([['mae_std'], targets], names=['kpi', 'targets'])
+        
+        se = (mi_data[err_cols] ** 2).groupby(level=groups)
+        rmse = se.mean() ** 0.5
+        rse_std = se.std() ** 0.5
         rmse.columns = pd.MultiIndex.from_product([['rmse'], targets], names=['kpi', 'targets'])
-        nrmse = (rmse / 10000)
-        nrmse.columns = pd.MultiIndex.from_product([['nrmse'], targets], names=['kpi', 'targets'])
-        mi_kpi = pd.concat([mbe, mae, rmse, nrmse], axis=1)
-
-        mi_kpi_r = _relative_kpi(mi_kpi)
-        r_cols = pd.MultiIndex.from_tuples([(col[0] + '_r', col[1]) for col in mi_kpi.columns])
-        mi_kpi_r.columns = r_cols
+        rse_std.columns = pd.MultiIndex.from_product([['rmse_std'], targets], names=['kpi', 'targets'])
 
         n_col = pd.MultiIndex.from_product([['count'], targets], names=['kpi', 'targets'])
         n = pd.DataFrame(index=mi_data.index, columns=n_col)
@@ -579,7 +583,7 @@ def evaluate(settings, systems):
             n[col] = _n
         n = n.groupby(level=groups).sum()
 
-        mi_kpi = pd.concat([mi_kpi, mi_kpi_r, n], axis=1)
+        mi_kpi = pd.concat([mbe, be_std, mae, ae_std, rmse, rse_std, n], axis=1)
 
         return mi_kpi
 
@@ -603,7 +607,7 @@ def evaluate(settings, systems):
         mi = mi_kpi.index
         c = mi.get_level_values('solar_elevation') >= 33
 
-        sunny_kpi = mi_kpi[[('mae', 'pv_power'), ('mae_r', 'pv_power')]]
+        sunny_kpi = mi_kpi[[('mae', 'pv_power'), ('mae_std', 'pv_power')]]
         sunny_data = sunny_kpi.iloc[c]
         sunny_kpi = sunny_data.groupby(level='horizon').mean()
 
@@ -612,10 +616,10 @@ def evaluate(settings, systems):
         n = n.groupby(level=['horizon']).sum()
 
         sunny_kpi = pd.concat([sunny_kpi, n], axis=1)
-        sunny_kpi.columns = ['mae', 'mae_r', 'count']
+        sunny_kpi.columns = ['mae', 'mae_std', 'count']
 
         if boxplot == True:
-            sunny_data.columns = ['mae', 'mae_r']
+            sunny_data.columns = ['mae', 'mae_std']
             _print_boxplot(system, sunny_data, 'horizon', 'mae', 'evaluation/sunny')
 
         return sunny_kpi
@@ -632,7 +636,7 @@ def evaluate(settings, systems):
         mi = mi_kpi.index
         c = mi.get_level_values('solar_elevation') >= 0
 
-        astrea_kpi = mi_kpi[['mae', 'rmse']]
+        astrea_kpi = mi_kpi[['mae', 'mae_std']]
         astrea_data = astrea_kpi.loc[c]
         astrea_kpi = astrea_data.groupby(level='horizon').mean()
 
@@ -640,11 +644,11 @@ def evaluate(settings, systems):
         n = n.groupby(level='horizon').sum()
 
         astrea_kpi = pd.concat([astrea_kpi, n], axis=1)
-        astrea_kpi.columns = ['mae', 'rmse', 'count']
+        astrea_kpi.columns = ['mae', 'mae_std', 'count']
 
         if boxplot == True:
 
-            astrea_data.columns = ['mae', 'rmse']
+            astrea_data.columns = ['mae', 'mae_std']
             _print_boxplot(system, astrea_data, 'horizon', 'mae', 'evaluation/astrea')
 
         return astrea_kpi
@@ -662,7 +666,7 @@ def evaluate(settings, systems):
         mi = mi_kpi.index
         c = mi.get_level_values('solar_elevation') < 0
 
-        night_kpi = mi_kpi[[('mae', 'pv_power'), ('mae_r', 'pv_power')]]
+        night_kpi = mi_kpi[[('mae', 'pv_power'), ('mae_std', 'pv_power')]]
         night_data = night_kpi.iloc[c]
         night_kpi = night_data.groupby(level='horizon').mean()
 
@@ -671,10 +675,10 @@ def evaluate(settings, systems):
         n = n.groupby(level=['horizon']).sum()
 
         night_kpi = pd.concat([night_kpi, n], axis=1)
-        night_kpi.columns = ['mae', 'mae_r', 'count']
+        night_kpi.columns = ['mae', 'mae_std', 'count']
 
         if boxplot == True:
-            night_data.columns = ['mae', 'mae_r']
+            night_data.columns = ['mae', 'mae_std']
             _print_boxplot(system, night_data, 'horizon', 'mae', 'evaluation/nights')
 
         return night_kpi
@@ -693,7 +697,7 @@ def evaluate(settings, systems):
         c_2 = mi.get_level_values('solar_elevation') >= 0
         c = c_1 & c_2
 
-        shadow_kpi = mi_kpi[[('mbe', 'pv_power'), ('mbe_r', 'pv_power')]]
+        shadow_kpi = mi_kpi[[('mbe', 'pv_power'), ('mbe_std', 'pv_power')]]
         shadow_data = shadow_kpi.iloc[c]
         shadow_kpi = shadow_data.groupby(level='horizon').mean()
 
@@ -702,10 +706,10 @@ def evaluate(settings, systems):
         n = n.groupby(level=['horizon']).sum()
 
         shadow_kpi = pd.concat([shadow_kpi, n], axis=1)
-        shadow_kpi.columns = ['mbe', 'mbe_r', 'count']
+        shadow_kpi.columns = ['mbe', 'mbe_std', 'count']
 
         if boxplot == True:
-            shadow_data.columns = ['mbe', 'mbe_r']
+            shadow_data.columns = ['mbe', 'mbe_std']
             _print_boxplot(system, shadow_data, 'horizon', 'mbe', 'evaluation/shadow')
 
         return shadow_kpi
@@ -728,11 +732,11 @@ def evaluate(settings, systems):
 
         targets = system.forecast._model.features['target']
 
-        mi_kpi = mi_kpi(evaluation_data, targets)
-        days = astrea(mi_kpi, boxplot=True)
-        nights = night(mi_kpi, boxplot=True)
-        sun = sunny(mi_kpi, boxplot=True)
-        shadow = shadows(mi_kpi, boxplot=True)
+        moments = mi_moments(evaluation_data, targets)
+        days = astrea(moments, boxplot=True)
+        nights = night(moments, boxplot=True)
+        sun = sunny(moments, boxplot=True)
+        shadow = shadows(moments, boxplot=True)
 
 
         for target in targets:
