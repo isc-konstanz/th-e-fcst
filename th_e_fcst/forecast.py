@@ -78,8 +78,8 @@ class Forecast(th_e_core.Forecast):
         data = pd.DataFrame(index=weather.index, columns=['pv_yield']).fillna(0)
         try:
             from th_e_yield.model import Model
-            for árray in self._system.get_type('pv'):
-                model = Model(self._system, árray, self._model.configs, section='Yield', **kwargs)
+            for array in self._system.get_type('pv'):
+                model = Model(self._system, array, self._model.configs, section='Yield', **kwargs)
                 data['pv_yield'] += model.run(weather)['p_ac']
 
         except ImportError as e:
