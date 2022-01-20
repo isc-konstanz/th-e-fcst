@@ -448,7 +448,7 @@ def mi_results(settings, system, features):
             d_avg = mi_data.loc[i, cols].mean()
             d_std = mi_data.loc[i, cols].std()
 
-            doubt_data = (mi_data.loc[i, cols] - d_avg) / (d_std + epsilon)
+            doubt_data = abs(mi_data.loc[i, cols] - d_avg) / (d_std + epsilon)
             mi_data.loc[i, new_cols] = doubt_data.values
 
         return mi_data
