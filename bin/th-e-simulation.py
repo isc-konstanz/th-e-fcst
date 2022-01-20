@@ -464,7 +464,7 @@ def mi_results(settings, system, features):
         results = system.simulation['results']
         results['time'] = results.index
         grid_features = json.loads(settings.get('Evaluation', 'Features'))
-        regions, grid_spaces = gen_index(data=features, steps=20, features=grid_features)
+        regions, grid_spaces = gen_index(data=features, steps=40, features=grid_features)
         mi_rs = bin_results(results, regions, grid_spaces)
         mi_rs = regional_doubt(mi_rs)
 
@@ -715,6 +715,23 @@ def evaluate(settings, systems):
 
         return shadow_kpi
 
+    def filter_data(data):
+
+        cols = [col for col in data.columns if col.endswith('doubt_r')]
+
+        if cols == []:
+            raise ValueError("The data must have a doubt value present to filter the data.")
+
+        c = data[cols] < 1
+        _ps = pd.Series([True]*len(c), index=c.index)
+
+        for col in cols:
+            _ps = _ps & c[col]
+
+        f_data = data.iloc[_ps.values]
+
+        return f_data
+
     summary = pd.DataFrame(index=[s.name for s in systems],
                            columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
                                                               ('Durations [min]', 'Prediction')]))
@@ -722,6 +739,7 @@ def evaluate(settings, systems):
     evaluations = {}
     for system in systems:
         evaluation_data = system.simulation['evaluation']
+        evaluation_data_f = filter_data(evaluation_data)
         durations = system.simulation['durations']
 
         # index = pd.IndexSlice
@@ -734,11 +752,16 @@ def evaluate(settings, systems):
         targets = system.forecast._model.features['target']
 
         moments = mi_moments(evaluation_data, targets)
-        days = astrea(moments, boxplot=True)
-        nights = night(moments, boxplot=True)
-        sun = sunny(moments, boxplot=True)
-        shadow = shadows(moments, boxplot=True)
+        days = astrea(moments)
+        nights = night(moments)
+        sun = sunny(moments)
+        shadow = shadows(moments)
 
+        moments_f = mi_moments(evaluation_data_f, targets)
+        days_f = astrea(moments_f, boxplot=True)
+        nights_f = night(moments_f, boxplot=True)
+        sun_f = sunny(moments_f, boxplot=True)
+        shadow_f = shadows(moments_f, boxplot=True)
 
         for target in targets:
 
@@ -753,9 +776,13 @@ def evaluate(settings, systems):
             #    if len(columns_daylight) > 0:
             #        results = results[(results[columns_daylight] > 0).any(axis=1)]
             add_evaluation('days', target_name, days.loc[1, 'mae'], days)
+            add_evaluation('days_f', target_name, days_f.loc[1, 'mae'], days_f)
             add_evaluation('nights', target_name, nights.loc[1, 'mae'], nights)
+            add_evaluation('nights_f', target_name, nights_f.loc[1, 'mae'], nights_f)
             add_evaluation('sun', target_name, sun.loc[12, 'mae'], sun)
+            add_evaluation('sun_f', target_name, sun_f.loc[12, 'mae'], sun_f)
             add_evaluation('shadow', target_name, shadow.loc[6, 'mbe'], shadow)
+            add_evaluation('shadow_f', target_name, shadow_f.loc[6, 'mbe'], shadow_f)
 
             #add_evaluation('mae', target_name, mae)
             #add_evaluation('rmse', target_name, rmse)
