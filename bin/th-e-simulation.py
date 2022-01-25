@@ -521,12 +521,22 @@ def evaluate(settings, systems):
 
         return _describe_data(system, data, data.index, column, file)
 
-    def _print_boxplot(system, data, level, column, file, **kwargs):
+    def _print_boxplot_mi(system, data, level, column, file, **kwargs):
         from th_e_sim.iotools import print_boxplot
         try:
             _data = deepcopy(data)
             _data.index = data.index.get_level_values(level)
             print_boxplot(system, _data, _data.index, column, file, **kwargs)
+
+        except ImportError as e:
+            logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
+                                                                                 str(e)))
+
+    def _print_boxplot(system, labels, data, file, **kwargs):
+        from th_e_sim.iotools import print_boxplot
+        try:
+            colors = len(set(labels))
+            print_boxplot(system, None, labels, data, file, colors=colors, **kwargs)
 
         except ImportError as e:
             logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
@@ -596,6 +606,115 @@ def evaluate(settings, systems):
         mi_rkpi = (mi_kpi - m)/std
         return round(mi_rkpi, 2)
 
+    def discrete_metrics(name, data, target, groups, conditions: dict, metric, boxplot=False, **kwargs):
+
+
+        def perform_metrics(name, data, groups, metric, boxplot):
+
+            kpi = []
+            if 'mae' == metric:
+                ae = data.abs()
+                mae = ae.groupby(groups).mean()
+                ae_std = ae.groupby(groups).std()
+                kpi.append(mae)
+                kpi.append(ae_std)
+
+                if boxplot == True:
+                    _print_boxplot(system, groups, ae.values, os.path.join("evaluation", name))
+
+            elif 'mse' == metric:
+                se = (data ** 2)
+                mse = se.groupby(groups).mean()
+                se_std = se.groupby(groups).std()
+                kpi.append(mse)
+                kpi.append(se_std)
+
+                if boxplot == True:
+                    _print_boxplot(system, groups, se.values, os.path.join("evaluation", name))
+
+            elif 'rmse' == metric:
+                se = (data ** 2)
+                rmse = se.groupby(groups).mean() ** 0.5
+                rse_std = se.groupby(groups).std() ** 0.5
+                kpi.append(rmse)
+                kpi.append(rse_std)
+
+                if boxplot == True:
+                    _print_boxplot(system, groups, se.values, os.path.join("evaluation", name))
+
+            elif 'mbe' == metric:
+                be = data
+                mbe = be.groupby(groups).mean()
+                be_std = be.groupby(groups).std()
+                kpi.append(mbe)
+                kpi.append(be_std)
+
+                if boxplot == True:
+                    _print_boxplot(system, groups, be.values, os.path.join("evaluation", name))
+            else:
+                raise ValueError("The chosen metric {} has not yet been implemented".format(metric))
+
+            kpi = pd.concat(kpi, axis=1)
+            kpi.columns = [metric, metric + "_std"]
+
+            return kpi
+
+        def select_data(data, conditions):
+
+            def select_rows(series, operator, value):
+
+                if operator == 'lt':
+                    rows = (series < value)
+
+                elif operator == 'gt':
+                    rows = (series > value)
+
+                elif operator == 'leq':
+                    rows = (series <= value)
+
+                elif operator == 'geq':
+                    rows = (series >= value)
+
+                elif operator == 'eq':
+                    rows = (series == value)
+
+                else:
+                    raise ValueError('An improper condition is present in the dict defining the kpi.')
+
+                return rows
+
+            _ps = pd.Series([True] * len(data), index=data.index)
+
+            for axis, selection in conditions.items():
+
+                rows = select_rows(data[axis], **selection)
+                _ps = _ps & rows
+
+            selected = data.iloc[_ps.values]
+
+            return selected, _ps.values
+
+        # select data pertaining to the desired feature space to be examined
+        eval_data, pos = select_data(data, conditions)
+
+        # define labels for grouping
+        labels = eval_data[groups].values
+
+        # select err data pertaining to desired target
+        err_col = target + '_err'
+        eval_data = eval_data[err_col]
+
+        # introduce count
+        _n = [1 for x in range(len(eval_data))]
+        n = pd.Series(_n, name='count')
+        n = n.groupby(labels).sum()
+
+        # calculate metrics
+        evaluation = perform_metrics(name, eval_data, labels, metric, boxplot)
+        evaluation = pd.concat([evaluation, n], axis=1)
+
+        return evaluation
+
     def sunny(mi_kpi, boxplot=False):
 
         if not {'solar_elevation', 'horizon'}.issubset(mi_kpi.index.names):
@@ -621,7 +740,7 @@ def evaluate(settings, systems):
 
         if boxplot == True:
             sunny_data.columns = ['mae', 'mae_std']
-            _print_boxplot(system, sunny_data, 'horizon', 'mae', 'evaluation/sunny')
+            _print_boxplot_mi(system, sunny_data, 'horizon', 'mae', 'evaluation/sunny')
 
         return sunny_kpi
 
@@ -650,7 +769,7 @@ def evaluate(settings, systems):
         if boxplot == True:
 
             astrea_data.columns = ['mae', 'mae_std']
-            _print_boxplot(system, astrea_data, 'horizon', 'mae', 'evaluation/astrea')
+            _print_boxplot_mi(system, astrea_data, 'horizon', 'mae', 'evaluation/astrea')
 
         return astrea_kpi
 
@@ -680,7 +799,7 @@ def evaluate(settings, systems):
 
         if boxplot == True:
             night_data.columns = ['mae', 'mae_std']
-            _print_boxplot(system, night_data, 'horizon', 'mae', 'evaluation/nights')
+            _print_boxplot_mi(system, night_data, 'horizon', 'mae', 'evaluation/nights')
 
         return night_kpi
 
@@ -711,7 +830,7 @@ def evaluate(settings, systems):
 
         if boxplot == True:
             shadow_data.columns = ['mbe', 'mbe_std']
-            _print_boxplot(system, shadow_data, 'horizon', 'mbe', 'evaluation/shadow')
+            _print_boxplot_mi(system, shadow_data, 'horizon', 'mbe', 'evaluation/shadow')
 
         return shadow_kpi
 
@@ -738,55 +857,47 @@ def evaluate(settings, systems):
 
     evaluations = {}
     for system in systems:
-        evaluation_data = system.simulation['evaluation']
-        evaluation_data_f = filter_data(evaluation_data)
-        durations = system.simulation['durations']
 
         # index = pd.IndexSlice
+        durations = system.simulation['durations']
         summary.loc[system.name, ('Durations [min]', 'Simulation')] = round(durations['simulation']['minutes'])
         summary.loc[system.name, ('Durations [min]', 'Prediction')] = round(durations['prediction']['minutes'])
 
         if 'training' in durations.keys():
             summary.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
 
-        targets = system.forecast._model.features['target']
+        # retrieve results
+        mi_results = system.simulation['evaluation']
 
-        moments = mi_moments(evaluation_data, targets)
-        days = astrea(moments)
-        nights = night(moments)
-        sun = sunny(moments)
-        shadow = shadows(moments)
+        # retrieve eval config for system
+        data_dir = system.configs['General']['data_dir']
+        eval_cfg = os.path.join(data_dir, 'conf', 'evaluation.cfg')
+        eval_settings = ConfigParser()
+        eval_settings.read(eval_cfg)
+        eval_settings = dict(eval_settings['Evaluation'].items())
 
-        moments_f = mi_moments(evaluation_data_f, targets)
-        days_f = astrea(moments_f, boxplot=True)
-        nights_f = night(moments_f, boxplot=True)
-        sun_f = sunny(moments_f, boxplot=True)
-        shadow_f = shadows(moments_f, boxplot=True)
+        # perform evaluations defined in config
+        for name, config in eval_settings.items():
 
-        for target in targets:
+            # load config into dict
+            config = json.loads(config)
 
+            # calculate metric
+            metric = discrete_metrics(name, mi_results, **config)
+
+            # parse target name from config
+            target = config['target']
             target_id = target.replace('_power', '')
             target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
 
-            #if target+'_err' not in results.columns:
-            #    continue
+            # parse kpi from metric
+            kpi_pos = config['kpi']
+            kpi = metric.loc[kpi_pos, config['metric']]
 
-            #if target_id in ['pv']:
-            #    columns_daylight = np.intersect1d(results.columns, ['ghi', 'dni', 'dhi', 'solar_elevation'])
-            #    if len(columns_daylight) > 0:
-            #        results = results[(results[columns_daylight] > 0).any(axis=1)]
-            add_evaluation('days', target_name, days.loc[1, 'mae'], days)
-            add_evaluation('days_f', target_name, days_f.loc[1, 'mae'], days_f)
-            add_evaluation('nights', target_name, nights.loc[1, 'mae'], nights)
-            add_evaluation('nights_f', target_name, nights_f.loc[1, 'mae'], nights_f)
-            add_evaluation('sun', target_name, sun.loc[12, 'mae'], sun)
-            add_evaluation('sun_f', target_name, sun_f.loc[12, 'mae'], sun_f)
-            add_evaluation('shadow', target_name, shadow.loc[6, 'mbe'], shadow)
-            add_evaluation('shadow_f', target_name, shadow_f.loc[6, 'mbe'], shadow_f)
+            add_evaluation(name, target_name, kpi, metric)
 
-            #add_evaluation('mae', target_name, mae)
-            #add_evaluation('rmse', target_name, rmse)
-            #add_evaluation('nrmse', target_name, nrmse)
+        #moments = mi_moments(evaluation_data, targets)
+
 
     write_excel(settings, summary, evaluations)
 
