@@ -496,7 +496,7 @@ def evaluate(settings, systems):
     def _parse_eval(name, eval_config):
 
         sections = ['target', 'metric', 'condition_1',
-                    'groups', 'summary', 'boxplot']
+                    'groups', 'summary', 'boxplot', 'filter']
 
         eval_sections = eval_config.keys()
 
@@ -513,12 +513,15 @@ def evaluate(settings, systems):
 
                 eval_dict['conditions'].append(json.loads(eval_config.get(s)))
                 continue
-                
+
             try:
                 eval_dict[s] = json.loads(eval_config.get(s))
 
             except json.decoder.JSONDecodeError:
                 eval_dict[s] = eval_config.get(s)
+
+        if eval_dict['filter']:
+            eval_dict['conditions'].append([eval_dict['target'] + '_doubt_r', '<', 1])
 
         return eval_dict
 
