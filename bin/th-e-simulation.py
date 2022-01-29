@@ -493,6 +493,30 @@ def mi_results(settings, system, features):
 def evaluate(settings, systems):
     from th_e_sim.iotools import write_excel
 
+    def _parse_eval(name, eval_config):
+
+        sections = ['target', 'metric', 'conditions',
+                    'groups', 'summary', 'boxplot']
+
+        eval_sections = eval_config.keys()
+
+        if not set(sections).issubset(set(eval_sections)):
+
+            raise ValueError('The set of sections defined in the eval_config for the metric {} '
+                             'does not contain the required set of sections: \n {}'.format(name, sections))
+
+        eval_dict = {s: None for s in eval_sections}
+
+        for s in eval_dict:
+
+            try:
+                eval_dict[s] = json.loads(eval_config.get(s))
+
+            except json.decoder.JSONDecodeError:
+                eval_dict[s] = eval_config.get(s)
+
+        return eval_dict
+
     def concat_evaluation(name, header, data):
         if data is None:
             return
@@ -873,13 +897,13 @@ def evaluate(settings, systems):
         eval_cfg = os.path.join(data_dir, 'conf', 'evaluation.cfg')
         eval_settings = ConfigParser()
         eval_settings.read(eval_cfg)
-        eval_settings = dict(eval_settings['Evaluation'].items())
 
-        # perform evaluations defined in config
-        for name, config in eval_settings.items():
+        for name in eval_settings.keys():
 
-            # load config into dict
-            config = json.loads(config)
+            if name == "DEFAULT":
+                continue
+
+            config = _parse_eval(name, eval_settings[name])
 
             # calculate metric
             metric = discrete_metrics(name, mi_results, **config)
