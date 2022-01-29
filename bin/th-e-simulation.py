@@ -495,7 +495,7 @@ def evaluate(settings, systems):
 
     def _parse_eval(name, eval_config):
 
-        sections = ['target', 'metric', 'conditions',
+        sections = ['target', 'metric', 'condition_1',
                     'groups', 'summary', 'boxplot']
 
         eval_sections = eval_config.keys()
@@ -505,10 +505,15 @@ def evaluate(settings, systems):
             raise ValueError('The set of sections defined in the eval_config for the metric {} '
                              'does not contain the required set of sections: \n {}'.format(name, sections))
 
-        eval_dict = {s: None for s in eval_sections}
+        eval_dict = {'conditions': []}
 
-        for s in eval_dict:
+        for s in eval_sections:
 
+            if s.startswith('condition'):
+
+                eval_dict['conditions'].append(json.loads(eval_config.get(s)))
+                continue
+                
             try:
                 eval_dict[s] = json.loads(eval_config.get(s))
 
@@ -630,7 +635,7 @@ def evaluate(settings, systems):
         mi_rkpi = (mi_kpi - m)/std
         return round(mi_rkpi, 2)
 
-    def discrete_metrics(name, data, target, groups, conditions: dict, metric, boxplot=False, **kwargs):
+    def discrete_metrics(name, data, target, groups, conditions, metric, boxplot=False, **kwargs):
 
 
         def perform_metrics(name, data, groups, metric, boxplot):
@@ -685,21 +690,23 @@ def evaluate(settings, systems):
 
         def select_data(data, conditions):
 
-            def select_rows(series, operator, value):
+            def select_rows(data, feature, operator, value, *args):
 
-                if operator == 'lt':
+                series = data[feature]
+
+                if operator.lower() in ['lt', '<']:
                     rows = (series < value)
 
-                elif operator == 'gt':
+                elif operator.lower() in ['gt', '>']:
                     rows = (series > value)
 
-                elif operator == 'leq':
+                elif operator.lower() in ['leq', '<=']:
                     rows = (series <= value)
 
-                elif operator == 'geq':
+                elif operator.lower() in ['geq', '>=']:
                     rows = (series >= value)
 
-                elif operator == 'eq':
+                elif operator.lower() in ['eq', '=', '==']:
                     rows = (series == value)
 
                 else:
@@ -709,9 +716,10 @@ def evaluate(settings, systems):
 
             _ps = pd.Series([True] * len(data), index=data.index)
 
-            for axis, selection in conditions.items():
 
-                rows = select_rows(data[axis], **selection)
+            for c in conditions:
+
+                rows = select_rows(data, *c)
                 _ps = _ps & rows
 
             selected = data.iloc[_ps.values]
