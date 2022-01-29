@@ -619,7 +619,7 @@ def evaluate(settings, systems):
                 kpi.append(mae)
                 kpi.append(ae_std)
 
-                if boxplot == True:
+                if boxplot:
                     _print_boxplot(system, groups, ae.values, os.path.join("evaluation", name))
 
             elif 'mse' == metric:
@@ -629,7 +629,7 @@ def evaluate(settings, systems):
                 kpi.append(mse)
                 kpi.append(se_std)
 
-                if boxplot == True:
+                if boxplot:
                     _print_boxplot(system, groups, se.values, os.path.join("evaluation", name))
 
             elif 'rmse' == metric:
@@ -639,7 +639,7 @@ def evaluate(settings, systems):
                 kpi.append(rmse)
                 kpi.append(rse_std)
 
-                if boxplot == True:
+                if boxplot:
                     _print_boxplot(system, groups, se.values, os.path.join("evaluation", name))
 
             elif 'mbe' == metric:
@@ -649,7 +649,7 @@ def evaluate(settings, systems):
                 kpi.append(mbe)
                 kpi.append(be_std)
 
-                if boxplot == True:
+                if boxplot:
                     _print_boxplot(system, groups, be.values, os.path.join("evaluation", name))
             else:
                 raise ValueError("The chosen metric {} has not yet been implemented".format(metric))
@@ -738,7 +738,7 @@ def evaluate(settings, systems):
         sunny_kpi = pd.concat([sunny_kpi, n], axis=1)
         sunny_kpi.columns = ['mae', 'mae_std', 'count']
 
-        if boxplot == True:
+        if boxplot:
             sunny_data.columns = ['mae', 'mae_std']
             _print_boxplot_mi(system, sunny_data, 'horizon', 'mae', 'evaluation/sunny')
 
@@ -766,7 +766,7 @@ def evaluate(settings, systems):
         astrea_kpi = pd.concat([astrea_kpi, n], axis=1)
         astrea_kpi.columns = ['mae', 'mae_std', 'count']
 
-        if boxplot == True:
+        if boxplot:
 
             astrea_data.columns = ['mae', 'mae_std']
             _print_boxplot_mi(system, astrea_data, 'horizon', 'mae', 'evaluation/astrea')
@@ -797,7 +797,7 @@ def evaluate(settings, systems):
         night_kpi = pd.concat([night_kpi, n], axis=1)
         night_kpi.columns = ['mae', 'mae_std', 'count']
 
-        if boxplot == True:
+        if boxplot:
             night_data.columns = ['mae', 'mae_std']
             _print_boxplot_mi(system, night_data, 'horizon', 'mae', 'evaluation/nights')
 
@@ -828,7 +828,7 @@ def evaluate(settings, systems):
         shadow_kpi = pd.concat([shadow_kpi, n], axis=1)
         shadow_kpi.columns = ['mbe', 'mbe_std', 'count']
 
-        if boxplot == True:
+        if boxplot:
             shadow_data.columns = ['mbe', 'mbe_std']
             _print_boxplot_mi(system, shadow_data, 'horizon', 'mbe', 'evaluation/shadow')
 
@@ -838,7 +838,7 @@ def evaluate(settings, systems):
 
         cols = [col for col in data.columns if col.endswith('doubt_r')]
 
-        if cols == []:
+        if not cols:
             raise ValueError("The data must have a doubt value present to filter the data.")
 
         c = data[cols] < 1
