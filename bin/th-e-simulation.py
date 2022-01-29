@@ -506,7 +506,7 @@ def evaluate(settings, systems):
     def add_evaluation(name, header, kpi, data=None):
         concat_evaluation(name, header, data)
         if kpi is not None:
-            summary.loc[system.name, (header, name)] = kpi
+            summary_tbl.loc[system.name, (header, name)] = kpi
 
     def _evaluate_data(system, data, level, column, file, **kwargs):
         from th_e_sim.iotools import print_boxplot
@@ -851,20 +851,19 @@ def evaluate(settings, systems):
 
         return f_data
 
-    summary = pd.DataFrame(index=[s.name for s in systems],
+    summary_tbl = pd.DataFrame(index=[s.name for s in systems],
                            columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
                                                               ('Durations [min]', 'Prediction')]))
 
     evaluations = {}
     for system in systems:
-
         # index = pd.IndexSlice
         durations = system.simulation['durations']
-        summary.loc[system.name, ('Durations [min]', 'Simulation')] = round(durations['simulation']['minutes'])
-        summary.loc[system.name, ('Durations [min]', 'Prediction')] = round(durations['prediction']['minutes'])
+        summary_tbl.loc[system.name, ('Durations [min]', 'Simulation')] = round(durations['simulation']['minutes'])
+        summary_tbl.loc[system.name, ('Durations [min]', 'Prediction')] = round(durations['prediction']['minutes'])
 
         if 'training' in durations.keys():
-            summary.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
+            summary_tbl.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
 
         # retrieve results
         mi_results = system.simulation['evaluation']
@@ -890,16 +889,16 @@ def evaluate(settings, systems):
             target_id = target.replace('_power', '')
             target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
 
-            # parse kpi from metric
-            kpi_pos = config['kpi']
-            kpi = metric.loc[kpi_pos, config['metric']]
+            # parse summary from metric
+            summary_pos = config['summary']
+            summary = metric.loc[summary_pos, config['metric']]
 
-            add_evaluation(name, target_name, kpi, metric)
+            add_evaluation(name, target_name, summary, metric)
 
         #moments = mi_moments(evaluation_data, targets)
 
 
-    write_excel(settings, summary, evaluations)
+    write_excel(settings, summary_tbl, evaluations)
 
 def _launch_tensorboard(**kwargs):
     launch = kwargs['tensorboard'] if isinstance(kwargs['tensorboard'], bool) \
