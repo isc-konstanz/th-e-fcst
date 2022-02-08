@@ -640,6 +640,24 @@ def evaluate(settings, systems):
 
     def discrete_metrics(name, data, target, groups, conditions, metric, boxplot=False, **kwargs):
 
+        req_cols = []
+        req_cols.append(target)
+
+        if isinstance(groups, list):
+            for entry in groups:
+                req_cols.append(entry)
+        else:
+            req_cols.append(groups)
+
+        for i in range(len(conditions)):
+            req_cols.append(conditions[i][0])
+
+        req_cols = set(req_cols)
+
+        if not req_cols.issubset(set(data.columns)):
+            raise ValueError("The data does not contain the necessary columns for the "
+                             "evaluation as configured in the config. Please ensure that "
+                             "the following configured columns are as intended: {}".format(req_cols))
 
         def perform_metrics(name, data, groups, metric, boxplot):
 
