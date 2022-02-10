@@ -505,7 +505,7 @@ def evaluate(settings, systems):
             raise ValueError('The set of sections defined in the eval_config for the metric {} '
                              'does not contain the required set of sections: \n {}'.format(name, sections))
 
-        eval_dict = {'conditions': []}
+        eval_dict = {'conditions': list()}
 
         for s in eval_sections:
 
@@ -655,8 +655,10 @@ def evaluate(settings, systems):
         else:
             req_cols.append(groups)
 
-        for i in range(len(conditions)):
-            req_cols.append(conditions[i][0])
+        if conditions[0]:
+
+            for i in range(len(conditions)):
+                req_cols.append(conditions[i][0])
 
         req_cols = set(req_cols)
 
@@ -768,6 +770,9 @@ def evaluate(settings, systems):
 
 
             for c in conditions:
+
+                if not c:
+                    continue
 
                 rows = select_rows(data, *c)
                 _ps = _ps & rows
