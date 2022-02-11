@@ -641,7 +641,9 @@ def evaluate(settings, systems):
         mi_rkpi = (mi_kpi - m)/std
         return round(mi_rkpi, 2)
 
-    def discrete_metrics(name, data, target, groups, conditions, metric, boxplot=False, **kwargs):
+    def discrete_metrics(name, data, target, groups, conditions, metric, summary, boxplot=False, **kwargs):
+
+        data = deepcopy(data)
 
         # Index is unimportant; all information contained in the index which is important for the
         # analysis should be added as a seperate column.
@@ -723,7 +725,7 @@ def evaluate(settings, systems):
 
             # introduce count to data
             n = [1 for x in range(len(metric_data))]
-            n = pd.Series(n, name='count')
+            n = pd.Series(n, index=metric_data.index, name='count')
             metric_data = pd.concat([metric_data, n], axis=1)
 
             # count points in each group
@@ -820,11 +822,11 @@ def evaluate(settings, systems):
         # Handle lists and strings in configs files
         try:
             eval_cols = [err_col] + groups
-            eval_data = eval_data[eval_cols]
+            data = data[eval_cols]
 
         except TypeError:
             eval_cols = [err_col, groups]
-            eval_data = eval_data[eval_cols]
+            data = data[eval_cols]
 
 
         # calculate metrics
