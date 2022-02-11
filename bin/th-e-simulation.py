@@ -781,8 +781,38 @@ def evaluate(settings, systems):
 
             return selected
 
-        # select data pertaining to the desired feature space to be examined
-        eval_data = select_data(data, conditions)
+        def summarize(evaluation, metric, groups, option=None):
+
+            options = ['horizon_weighting', 'naive', 'optimist']
+
+            if option == 'naive':
+
+                return evaluation[metric].mean()
+
+            elif option == 'horizon_weighting':
+
+                if not 'horizon' in groups:
+                    raise ValueError("This summary is not compatible with your "
+                                     "chosen group index {}".format(groups))
+                ri = [1, 3, 6]
+                w = pd.Series([4/7, 2/7, 1/7], index=ri, name='weights')
+
+                weighted_sum = evaluation.loc[ri, metric].dot(w)
+
+                return weighted_sum
+
+            elif option == 'optimist':
+                return evaluation[metric].min()
+
+            elif option == 'simple':
+                return evaluation[metric].iloc[evaluation.index[0]]
+
+            else:
+                raise ValueError('The current option is not yet available for metric summarization '
+                                  'please choose one of the following options: {}'.format(options))
+
+        #select data pertaining to the desired feature space to be examined
+        data = select_data(data, conditions)
 
         # select err data pertaining to desired target
         err_col = target + '_err'
@@ -798,10 +828,11 @@ def evaluate(settings, systems):
 
 
         # calculate metrics
-        evaluation = perform_metrics(name, eval_data, err_col, groups, metric, boxplot)
+        evaluation = perform_metrics(name, data, err_col, groups, metric, boxplot)
+        kpi = summarize(evaluation, metric, groups, option=summary)
 
         # calculate summary
-        return evaluation
+        return evaluation, kpi
 
     def sunny(mi_kpi, boxplot=False):
 
@@ -953,7 +984,7 @@ def evaluate(settings, systems):
         if 'training' in durations.keys():
             summary_tbl.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
 
-        # retrieve results
+        # retrieve data for evaluation along discrete axis
         mi_results = system.simulation['evaluation']
 
         # retrieve eval config for system
@@ -970,16 +1001,12 @@ def evaluate(settings, systems):
             config = _parse_eval(name, eval_settings[name])
 
             # calculate metric
-            metric = discrete_metrics(name, mi_results, **config)
+            metric, summary = discrete_metrics(name, mi_results, **config)
 
             # parse target name from config
             target = config['target']
             target_id = target.replace('_power', '')
             target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
-
-            # parse summary from metric
-            summary_pos = config['summary']
-            summary = metric.loc[summary_pos, config['metric']]
 
             add_evaluation(name, target_name, summary, metric)
 
