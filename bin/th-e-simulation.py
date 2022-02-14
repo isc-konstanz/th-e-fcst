@@ -81,7 +81,7 @@ def main(args):
             if not system.forecast._model.exists():
                 from th_e_sim.iotools import print_distributions
 
-                logging.debug("Beginning training of neural network for system: {}".format(system.name))
+                logger.debug("Beginning training of neural network for system: {}".format(system.name))
                 durations['training'] = {
                     'start': dt.datetime.now()
                 }
@@ -107,8 +107,8 @@ def main(args):
                 durations['training']['minutes'] = (durations['training']['end'] -
                                                     durations['training']['start']).total_seconds() / 60.0
 
-                logging.debug("Training of neural network for system {} complete after {} minutes"
-                              .format(system.name, durations['training']['minutes']))
+                logger.debug("Training of neural network for system {} complete after {} minutes"
+                             .format(system.name, durations['training']['minutes']))
 
             features_dir = os.path.join(system.configs.get('General', 'data_dir'), 'results')
             features_path = os.path.join(features_dir, 'features')
@@ -132,7 +132,7 @@ def main(args):
             durations['prediction'] = {
                 'start': dt.datetime.now()
             }
-            logging.debug("Beginning predictions for system: {}".format(system.name))
+            logger.debug("Beginning predictions for system: {}".format(system.name))
 
             results = simulate(settings, system, features)
 
@@ -144,7 +144,7 @@ def main(args):
                 results_file = os.path.join('results', results_err.replace('_err', '').replace('_power', ''))
                 write_csv(system, results, results_file)
 
-            logging.debug("Predictions for system {} complete after {} minutes"
+            logger.debug("Predictions for system {} complete after {} minutes"
                           .format(system.name, durations['prediction']['minutes']))
 
             durations['simulation']['end'] = dt.datetime.now()
@@ -292,7 +292,7 @@ def evaluate(settings, systems):
         data_doubt = data_target + '_doubt'
         data_doubts = system.forecast._model.features.get('doubt', {})
         if data_target not in data_doubts:
-            return
+            return None, None
 
         data_column = data_target + '_err'
         data_name = data_target.replace('_power', '')
