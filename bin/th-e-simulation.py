@@ -559,9 +559,10 @@ if __name__ == "__main__":
     import logging.config
     logging_file = os.path.join(os.path.join(run_dir, 'conf'), 'logging.cfg')
     logging.config.fileConfig(logging_file)
-    logger = logging.getLogger('th-e-simulation')
+    logging.getLogger('tensorflow').setLevel(logging.INFO)
+    logging.getLogger('matplotlib').setLevel(logging.WARN)
+    logging.getLogger('h5py').setLevel(logging.WARN)
 
-    logging.getLogger('matplotlib')\
-           .setLevel(logging.WARN)
+    logger = logging.getLogger('th-e-simulation')
 
     main(_get_parser(run_dir).parse_args())
