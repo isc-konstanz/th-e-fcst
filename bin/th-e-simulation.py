@@ -853,6 +853,10 @@ def evaluate(settings, systems):
         # retrieve data for evaluation along discrete axis
         mi_results = system.simulation['evaluation']
 
+        # Extract hour of day [1,...,24] and week day from time [1,...,7] column.
+        mi_results['day_hour'] = [t.hour for t in mi_results['time']]
+        mi_results['weekday'] = [t.weekday for t in mi_results['time']]
+
         # retrieve eval config for system
         data_dir = system.configs['General']['data_dir']
         eval_cfg = os.path.join(data_dir, 'conf', 'evaluation.cfg')
