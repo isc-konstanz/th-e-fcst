@@ -528,18 +528,19 @@ def evaluate(settings, systems):
 
         return eval_dict
 
-    def concat_evaluation(name, header, data):
+    def concat_evaluation(system, name, header, data):
         if data is None:
             return
 
-        data.columns = pd.MultiIndex.from_product([[header], data.columns])
+        cols = [(header, system.name, col) for col in data.columns]
+        data.columns = pd.MultiIndex.from_tuples(cols, names=['target', 'system', 'metrics'])
         if name not in evaluations.keys():
-            evaluations[name] = pd.DataFrame(columns=data.columns)
+            evaluations[name] = data
+        else:
+            evaluations[name] = pd.concat([evaluations[name], data], axis=1)
 
-        evaluations[name] = pd.concat([evaluations[name], data], axis=0)
-
-    def add_evaluation(name, header, kpi, data=None):
-        concat_evaluation(name, header, data)
+    def add_evaluation(system, name, header, kpi, data=None):
+        concat_evaluation(system, name, header, data)
         if kpi is not None:
             summary_tbl.loc[system.name, (header, name)] = kpi
 
@@ -878,7 +879,7 @@ def evaluate(settings, systems):
             target_id = target.replace('_power', '')
             target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
 
-            add_evaluation(name, target_name, summary, metric)
+            add_evaluation(system, name, target_name, summary, metric)
 
         #moments = mi_moments(evaluation_data, targets)
 
