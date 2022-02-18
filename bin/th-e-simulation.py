@@ -510,8 +510,9 @@ def evaluate(settings, systems):
         for s in eval_sections:
 
             if s.startswith('condition'):
-
-                eval_dict['conditions'].append(json.loads(eval_config.get(s)))
+                c = eval_config.get(s).split(" ")
+                c[2] = json.loads(c[2])
+                eval_dict['conditions'].append(c)
                 continue
 
             try:
