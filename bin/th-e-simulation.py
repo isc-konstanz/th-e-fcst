@@ -521,9 +521,6 @@ def evaluate(settings, systems):
             except json.decoder.JSONDecodeError:
                 eval_dict[s] = eval_config.get(s)
 
-        if eval_dict['filter']:
-            eval_dict['conditions'].append([eval_dict['target'] + '_doubt_r', '<', 1])
-
         if isinstance(eval_dict['summary'], list):
             eval_dict['summary'] = tuple(eval_dict['summary'])
 
