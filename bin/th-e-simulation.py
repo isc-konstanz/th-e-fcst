@@ -539,7 +539,7 @@ def evaluate(settings, systems):
                 eval_dict[new_key].append(eval_dict.pop(old_key))
 
         # Check that parameters required for the evaluation are present.
-        required = {'target', 'metric', 'groups', 'conditions', 'summary', 'boxplot'}
+        required = {'targets', 'metric', 'groups', 'conditions', 'summary', 'boxplot'}
         if not required.issubset(set(eval_dict.keys())):
             raise AttributeError("The config file does not contain the required set of parameters: {}".format(required))
 
@@ -873,15 +873,15 @@ def evaluate(settings, systems):
 
             config = _parse_eval(name, eval_settings[name])
 
-            # calculate metric
-            metric, summary = discrete_metrics(name, mi_results, **config)
+            for target in config['targets']:
+                # calculate metric
+                metric, summary = discrete_metrics(name, mi_results, target, **config)
 
-            # parse target name from config
-            target = config['target']
-            target_id = target.replace('_power', '')
-            target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
+                target_id = target.replace('_power', '')
+                target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
 
-            add_evaluation(system, name, target_name, summary, metric)
+                add_evaluation(system, name, target_name, summary, metric)
+
 
         #moments = mi_moments(evaluation_data, targets)
 
