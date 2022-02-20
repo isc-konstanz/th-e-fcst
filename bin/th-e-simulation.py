@@ -495,34 +495,53 @@ def evaluate(settings, systems):
 
     def _parse_eval(name, eval_config):
 
-        sections = ['target', 'metric', 'condition_1',
-                    'groups', 'summary', 'boxplot', 'filter']
+        sections = {'target': str, 'metric': str, 'condition': 'condition',
+                    'group': str, 'summary': str, 'boxplot': bool}
 
-        eval_sections = eval_config.keys()
+        eval_dict = {}
+        for s in eval_config.keys():
 
-        if not set(sections).issubset(set(eval_sections)):
+            pi = s.split('_')[0]
+            pi = sections[pi]
 
-            raise ValueError('The set of sections defined in the eval_config for the metric {} '
-                             'does not contain the required set of sections: \n {}'.format(name, sections))
-
-        eval_dict = {'conditions': list()}
-
-        for s in eval_sections:
-
-            if s.startswith('condition'):
-                c = eval_config.get(s).split(" ")
-                c[2] = json.loads(c[2])
-                eval_dict['conditions'].append(c)
-                continue
-
-            try:
-                eval_dict[s] = json.loads(eval_config.get(s))
-
-            except json.decoder.JSONDecodeError:
+            if pi == str:
                 eval_dict[s] = eval_config.get(s)
 
-        if isinstance(eval_dict['summary'], list):
-            eval_dict['summary'] = tuple(eval_dict['summary'])
+            elif pi == bool:
+                eval_dict[s] = eval_config.getboolean(s)
+
+            elif pi == int:
+                eval_dict[s] = eval_config.getint(s)
+
+            elif pi == "condition":
+                c = eval_config.get(s).split(" ")
+                c[2] = json.loads(c[2])
+                eval_dict[s] = c
+
+        # Combine parameters that belong together (i.e. condition_1, condition_2 to conditions)
+        combine = {}
+        for s in eval_dict.keys():
+
+            group_id = s.split('_')
+
+            if len(group_id) > 1 and isinstance(json.loads(group_id[-1]), int):
+
+                key = '_'.join(group_id[:-1]) + 's'
+                if key not in combine.keys():
+                    combine[key] = list()
+
+                combine[key].append(s)
+
+        for new_key, combine_keys in combine.items():
+
+            eval_dict[new_key] = list()
+            for old_key in combine_keys:
+                eval_dict[new_key].append(eval_dict.pop(old_key))
+
+        # Check that parameters required for the evaluation are present.
+        required = {'target', 'metric', 'groups', 'conditions', 'summary', 'boxplot'}
+        if not required.issubset(set(eval_dict.keys())):
+            raise AttributeError("The config file does not contain the required set of parameters: {}".format(required))
 
         return eval_dict
 
@@ -649,14 +668,9 @@ def evaluate(settings, systems):
         data.index = [x for x in range(len(data))]
         req_cols = list()
         req_cols.append(target)
+        req_cols = req_cols + groups
 
-        if isinstance(groups, list):
-            for entry in groups:
-                req_cols.append(entry)
-        else:
-            req_cols.append(groups)
-
-        if conditions[0]:
+        if conditions:
 
             for i in range(len(conditions)):
                 req_cols.append(conditions[i][0])
@@ -682,8 +696,8 @@ def evaluate(settings, systems):
                 _metrics.append(ae_std)
 
                 #ToDO: Handle boxplots when grouping by multiple features.
-                if boxplot and (isinstance(groups, str) or len(groups) == 1):
-                    _print_boxplot(system, metric_data[groups], metric_data[err_col].values, os.path.join("evaluation", name))
+                if boxplot and len(groups) == 1:
+                    _print_boxplot(system, metric_data[groups[0]], metric_data[err_col].values, os.path.join("evaluation", name))
 
             elif 'mse' == metric:
 
@@ -694,8 +708,8 @@ def evaluate(settings, systems):
                 _metrics.append(se_std)
 
                 #ToDO: Handle boxplots when grouping by multiple features.
-                if boxplot and (isinstance(groups, str) or len(groups) == 1):
-                    _print_boxplot(system, metric_data[groups], metric_data[err_col].values, os.path.join("evaluation", name))
+                if boxplot and len(groups) == 1:
+                    _print_boxplot(system, metric_data[groups[0]], metric_data[err_col].values, os.path.join("evaluation", name))
 
             elif 'rmse' == metric:
 
@@ -706,8 +720,8 @@ def evaluate(settings, systems):
                 _metrics.append(rse_std)
 
                 #ToDO: Handle boxplots when grouping by multiple features.
-                if boxplot and (isinstance(groups, str) or len(groups) == 1):
-                    _print_boxplot(system,  metric_data[groups], metric_data[err_col].values, os.path.join("evaluation", name))
+                if boxplot and len(groups) == 1:
+                    _print_boxplot(system,  metric_data[groups[0]], metric_data[err_col].values, os.path.join("evaluation", name))
 
             elif 'mbe' == metric:
 
@@ -717,8 +731,8 @@ def evaluate(settings, systems):
                 _metrics.append(be_std)
 
                 #ToDO: Handle boxplots when grouping by multiple features.
-                if boxplot and (isinstance(groups, str) or len(groups) == 1):
-                    _print_boxplot(system, metric_data[groups], metric_data[err_col].values, os.path.join("evaluation", name))
+                if boxplot and len(groups) == 1:
+                    _print_boxplot(system, metric_data[groups[0]], metric_data[err_col].values, os.path.join("evaluation", name))
             else:
                 raise ValueError("The chosen metric {} has not yet been implemented".format(metric))
 
@@ -728,11 +742,8 @@ def evaluate(settings, systems):
             metric_data = pd.concat([metric_data, n], axis=1)
 
             # count points in each group
-            try:
-                n = metric_data[groups + ['count']].groupby(groups).sum()
+            n = metric_data[groups + ['count']].groupby(groups).sum()
 
-            except TypeError:
-                n = metric_data[[groups, 'count']].groupby(groups).sum()
             _metrics.append(n)
 
             # concatenate results
@@ -818,15 +829,8 @@ def evaluate(settings, systems):
         # select err data pertaining to desired target
         err_col = target + '_err'
 
-        # Handle lists and strings in configs files
-        try:
-            eval_cols = [err_col] + groups
-            data = data[eval_cols]
-
-        except TypeError:
-            eval_cols = [err_col, groups]
-            data = data[eval_cols]
-
+        eval_cols = [err_col] + groups
+        data = data[eval_cols]
 
         # calculate metrics
         evaluation = perform_metrics(name, data, err_col, groups, metric, boxplot)
