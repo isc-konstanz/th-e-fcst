@@ -795,13 +795,13 @@ def evaluate(settings, systems):
 
         def summarize(evaluation, metric, groups, option=None):
 
-            options = ['horizon_weighting', 'naive', 'optimist']
+            options = ['horizon_weighted', 'naive', 'optimist']
 
             if option == 'naive':
 
                 return evaluation[metric].mean()
 
-            elif option == 'horizon_weighting':
+            elif option == 'horizon_weighted':
 
                 if not 'horizon' in groups:
                     raise ValueError("This summary is not compatible with your "
@@ -856,9 +856,10 @@ def evaluate(settings, systems):
         # retrieve data for evaluation along discrete axis
         mi_results = system.simulation['evaluation']
 
-        # Extract hour of day [1,...,24] and week day from time [1,...,7] column.
+        # Extract additional features
         mi_results['day_hour'] = [t.hour for t in mi_results['time']]
         mi_results['weekday'] = [t.weekday for t in mi_results['time']]
+        mi_results['month'] = [t.month for t in mi_results['time']]
 
         # retrieve eval config for system
         data_dir = system.configs['General']['data_dir']
@@ -882,10 +883,7 @@ def evaluate(settings, systems):
 
                 add_evaluation(system, name, target_name, summary, metric)
 
-
         #moments = mi_moments(evaluation_data, targets)
-
-
     write_excel(settings, summary_tbl, evaluations)
 
 def _launch_tensorboard(**kwargs):
