@@ -138,7 +138,6 @@ def main(args):
                 if verbose:
                     write_csv(system, features, features_path)
 
-            features_r = system.forecast._model.resolutions[0].resample(features)
             durations['prediction'] = {
                 'start': dt.datetime.now()
             }
@@ -146,8 +145,6 @@ def main(args):
             logging.debug("Beginning predictions for system: {}".format(system.name))
 
             system.simulation['results'] = simulate(settings, system, features)
-
-            system.simulation['evaluation'] = mi_results(settings, system, features_r)
 
             durations['prediction']['end'] = dt.datetime.now()
             durations['prediction']['minutes'] = (durations['prediction']['end'] -
@@ -287,209 +284,6 @@ def simulate(settings, system, features, **kwargs):
 
     return results
 
-def mi_results(settings, system, features):
-
-    def save_pickle(dir, name, data):
-        import pickle
-
-        with open(os.path.join(dir, name) + '.pkl', 'wb') as f:
-            pickle.dump(data, f)
-
-    def load_pickle(dir, name):
-        import pickle
-        with open(os.path.join(dir, name) + '.pkl', 'rb') as f:
-            dict_frame = pickle.load(f)
-
-        return dict_frame
-
-    def check_bins(mi_data, data):
-
-        # Testing Code
-        sorted_data = mi_data
-        ground_truth = data
-
-        assert len(sorted_data) == len(ground_truth)
-
-        for col in sorted_data.index.names:
-
-            if col == 'horizon':
-
-                labels = sorted_data.index.get_level_values(level=col)
-                labels = pd.Series(labels, name=col)
-                values = sorted_data[col]
-                values.index = labels.index
-
-                condition = not (values != labels).any()
-                assert condition
-                continue
-
-            labels = sorted_data.index.get_level_values(level=col)
-            labels = pd.Series(labels, name=col)
-            values = sorted_data[col]
-            values.index = labels.index
-
-            next_labels = labels + grid_spaces[col]['step_size']
-
-            c1 = (values < labels).any()
-            c1 = not c1
-            c2 = (values >= next_labels).any()
-            c2 = not c2
-
-            assert c1 & c2
-
-    def gen_index(data, steps, features):
-        from math import floor, ceil
-
-        keys = ['step_size', 'max', 'min']
-        values = 0
-        step_sizes = {feature: dict.fromkeys(keys, values) for feature in features}
-        mi_arrays = []
-
-        for feature in features:
-
-            total_steps = steps
-            f_max = ceil(data[feature].max())
-            f_min = floor(data[feature].min())
-            big_delta = f_max - f_min
-
-            small_delta = floor(big_delta/total_steps * 10) / 10
-            if small_delta == 0:
-                raise ValueError("The axis {} cannot be analyzed with the regular grid spacing of {} between"
-                                 "grid points. Please choose a smaller number of steps".format(feature, small_delta))
-
-            to_edge = big_delta - small_delta * total_steps
-
-            if not to_edge == 0:
-
-                # Assure logic is correct: if step_size != 0 then to_edge < small_delta
-                assert to_edge < small_delta
-                # Assure f_max and f_min are rounded to the nearest .2%f
-                assert abs(floor(to_edge * 100) / 100 - to_edge) < 0.0001
-
-                total_steps = total_steps + 1
-                f_max = f_max + (small_delta - to_edge)/2
-                f_min = f_min - (small_delta - to_edge)/2
-
-                # Assure f_max and f_min are rounded to the nearest .2%f
-                assert abs(f_max - floor(f_max * 100) / 100) < 0.0001
-                assert abs(f_min == ceil(f_min * 100) / 100) < 0.0001
-
-            mi_array = [round(f_min + small_delta*x, 1) for x in range(total_steps + 1)]
-
-            # second check of logic (if step_size != 0 then to_edge < small_delta),
-            # as well as check of intermediate operations.
-            assert mi_array[-1] == f_max
-
-            mi_arrays.append(mi_array)
-
-            step_sizes[feature]['step_size'] = small_delta
-            step_sizes[feature]['max'] = f_max
-            step_sizes[feature]['min'] = f_min
-
-        mi = pd.MultiIndex.from_product(mi_arrays, names=features)
-
-        return mi, step_sizes
-
-
-    def bin_results(results, mi, grid_info):
-
-        binned_rs = pd.DataFrame(index=mi, columns=results.columns)
-
-        cols = mi.names
-        grid_results = results[cols]
-
-        nd_step = []
-        for col in cols:
-            nd_step.append(grid_info[col]['step_size'])
-
-        nd_step = np.array(nd_step)
-
-        for i in mi:
-
-            left_bound = np.array(list(i))
-            right_bound = left_bound + nd_step
-
-            c_1 = left_bound <= grid_results
-            c_2 = right_bound > grid_results
-            c = c_1 & c_2
-            bin_condition = pd.Series([True]*len(c), name='n')
-            c.index = bin_condition.index
-
-            for col in c.columns:
-
-                bin_condition = bin_condition & c[col]
-
-            bin = results.iloc[bin_condition.values]
-
-            if len(bin) < 1 and len(bin) != 0:
-
-                resolutions = [grid_info[col]['step_size'] for col in mi.names]
-                raise ValueError('The chosen resolution of the grid ({}) distributes '
-                                 'the data over to many bins. Please decrease its value'.format(resolutions))
-
-            bin.index = pd.MultiIndex.from_tuples([i]*len(bin), names=mi.names)
-            binned_rs = pd.concat([binned_rs, bin])
-
-        binned_rs = binned_rs.dropna()
-        binned_rs.sort_index(level=mi.names[0])
-
-        return binned_rs
-
-
-    def regional_doubt(mi_data):
-
-        cols = [col for col in mi_data.columns if col.endswith('doubt')]
-        new_cols = [col + '_r' for col in cols]
-        epsilon = 10e-7
-        index = set(mi_data.index)
-
-        for i in index:
-
-            d_avg = mi_data.loc[i, cols].mean()
-            d_std = mi_data.loc[i, cols].std()
-
-            doubt_data = abs(mi_data.loc[i, cols] - d_avg) / (d_std + epsilon)
-            mi_data.loc[i, new_cols] = doubt_data.values
-
-        return mi_data
-
-    system_dir = system._configs['General']['data_dir']
-    eval_dir = os.path.join(system_dir, 'evaluation')
-
-    if not os.path.isdir(eval_dir):
-        os.mkdir(eval_dir)
-
-    if not os.path.isfile(os.path.join(eval_dir, 'evaluation_data') + '.pkl'):
-
-        results = system.simulation['results']
-        results['time'] = results.index
-        grid_features = json.loads(settings.get('Evaluation', 'Features'))
-        regions, grid_spaces = gen_index(data=features, steps=40, features=grid_features)
-        mi_rs = bin_results(results, regions, grid_spaces)
-        mi_rs = regional_doubt(mi_rs)
-
-        reindex = list()
-        reindex.append(mi_rs['horizon'].values)
-        for name in mi_rs.index.names:
-
-            values = mi_rs.index.get_level_values(level=name)
-            reindex.append(values)
-
-        names = ['horizon'] + mi_rs.index.names
-        mi_rs.index = pd.MultiIndex.from_arrays(reindex, names=names)
-
-        #check_bins(mi_rs, results)
-
-        save_pickle(eval_dir, 'evaluation_data', mi_rs)
-        save_pickle(eval_dir, 'grid_info', grid_spaces)
-
-    else:
-        dir = os.path.join(system_dir, 'evaluation')
-        mi_rs = load_pickle(dir, 'evaluation_data')
-
-    return mi_rs
-
-
 def evaluate(settings, systems):
     from th_e_sim.iotools import write_excel
 
@@ -574,17 +368,6 @@ def evaluate(settings, systems):
 
         return _describe_data(system, data, data.index, column, file)
 
-    def _print_boxplot_mi(system, data, level, column, file, **kwargs):
-        from th_e_sim.iotools import print_boxplot
-        try:
-            _data = deepcopy(data)
-            _data.index = data.index.get_level_values(level)
-            print_boxplot(system, _data, _data.index, column, file, **kwargs)
-
-        except ImportError as e:
-            logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
-                                                                                 str(e)))
-
     def _print_boxplot(system, labels, data, file, **kwargs):
         from th_e_sim.iotools import print_boxplot
         try:
@@ -614,50 +397,53 @@ def evaluate(settings, systems):
 
         return description
 
-    def mi_moments(mi_data, targets):
+    def _extract_labels(data, configs):
 
-        err_cols = [target + '_err' for target in targets]
+        def _gitterize(data: pd.Series, steps):
+            from math import floor, ceil
 
-        mi = mi_data.index
-        groups = mi.names
-        
-        be = mi_data[err_cols].groupby(level=groups)
-        mbe = be.mean()
-        be_std = be.std()
-        mbe.columns = pd.MultiIndex.from_product([['mbe'], targets], names=['kpi', 'targets'])
-        be_std.columns = pd.MultiIndex.from_product([['mbe_std'], targets], names=['kpi', 'targets'])
-        
-        ae = mi_data[err_cols].abs().groupby(level=groups)
-        mae = ae.mean()
-        ae_std = ae.std()
-        mae.columns = pd.MultiIndex.from_product([['mae'], targets], names=['kpi', 'targets'])
-        ae_std.columns = pd.MultiIndex.from_product([['mae_std'], targets], names=['kpi', 'targets'])
-        
-        se = (mi_data[err_cols] ** 2).groupby(level=groups)
-        rmse = se.mean() ** 0.5
-        rse_std = se.std() ** 0.5
-        rmse.columns = pd.MultiIndex.from_product([['rmse'], targets], names=['kpi', 'targets'])
-        rse_std.columns = pd.MultiIndex.from_product([['rmse_std'], targets], names=['kpi', 'targets'])
+            total_steps = steps
+            f_max = ceil(data.max())
+            f_min = floor(data.min())
+            big_delta = f_max - f_min
 
-        n_col = pd.MultiIndex.from_product([['count'], targets], names=['kpi', 'targets'])
-        n = pd.DataFrame(index=mi_data.index, columns=n_col)
-        _n = [1 for x in range(len(mi_data))]
+            # Round step_size down
+            small_delta = floor(big_delta / total_steps * 10) / 10
+            if small_delta == 0:
+                raise ValueError("The axis {} cannot be analyzed with the regular grid spacing of {} between"
+                                 "grid points. Please choose a smaller number of steps".format(feature, small_delta))
 
-        for col in n_col:
-            n[col] = _n
-        n = n.groupby(level=groups).sum()
+            to_edge = big_delta - small_delta * total_steps
+            extra_steps = ceil(to_edge / small_delta)
+            total_steps = total_steps + extra_steps
 
-        mi_kpi = pd.concat([mbe, be_std, mae, ae_std, rmse, rse_std, n], axis=1)
+            discrete_axis = [f_min + small_delta * x for x in range(total_steps + 1)]
 
-        return mi_kpi
+            return discrete_axis, small_delta
 
-    def _relative_kpi(mi_kpi):
+        if 'Discretize' in configs.sections():
 
-        m = mi_kpi.mean()
-        std = mi_kpi.std()
+            d_axis = configs['Discretize']
 
-        mi_rkpi = (mi_kpi - m)/std
-        return round(mi_rkpi, 2)
+            gitterized = []
+            for feature, steps in d_axis.items():
+
+                if feature == 'horizon':
+                    continue
+
+                data[feature + '_d'] = data[feature]
+                discrete_feature, step_size = _gitterize(data[feature], int(steps))
+                gitterized.append(feature)
+
+                for i in discrete_feature:
+                    i_loc = data[feature + '_d'] - i
+                    i_loc = (i_loc >= 0) & (i_loc < step_size)
+                    data.loc[i_loc, feature + '_d'] = i
+
+            return gitterized
+
+        else:
+            return
 
     def discrete_metrics(name, data, target, groups, conditions, metric, summary, boxplot=False, **kwargs):
 
@@ -840,11 +626,11 @@ def evaluate(settings, systems):
         return evaluation, kpi
 
     summary_tbl = pd.DataFrame(index=[s.name for s in systems],
-                           columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
-                                                              ('Durations [min]', 'Prediction')]))
-
+                               columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
+                                                                  ('Durations [min]', 'Prediction')]))
     evaluations = {}
     for system in systems:
+
         # index = pd.IndexSlice
         durations = system.simulation['durations']
         summary_tbl.loc[system.name, ('Durations [min]', 'Simulation')] = round(durations['simulation']['minutes'])
@@ -853,37 +639,42 @@ def evaluate(settings, systems):
         if 'training' in durations.keys():
             summary_tbl.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
 
-        # retrieve data for evaluation along discrete axis
-        mi_results = system.simulation['evaluation']
-
-        # Extract additional features
-        mi_results['day_hour'] = [t.hour for t in mi_results['time']]
-        mi_results['weekday'] = [t.weekday for t in mi_results['time']]
-        mi_results['month'] = [t.month for t in mi_results['time']]
-
-        # retrieve eval config for system
+        # Retrieve eval configs
         data_dir = system.configs['General']['data_dir']
         eval_cfg = os.path.join(data_dir, 'conf', 'evaluation.cfg')
         eval_settings = ConfigParser()
         eval_settings.read(eval_cfg)
 
-        for name in eval_settings.keys():
+        # Load results
+        results = system.simulation['results']
 
-            if name == "DEFAULT":
+        # Extract additional features
+        results['day_hour'] = [t.hour for t in results.index]
+        results['weekday'] = [t.weekday for t in results.index]
+        results['month'] = [t.month for t in results.index]
+        c_axes = _extract_labels(results, eval_settings)
+
+        # Perform Evaluations
+        for name in eval_settings.sections():
+
+            if name == "DEFAULT" or name == "Discretize":
                 continue
 
             config = _parse_eval(name, eval_settings[name])
 
+            for i in range(len(config['groups'])):
+                if config['groups'][i] in c_axes:
+                    config['groups'][i] = config['groups'][i] + '_d'
+
             for target in config['targets']:
                 # calculate metric
-                metric, summary = discrete_metrics(name, mi_results, target, **config)
+                metric, summary = discrete_metrics(name, results, target, **config)
 
                 target_id = target.replace('_power', '')
                 target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
 
                 add_evaluation(system, name, target_name, summary, metric)
 
-        #moments = mi_moments(evaluation_data, targets)
     write_excel(settings, summary_tbl, evaluations)
 
 def _launch_tensorboard(**kwargs):
