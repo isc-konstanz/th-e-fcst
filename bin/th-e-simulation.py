@@ -581,10 +581,12 @@ def evaluate(settings, systems):
 
         def summarize(evaluation, metric, groups, option=None):
 
-            options = ['horizon_weighted', 'naive', 'optimist']
+            options = ['horizon_weighted', 'mean', 'high_load_bias',
+                       'err_per_load', 'optimist']
 
-            if option == 'naive':
+            w = pd.Series([4 / 7, 2 / 7, 1 / 7], name='weights')
 
+            if option == 'mean':
                 return evaluation[metric].mean()
 
             elif option == 'horizon_weighted':
@@ -593,17 +595,27 @@ def evaluate(settings, systems):
                     raise ValueError("This summary is not compatible with your "
                                      "chosen group index {}".format(groups))
                 ri = [1, 3, 6]
-                w = pd.Series([4/7, 2/7, 1/7], index=ri, name='weights')
-
+                w.index = ri
                 weighted_sum = evaluation.loc[ri, metric].dot(w)
-
                 return weighted_sum
+
+            elif option == 'high_load_bias':
+                # This calculation only works as long as the following assumption
+                # is true: The error scales with target load
+                qs = evaluation[metric].quantile([0.75, 0.5, 0.25])
+                qs.index = w.index
+                weighted_sum = qs.dot(w)
+                return weighted_sum
+
+            elif option == 'err_per_load':
+                watt_series = pd.Series(evaluation.index, index=evaluation.index)
+                watt_series = watt_series.iloc[(watt_series != 0).values]
+                err_watt = evaluation.loc[watt_series.index, metric].div(watt_series)
+                err_watt = err_watt.mean()
+                return err_watt
 
             elif option == 'optimist':
                 return evaluation[metric].min()
-
-            elif option == 'simple':
-                return evaluation[metric].iloc[evaluation.index[0]]
 
             else:
                 raise ValueError('The current option is not yet available for metric summarization '
