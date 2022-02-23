@@ -382,7 +382,7 @@ def evaluate(settings, systems):
 
         return description
 
-    def _extract_labels(data, configs):
+    def _extract_labels(data, groups, group_bins):
 
         def _gitterize(data: pd.Series, steps):
             from math import floor, ceil
@@ -407,40 +407,46 @@ def evaluate(settings, systems):
 
             return discrete_axis, small_delta
 
-        if 'Discretize' in configs.sections():
+        if len(groups) != len(group_bins):
+            groups = groups[-len(group_bins):]
 
-            d_axis = configs['Discretize']
+        d_axis = zip(groups, group_bins)
+        gitterized = list()
 
-            gitterized = []
-            for feature, steps in d_axis.items():
+        for feature, steps in d_axis:
 
-                if feature == 'horizon':
-                    continue
+            data[feature + '_d'] = data[feature]
+            discrete_feature, step_size = _gitterize(data[feature], int(steps))
+            gitterized.append(feature)
 
-                data[feature + '_d'] = data[feature]
-                discrete_feature, step_size = _gitterize(data[feature], int(steps))
-                gitterized.append(feature)
+            for i in discrete_feature:
+                i_loc = data[feature + '_d'] - i
+                i_loc = (i_loc >= 0) & (i_loc < step_size)
+                data.loc[i_loc, feature + '_d'] = i
 
-                for i in discrete_feature:
-                    i_loc = data[feature + '_d'] - i
-                    i_loc = (i_loc >= 0) & (i_loc < step_size)
-                    data.loc[i_loc, feature + '_d'] = i
+        return gitterized
 
-            return gitterized
 
-        else:
-            return
-
-    def discrete_metrics(name, data, target, groups, conditions, metrics, summary, boxplot=False, **kwargs):
+    def discrete_metrics(name, data, target, groups, conditions, metrics, summary, group_bins=None, boxplot=False, **kwargs):
 
         data = deepcopy(data)
+
+        # replace continuous groups with discretized equivalents generated in _extract_labels
+        if group_bins != None:
+            gitter = _extract_labels(data, groups, group_bins)
+            _groups = list()
+            for group in groups:
+                if group in gitter:
+                    _groups.append(group + '_d')
+                else:
+                    _groups.append(group)
 
         # Index is unimportant; all information contained in the index which is important for the
         # analysis should be added as a seperate column.
         data.index = [x for x in range(len(data))]
         req_cols = list()
         req_cols.append(target)
-        req_cols = req_cols + groups
+        req_cols = req_cols + _groups
 
         if conditions:
 
@@ -614,12 +620,12 @@ def evaluate(settings, systems):
         # select err data pertaining to desired target
         err_col = target + '_err'
 
-        eval_cols = [err_col] + groups
+        eval_cols = [err_col] + _groups
         data = data[eval_cols]
 
         # calculate metrics
-        evaluation = perform_metrics(name, data, err_col, groups, metrics, boxplot)
-        kpi = summarize(evaluation, metrics[0], groups, option=summary[0])
+        evaluation = perform_metrics(name, data, err_col, _groups, metrics, boxplot)
+        kpi = summarize(evaluation, metrics[0], _groups, option=summary[0])
 
         # calculate summary
         return evaluation, kpi
@@ -651,19 +657,14 @@ def evaluate(settings, systems):
         results['day_hour'] = [t.hour for t in results.index]
         results['weekday'] = [t.weekday for t in results.index]
         results['month'] = [t.month for t in results.index]
-        c_axes = _extract_labels(results, eval_settings)
 
         # Perform Evaluations
         for name in eval_settings.sections():
 
-            if name == "DEFAULT" or name == "Discretize":
+            if name == "DEFAULT":
                 continue
 
             config = _parse_eval(eval_settings[name])
-
-            for i in range(len(config['groups'])):
-                if config['groups'][i] in c_axes:
-                    config['groups'][i] = config['groups'][i] + '_d'
 
             for target in config['targets']:
                 # calculate metric
