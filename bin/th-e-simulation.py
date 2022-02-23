@@ -289,7 +289,7 @@ def evaluate(settings, systems):
 
     def _parse_eval(eval_config):
 
-        sections = {'targets': str, 'metric': str, 'conditions': 'condition',
+        sections = {'targets': str, 'metrics': str, 'conditions': 'condition',
                     'groups': str, 'group_bins': int, 'summary': str, 'boxplot': bool}
 
         values = [list() for i in range(len(sections))]
@@ -430,7 +430,7 @@ def evaluate(settings, systems):
         else:
             return
 
-    def discrete_metrics(name, data, target, groups, conditions, metric, summary, boxplot=False, **kwargs):
+    def discrete_metrics(name, data, target, groups, conditions, metrics, summary, boxplot=False, **kwargs):
 
         data = deepcopy(data)
 
@@ -453,75 +453,88 @@ def evaluate(settings, systems):
                              "evaluation as configured in the config. Please ensure that "
                              "the following configured columns are as intended: {}".format(req_cols))
 
-        def perform_metrics(name, metric_data, err_col, groups, metric, boxplot):
+        def perform_metrics(name, data, err_col, groups, metrics, boxplot):
 
-            metric_data = deepcopy(metric_data)
+            data = deepcopy(data)
             _metrics = []
+            for metric in metrics:
 
-            if 'mae' == metric:
+                if 'mae' == metric:
 
-                metric_data[err_col] = metric_data[err_col].abs()
-                mae = metric_data.groupby(groups).mean()
-                ae_std = metric_data.groupby(groups).std()
-                _metrics.append(mae)
-                _metrics.append(ae_std)
+                    data[err_col] = data[err_col].abs()
+                    mae = data.groupby(groups).mean()
+                    ae_std = data.groupby(groups).std()
+                    _metrics.append(mae)
+                    _metrics.append(ae_std)
 
-                #ToDO: Handle boxplots when grouping by multiple features.
-                if boxplot and len(groups) == 1:
-                    _print_boxplot(system, metric_data[groups[0]], metric_data[err_col].values, os.path.join("evaluation", name))
+                    #ToDO: Handle boxplots when grouping by multiple features.
+                    if boxplot and len(groups) == 1:
+                        _print_boxplot(system, data[groups[0]], data[err_col].values, os.path.join("evaluation", name))
 
-            elif 'mse' == metric:
+                elif 'mse' == metric:
 
-                metric_data[err_col] = (metric_data[err_col] ** 2)
-                mse = metric_data.groupby(groups).mean()
-                se_std = metric_data.groupby(groups).std()
-                _metrics.append(mse)
-                _metrics.append(se_std)
+                    data[err_col] = (data[err_col] ** 2)
+                    mse = data.groupby(groups).mean()
+                    se_std = data.groupby(groups).std()
+                    _metrics.append(mse)
+                    _metrics.append(se_std)
 
-                #ToDO: Handle boxplots when grouping by multiple features.
-                if boxplot and len(groups) == 1:
-                    _print_boxplot(system, metric_data[groups[0]], metric_data[err_col].values, os.path.join("evaluation", name))
+                    #ToDO: Handle boxplots when grouping by multiple features.
+                    if boxplot and len(groups) == 1:
+                        _print_boxplot(system, data[groups[0]], data[err_col].values, os.path.join("evaluation", name))
 
-            elif 'rmse' == metric:
+                elif 'rmse' == metric:
 
-                metric_data[err_col] = (metric_data[err_col] ** 2)
-                rmse = metric_data.groupby(groups).mean() ** 0.5
-                rse_std = metric_data.groupby(groups).std() ** 0.5
-                _metrics.append(rmse)
-                _metrics.append(rse_std)
+                    data[err_col] = (data[err_col] ** 2)
+                    rmse = data.groupby(groups).mean() ** 0.5
+                    rse_std = data.groupby(groups).std() ** 0.5
+                    _metrics.append(rmse)
+                    _metrics.append(rse_std)
 
-                #ToDO: Handle boxplots when grouping by multiple features.
-                if boxplot and len(groups) == 1:
-                    _print_boxplot(system,  metric_data[groups[0]], metric_data[err_col].values, os.path.join("evaluation", name))
+                    #ToDO: Handle boxplots when grouping by multiple features.
+                    if boxplot and len(groups) == 1:
+                        _print_boxplot(system, data[groups[0]], data[err_col].values, os.path.join("evaluation", name))
 
-            elif 'mbe' == metric:
+                elif 'mbe' == metric:
 
-                mbe = metric_data.groupby(groups).mean()
-                be_std = metric_data.groupby(groups).std()
-                _metrics.append(mbe)
-                _metrics.append(be_std)
+                    mbe = data.groupby(groups).mean()
+                    be_std = data.groupby(groups).std()
+                    _metrics.append(mbe)
+                    _metrics.append(be_std)
 
-                #ToDO: Handle boxplots when grouping by multiple features.
-                if boxplot and len(groups) == 1:
-                    _print_boxplot(system, metric_data[groups[0]], metric_data[err_col].values, os.path.join("evaluation", name))
-            else:
-                raise ValueError("The chosen metric {} has not yet been implemented".format(metric))
+                    #ToDO: Handle boxplots when grouping by multiple features.
+                    if boxplot and len(groups) == 1:
+                        _print_boxplot(system, data[groups[0]], data[err_col].values, os.path.join("evaluation", name))
+                else:
+                    raise ValueError("The chosen metric {} has not yet been implemented".format(metric))
 
             # introduce count to data
-            n = [1 for x in range(len(metric_data))]
-            n = pd.Series(n, index=metric_data.index, name='count')
-            metric_data = pd.concat([metric_data, n], axis=1)
+            n = [1 for x in range(len(data))]
+            n = pd.Series(n, index=data.index, name='count')
+            data = pd.concat([data, n], axis=1)
 
             # count points in each group
-            n = metric_data[groups + ['count']].groupby(groups).sum()
+            n = data[groups + ['count']].groupby(groups).sum()
 
             _metrics.append(n)
 
             # concatenate results
-            metrics = pd.concat(_metrics, axis=1)
-            metrics.columns = [metric, metric + "_std", "count"]
+            metric_data = pd.concat(_metrics, axis=1)
 
-            return metrics
+            # Generate appropriate column names
+            metrics_c1 = [metric for metric in metrics]
+            metrics_c2 = [metric + '_std' for metric in metrics]
+            metric_cols = list()
+
+            for metric, std in zip(metrics_c1, metrics_c2):
+
+                metric_cols.append(metric)
+                metric_cols.append(std)
+
+            metric_cols.append('count')
+            metric_data.columns = metric_cols
+
+            return metric_data
 
         def select_data(data, conditions):
 
@@ -616,8 +629,8 @@ def evaluate(settings, systems):
         data = data[eval_cols]
 
         # calculate metrics
-        evaluation = perform_metrics(name, data, err_col, groups, metric[0], boxplot)
-        kpi = summarize(evaluation, metric[0], groups, option=summary[0])
+        evaluation = perform_metrics(name, data, err_col, groups, metrics, boxplot)
+        kpi = summarize(evaluation, metrics[0], groups, option=summary[0])
 
         # calculate summary
         return evaluation, kpi
