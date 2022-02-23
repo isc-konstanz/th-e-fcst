@@ -394,6 +394,7 @@ def evaluate(settings, systems):
 
             # Round step_size down
             small_delta = floor(big_delta / total_steps * 10) / 10
+
             if small_delta == 0:
                 raise ValueError("The axis {} cannot be analyzed with the regular grid spacing of {} between"
                                  "grid points. Please choose a smaller number of steps".format(feature, small_delta))
@@ -467,10 +468,6 @@ def evaluate(settings, systems):
                     _metrics.append(mae)
                     _metrics.append(ae_std)
 
-                    #ToDO: Handle boxplots when grouping by multiple features.
-                    if boxplot and len(groups) == 1:
-                        _print_boxplot(system, data[groups[0]], data[err_col].values, os.path.join("evaluation", name))
-
                 elif 'mse' == metric:
 
                     data[err_col] = (data[err_col] ** 2)
@@ -478,10 +475,6 @@ def evaluate(settings, systems):
                     se_std = data.groupby(groups).std()
                     _metrics.append(mse)
                     _metrics.append(se_std)
-
-                    #ToDO: Handle boxplots when grouping by multiple features.
-                    if boxplot and len(groups) == 1:
-                        _print_boxplot(system, data[groups[0]], data[err_col].values, os.path.join("evaluation", name))
 
                 elif 'rmse' == metric:
 
@@ -491,10 +484,6 @@ def evaluate(settings, systems):
                     _metrics.append(rmse)
                     _metrics.append(rse_std)
 
-                    #ToDO: Handle boxplots when grouping by multiple features.
-                    if boxplot and len(groups) == 1:
-                        _print_boxplot(system, data[groups[0]], data[err_col].values, os.path.join("evaluation", name))
-
                 elif 'mbe' == metric:
 
                     mbe = data.groupby(groups).mean()
@@ -502,11 +491,11 @@ def evaluate(settings, systems):
                     _metrics.append(mbe)
                     _metrics.append(be_std)
 
-                    #ToDO: Handle boxplots when grouping by multiple features.
-                    if boxplot and len(groups) == 1:
-                        _print_boxplot(system, data[groups[0]], data[err_col].values, os.path.join("evaluation", name))
                 else:
                     raise ValueError("The chosen metric {} has not yet been implemented".format(metric))
+
+                if boxplot and len(groups) == 1:
+                    _print_boxplot(system, data[groups[0]], data[err_col].values, os.path.join("evaluation", name, metric))
 
             # introduce count to data
             n = [1 for x in range(len(data))]
