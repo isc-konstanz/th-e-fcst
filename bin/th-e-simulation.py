@@ -287,55 +287,40 @@ def simulate(settings, system, features, **kwargs):
 def evaluate(settings, systems):
     from th_e_sim.iotools import write_excel
 
-    def _parse_eval(name, eval_config):
+    def _parse_eval(eval_config):
 
-        sections = {'target': str, 'metric': str, 'condition': 'condition',
-                    'group': str, 'summary': str, 'boxplot': bool}
+        sections = {'targets': str, 'metric': str, 'conditions': 'condition',
+                    'groups': str, 'group_bins': int, 'summary': str, 'boxplot': bool}
 
-        eval_dict = {}
-        for s in eval_config.keys():
+        values = [list() for i in range(len(sections))]
+        eval_dict = dict(zip(sections.keys(), values))
 
-            pi = s.split('_')[0]
-            pi = sections[pi]
+        for key, parameters in eval_config.items():
+
+            parameters = parameters.split(', ')
+            pi = sections[key]
 
             if pi == str:
-                eval_dict[s] = eval_config.get(s)
+
+                for parameter in parameters:
+                    eval_dict[key].append(pi(parameter))
 
             elif pi == bool:
-                eval_dict[s] = eval_config.getboolean(s)
+
+                for parameter in parameters:
+                    eval_dict[key].append(pi(parameter))
 
             elif pi == int:
-                eval_dict[s] = eval_config.getint(s)
+
+                for parameter in parameters:
+                    eval_dict[key].append(pi(parameter))
 
             elif pi == "condition":
-                c = eval_config.get(s).split(" ")
-                c[2] = json.loads(c[2])
-                eval_dict[s] = c
 
-        # Combine parameters that belong together (i.e. condition_1, condition_2 to conditions)
-        combine = {}
-        for s in eval_dict.keys():
-
-            group_id = s.split('_')
-
-            if len(group_id) > 1 and isinstance(json.loads(group_id[-1]), int):
-
-                key = '_'.join(group_id[:-1]) + 's'
-                if key not in combine.keys():
-                    combine[key] = list()
-
-                combine[key].append(s)
-
-        for new_key, combine_keys in combine.items():
-
-            eval_dict[new_key] = list()
-            for old_key in combine_keys:
-                eval_dict[new_key].append(eval_dict.pop(old_key))
-
-        # Check that parameters required for the evaluation are present.
-        required = {'targets', 'metric', 'groups', 'conditions', 'summary', 'boxplot'}
-        if not required.issubset(set(eval_dict.keys())):
-            raise AttributeError("The config file does not contain the required set of parameters: {}".format(required))
+                for parameter in parameters:
+                    parameter = parameter.split(" ")
+                    parameter[2] = json.loads(parameter[2])
+                    eval_dict[key].append(parameter)
 
         return eval_dict
 
@@ -631,8 +616,8 @@ def evaluate(settings, systems):
         data = data[eval_cols]
 
         # calculate metrics
-        evaluation = perform_metrics(name, data, err_col, groups, metric, boxplot)
-        kpi = summarize(evaluation, metric, groups, option=summary)
+        evaluation = perform_metrics(name, data, err_col, groups, metric[0], boxplot)
+        kpi = summarize(evaluation, metric[0], groups, option=summary[0])
 
         # calculate summary
         return evaluation, kpi
@@ -672,7 +657,7 @@ def evaluate(settings, systems):
             if name == "DEFAULT" or name == "Discretize":
                 continue
 
-            config = _parse_eval(name, eval_settings[name])
+            config = _parse_eval(eval_settings[name])
 
             for i in range(len(config['groups'])):
                 if config['groups'][i] in c_axes:
