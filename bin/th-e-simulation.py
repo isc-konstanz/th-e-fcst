@@ -403,7 +403,7 @@ def evaluate(settings, systems):
             extra_steps = ceil(to_edge / small_delta)
             total_steps = total_steps + extra_steps
 
-            discrete_axis = [f_min + small_delta * x for x in range(total_steps + 1)]
+            discrete_axis = [round(f_min + small_delta * x, 2) for x in range(total_steps + 1)]
 
             return discrete_axis, small_delta
 
