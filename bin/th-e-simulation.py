@@ -579,11 +579,12 @@ def evaluate(settings, systems):
         def summarize(evaluation, metric, groups, option=None):
 
             options = ['horizon_weighted', 'mean', 'high_load_bias',
-                       'err_per_load', 'optimist']
+                       'err_per_load', 'optimist', 'fullest_bin']
 
             w = pd.Series([4 / 7, 2 / 7, 1 / 7], name='weights')
 
             if option == 'mean':
+
                 return evaluation[metric].mean()
 
             elif option == 'horizon_weighted':
@@ -597,14 +598,17 @@ def evaluate(settings, systems):
                 return weighted_sum
 
             elif option == 'high_load_bias':
+
                 # This calculation only works as long as the following assumption
                 # is true: The error scales with target load
                 qs = evaluation[metric].quantile([0.75, 0.5, 0.25])
                 qs.index = w.index
                 weighted_sum = qs.dot(w)
+
                 return weighted_sum
 
             elif option == 'err_per_load':
+
                 watt_series = pd.Series(evaluation.index, index=evaluation.index)
                 watt_series = watt_series.iloc[(watt_series != 0).values]
                 err_watt = evaluation.loc[watt_series.index, metric].div(watt_series)
@@ -612,9 +616,19 @@ def evaluate(settings, systems):
                 return err_watt
 
             elif option == 'optimist':
+
                 return evaluation[metric].min()
 
+            elif option == 'fullest_bin':
+
+                if isinstance(evaluation.index, pd.MultiIndex):
+                    raise AttributeError("This summary has not yet been implemented for multiindexed bins.")
+
+                candidate = evaluation['count'].idxmax()
+                return candidate
+
             else:
+
                 raise ValueError('The current option is not yet available for metric summarization '
                                   'please choose one of the following options: {}'.format(options))
 
