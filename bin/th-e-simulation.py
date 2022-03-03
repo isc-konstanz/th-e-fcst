@@ -307,8 +307,12 @@ def evaluate(settings, systems):
 
             elif pi == bool:
 
+                truth = ['1', 'true', 'yes']
                 for parameter in parameters:
-                    eval_dict[key].append(pi(parameter))
+                    if parameter.lower() in truth:
+                        eval_dict[key] = True
+                    else:
+                        eval_dict[key] = False
 
             elif pi == int:
 
