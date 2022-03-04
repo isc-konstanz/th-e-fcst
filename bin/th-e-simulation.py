@@ -431,7 +431,7 @@ def evaluate(settings, systems):
         return gitterized
 
 
-    def discrete_metrics(name, data, target, groups, conditions, metrics, summary, group_bins=None, boxplot=False, **kwargs):
+    def discrete_metrics(name, data, target, groups, metrics, summary, conditions=None, group_bins=None, boxplot=False, **kwargs):
 
         data = deepcopy(data)
 
@@ -633,7 +633,8 @@ def evaluate(settings, systems):
                                   'please choose one of the following options: {}'.format(options))
 
         #select data pertaining to the desired feature space to be examined
-        data = select_data(data, conditions)
+        if conditions:
+            data = select_data(data, conditions)
 
         # select err data pertaining to desired target
         err_col = target + '_err'
