@@ -46,7 +46,10 @@ def main(args):
     from th_e_sim.iotools import write_csv
     from th_e_sim import preparation
     from th_e_fcst import System
+    #from th_e_core.evaluation import Evaluation
 
+    #evaluations = Evaluation.read('data/A-queue/system_1')
+    #evaluations[1].run()
     logger.info("Starting TH-E Simulation")
 
     settings_file = os.path.join(args.config_dir, 'settings.cfg')
@@ -286,47 +289,7 @@ def simulate(settings, system, features, **kwargs):
 
 def evaluate(settings, systems):
     from th_e_sim.iotools import write_excel
-
-    def _parse_eval(eval_config):
-
-        sections = {'targets': str, 'metrics': str, 'conditions': 'condition',
-                    'groups': str, 'group_bins': int, 'summary': str, 'boxplot': bool}
-
-        values = [list() for i in range(len(sections))]
-        eval_dict = dict(zip(sections.keys(), values))
-
-        for key, parameters in eval_config.items():
-
-            parameters = parameters.split(', ')
-            pi = sections[key]
-
-            if pi == str:
-
-                for parameter in parameters:
-                    eval_dict[key].append(pi(parameter))
-
-            elif pi == bool:
-
-                truth = ['1', 'true', 'yes']
-                for parameter in parameters:
-                    if parameter.lower() in truth:
-                        eval_dict[key] = True
-                    else:
-                        eval_dict[key] = False
-
-            elif pi == int:
-
-                for parameter in parameters:
-                    eval_dict[key].append(pi(parameter))
-
-            elif pi == "condition":
-
-                for parameter in parameters:
-                    parameter = parameter.split(" ")
-                    parameter[2] = json.loads(parameter[2])
-                    eval_dict[key].append(parameter)
-
-        return eval_dict
+    from th_e_core.evaluation import Evaluation
 
     def concat_evaluation(system, name, header, data):
         if data is None:
@@ -344,19 +307,6 @@ def evaluate(settings, systems):
         if kpi is not None:
             summary_tbl.loc[system.name, (header, name)] = kpi
 
-    def _evaluate_data(system, data, level, column, file, **kwargs):
-        from th_e_sim.iotools import print_boxplot
-        try:
-            _data = deepcopy(data)
-            _data.index = data.index.get_level_values(level)
-            print_boxplot(system, _data, _data.index, column, file, **kwargs)
-
-        except ImportError as e:
-            logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
-                                                                                 str(e)))
-
-        return _describe_data(system, data, data.index, column, file)
-
     def _print_boxplot(system, labels, data, file, **kwargs):
         from th_e_sim.iotools import print_boxplot
         try:
@@ -366,288 +316,6 @@ def evaluate(settings, systems):
         except ImportError as e:
             logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
                                                                                  str(e)))
-
-    def _describe_data(system, data, level, column, file):
-        from th_e_sim.iotools import write_csv
-
-        data = data[column]
-        group = data.groupby(level)
-        median = group.median()
-        median.name = 'median'
-        mae = data.abs().groupby(level).mean()
-        mae.name = 'mae'
-        rmse = (data ** 2).groupby(level).mean() ** .5
-        rmse.name = 'rmse'
-        description = pd.concat([rmse, mae, median, group.describe()], axis=1)
-        description.index = pd.MultiIndex.from_tuples(description.index, names=data.index.names)
-        del description['count']
-
-        write_csv(system, description, file)
-
-        return description
-
-    def _extract_labels(data, groups, group_bins):
-
-        def _gitterize(data: pd.Series, steps):
-            from math import floor, ceil
-
-            total_steps = steps
-            f_max = ceil(data.max())
-            f_min = floor(data.min())
-            big_delta = f_max - f_min
-
-            # Round step_size down
-            small_delta = floor(big_delta / total_steps * 10) / 10
-
-            if small_delta == 0:
-                raise ValueError("The axis {} cannot be analyzed with the regular grid spacing of {} between"
-                                 "grid points. Please choose a smaller number of steps".format(feature, small_delta))
-
-            to_edge = big_delta - small_delta * total_steps
-            extra_steps = ceil(to_edge / small_delta)
-            total_steps = total_steps + extra_steps
-
-            discrete_axis = [round(f_min + small_delta * x, 2) for x in range(total_steps + 1)]
-
-            return discrete_axis, small_delta
-
-        if len(groups) != len(group_bins):
-            groups = groups[-len(group_bins):]
-
-        d_axis = zip(groups, group_bins)
-        gitterized = list()
-
-        for feature, steps in d_axis:
-
-            data[feature + '_d'] = data[feature]
-            discrete_feature, step_size = _gitterize(data[feature], int(steps))
-            gitterized.append(feature)
-
-            for i in discrete_feature:
-                i_loc = data[feature + '_d'] - i
-                i_loc = (i_loc >= 0) & (i_loc < step_size)
-                data.loc[i_loc, feature + '_d'] = i
-
-        return gitterized
-
-
-    def discrete_metrics(name, data, target, groups, metrics, summary, conditions=None, group_bins=None, boxplot=False, **kwargs):
-
-        data = deepcopy(data)
-
-        # replace continuous groups with discretized equivalents generated in _extract_labels
-        if group_bins != None:
-            gitter = _extract_labels(data, groups, group_bins)
-            _groups = list()
-            for group in groups:
-                if group in gitter:
-                    _groups.append(group + '_d')
-                else:
-                    _groups.append(group)
-
-        # Index is unimportant; all information contained in the index which is important for the
-        # analysis should be added as a seperate column.
-        data.index = [x for x in range(len(data))]
-        req_cols = list()
-        req_cols.append(target)
-        req_cols = req_cols + _groups
-
-        if conditions:
-
-            for i in range(len(conditions)):
-                req_cols.append(conditions[i][0])
-
-        req_cols = set(req_cols)
-
-        if not req_cols.issubset(set(data.columns)):
-            raise ValueError("The data does not contain the necessary columns for the "
-                             "evaluation as configured in the config. Please ensure that "
-                             "the following configured columns are as intended: {}".format(req_cols))
-
-        def perform_metrics(name, data, err_col, groups, metrics, boxplot):
-
-            data = deepcopy(data)
-            _metrics = []
-            for metric in metrics:
-
-                if 'mae' == metric:
-
-                    data[err_col] = data[err_col].abs()
-                    mae = data.groupby(groups).mean()
-                    ae_std = data.groupby(groups).std()
-                    _metrics.append(mae)
-                    _metrics.append(ae_std)
-
-                elif 'mse' == metric:
-
-                    data[err_col] = (data[err_col] ** 2)
-                    mse = data.groupby(groups).mean()
-                    se_std = data.groupby(groups).std()
-                    _metrics.append(mse)
-                    _metrics.append(se_std)
-
-                elif 'rmse' == metric:
-
-                    data[err_col] = (data[err_col] ** 2)
-                    rmse = data.groupby(groups).mean() ** 0.5
-                    rse_std = data.groupby(groups).std() ** 0.5
-                    _metrics.append(rmse)
-                    _metrics.append(rse_std)
-
-                elif 'mbe' == metric:
-
-                    mbe = data.groupby(groups).mean()
-                    be_std = data.groupby(groups).std()
-                    _metrics.append(mbe)
-                    _metrics.append(be_std)
-
-                else:
-                    raise ValueError("The chosen metric {} has not yet been implemented".format(metric))
-
-                if boxplot and len(groups) == 1:
-                    _print_boxplot(system, data[groups[0]], data[err_col].values, os.path.join("evaluation", name, metric))
-
-            # introduce count to data
-            n = [1 for x in range(len(data))]
-            n = pd.Series(n, index=data.index, name='count')
-            data = pd.concat([data, n], axis=1)
-
-            # count points in each group
-            n = data[groups + ['count']].groupby(groups).sum()
-
-            _metrics.append(n)
-
-            # concatenate results
-            metric_data = pd.concat(_metrics, axis=1)
-
-            # Generate appropriate column names
-            metrics_c1 = [metric for metric in metrics]
-            metrics_c2 = [metric + '_std' for metric in metrics]
-            metric_cols = list()
-
-            for metric, std in zip(metrics_c1, metrics_c2):
-
-                metric_cols.append(metric)
-                metric_cols.append(std)
-
-            metric_cols.append('count')
-            metric_data.columns = metric_cols
-
-            return metric_data
-
-        def select_data(data, conditions):
-
-            def select_rows(data, feature, operator, value, *args):
-
-                series = data[feature]
-
-                if operator.lower() in ['lt', '<']:
-                    rows = (series < value)
-
-                elif operator.lower() in ['gt', '>']:
-                    rows = (series > value)
-
-                elif operator.lower() in ['leq', '<=']:
-                    rows = (series <= value)
-
-                elif operator.lower() in ['geq', '>=']:
-                    rows = (series >= value)
-
-                elif operator.lower() in ['eq', '=', '==']:
-                    rows = (series == value)
-
-                else:
-                    raise ValueError('An improper condition is present in the dict defining the kpi.')
-
-                return rows
-
-            _ps = pd.Series([True] * len(data), index=data.index)
-
-
-            for c in conditions:
-
-                if not c:
-                    continue
-
-                rows = select_rows(data, *c)
-                _ps = _ps & rows
-
-            selected = data.iloc[_ps.values]
-
-            return selected
-
-        def summarize(evaluation, metric, groups, option=None):
-
-            options = ['horizon_weighted', 'mean', 'high_load_bias',
-                       'err_per_load', 'optimist', 'fullest_bin']
-
-            w = pd.Series([4 / 7, 2 / 7, 1 / 7], name='weights')
-
-            if option == 'mean':
-
-                return evaluation[metric].mean()
-
-            elif option == 'horizon_weighted':
-
-                if not 'horizon' in groups:
-                    raise ValueError("This summary is not compatible with your "
-                                     "chosen group index {}".format(groups))
-                ri = [1, 3, 6]
-                w.index = ri
-                weighted_sum = evaluation.loc[ri, metric].dot(w)
-                return weighted_sum
-
-            elif option == 'high_load_bias':
-
-                # This calculation only works as long as the following assumption
-                # is true: The error scales with target load
-                qs = evaluation[metric].quantile([0.75, 0.5, 0.25])
-                qs.index = w.index
-                weighted_sum = qs.dot(w)
-
-                return weighted_sum
-
-            elif option == 'err_per_load':
-
-                watt_series = pd.Series(evaluation.index, index=evaluation.index)
-                watt_series = watt_series.iloc[(watt_series != 0).values]
-                err_watt = evaluation.loc[watt_series.index, metric].div(watt_series)
-                err_watt = err_watt.mean()
-                return err_watt
-
-            elif option == 'optimist':
-
-                return evaluation[metric].min()
-
-            elif option == 'fullest_bin':
-
-                if isinstance(evaluation.index, pd.MultiIndex):
-                    raise AttributeError("This summary has not yet been implemented for multiindexed bins.")
-
-                candidate = evaluation['count'].idxmax()
-                return candidate
-
-            else:
-
-                raise ValueError('The current option is not yet available for metric summarization '
-                                  'please choose one of the following options: {}'.format(options))
-
-        #select data pertaining to the desired feature space to be examined
-        if conditions:
-            data = select_data(data, conditions)
-
-        # select err data pertaining to desired target
-        err_col = target + '_err'
-
-        eval_cols = [err_col] + _groups
-        data = data[eval_cols]
-
-        # calculate metrics
-        evaluation = perform_metrics(name, data, err_col, _groups, metrics, boxplot)
-        kpi = summarize(evaluation, metrics[0], _groups, option=summary[0])
-
-        # calculate summary
-        return evaluation, kpi
 
     summary_tbl = pd.DataFrame(index=[s.name for s in systems],
                                columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
@@ -665,34 +333,23 @@ def evaluate(settings, systems):
 
         # Retrieve eval configs
         data_dir = system.configs['General']['data_dir']
-        eval_cfg = os.path.join(data_dir, 'conf', 'evaluation.cfg')
-        eval_settings = ConfigParser()
-        eval_settings.read(eval_cfg)
+        evals = Evaluation.read(data_dir)
 
-        # Load results
-        results = system.simulation['results']
+        for eval in evals:
+            eval.run()
 
-        # Extract additional features
-        results['day_hour'] = [t.hour for t in results.index]
-        results['weekday'] = [t.weekday for t in results.index]
-        results['month'] = [t.month for t in results.index]
+            file = os.path.join('evaluation', eval.name)
+            labels = eval.data[eval.groups[0]]
+            data = eval.data[eval.targets[0] + '_err']
+            _print_boxplot(system, labels, data, file)
 
-        # Perform Evaluations
-        for name in eval_settings.sections():
-
-            if name == "DEFAULT":
-                continue
-
-            config = _parse_eval(eval_settings[name])
-
-            for target in config['targets']:
-                # calculate metric
-                metric, summary = discrete_metrics(name, results, target, **config)
+            for target in eval.targets:
 
                 target_id = target.replace('_power', '')
                 target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
 
-                add_evaluation(system, name, target_name, summary, metric)
+                kpi = float(eval.kpi[target].values)
+                add_evaluation(system, eval.name, target_name, kpi, eval.evaluation[target])
 
     write_excel(settings, summary_tbl, evaluations)
 
