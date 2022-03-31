@@ -289,7 +289,7 @@ def simulate(settings, system, features, **kwargs):
 
 def evaluate(settings, systems):
     from th_e_sim.iotools import write_excel
-    from th_e_core.evaluation import Evaluation
+    from th_e_core.evaluation import Evaluations
 
     def concat_evaluation(system, name, header, data):
         if data is None:
@@ -331,25 +331,25 @@ def evaluate(settings, systems):
         if 'training' in durations.keys():
             summary_tbl.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
 
-        # Retrieve eval configs
-        data_dir = system.configs['General']['data_dir']
-        evals = Evaluation.read(data_dir)
+        # Instantiate class Evaluations
+        evals = Evaluations.read('conf')
+        evals.run()
 
-        for eval in evals:
-            eval.run()
+        for eval_id, eval in evals.items():
+            for sys in eval.systems:
+                for target in eval.targets:
 
-            file = os.path.join('evaluation', eval.name)
-            labels = eval.data[eval.groups[0]]
-            data = eval.data[eval.targets[0] + '_err']
-            _print_boxplot(system, labels, data, file)
+                    target_id = target.replace('_power', '')
+                    target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
 
-            for target in eval.targets:
+                    metric_data = eval.evaluation.loc[:,(target, slice(None), sys)]
+                    metric_data.columns = metric_data.columns.get_level_values('metrics')
+                    add_evaluation(system, eval.name, target_name, None, metric_data)
 
-                target_id = target.replace('_power', '')
-                target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
+                    for summary in eval.summaries:
+                        summary_data = float(eval.kpi[target, summary, sys])
+                        add_evaluation(system, eval.name, target_name, kpi=summary_data, data=None)
 
-                kpi = float(eval.kpi[target].values)
-                add_evaluation(system, eval.name, target_name, kpi, eval.evaluation[target])
 
     write_excel(settings, summary_tbl, evaluations)
 
