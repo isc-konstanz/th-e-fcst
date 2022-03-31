@@ -291,21 +291,21 @@ def evaluate(settings, systems):
     from th_e_sim.iotools import write_excel
     from th_e_core.evaluation import Evaluations
 
-    def concat_evaluation(system, name, header, data):
+    def concat_evaluation(sys_name, name, header, data):
         if data is None:
             return
 
-        cols = [(header, system.name, col) for col in data.columns]
+        cols = [(header, sys_name, col) for col in data.columns]
         data.columns = pd.MultiIndex.from_tuples(cols, names=['target', 'system', 'metrics'])
         if name not in evaluations.keys():
             evaluations[name] = data
         else:
             evaluations[name] = pd.concat([evaluations[name], data], axis=1)
 
-    def add_evaluation(system, name, header, kpi, data=None):
-        concat_evaluation(system, name, header, data)
+    def add_evaluation(sys_name, name, header, kpi, data=None):
+        concat_evaluation(sys_name, name, header, data)
         if kpi is not None:
-            summary_tbl.loc[system.name, (header, name)] = kpi
+            summary_tbl.loc[sys_name, (header, name)] = kpi
 
     def _print_boxplot(system, labels, data, file, **kwargs):
         from th_e_sim.iotools import print_boxplot
@@ -332,23 +332,23 @@ def evaluate(settings, systems):
             summary_tbl.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
 
         # Instantiate class Evaluations
-        evals = Evaluations.read('conf')
-        evals.run()
+    evals = Evaluations.read('conf')
+    evals.run()
 
-        for eval_id, eval in evals.items():
-            for sys in eval.systems:
-                for target in eval.targets:
+    for eval_id, eval in evals.items():
+        for sys in eval.systems:
+            for target in eval.targets:
 
-                    target_id = target.replace('_power', '')
-                    target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
+                target_id = target.replace('_power', '')
+                target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
 
-                    metric_data = eval.evaluation.loc[:,(target, slice(None), sys)]
-                    metric_data.columns = metric_data.columns.get_level_values('metrics')
-                    add_evaluation(system, eval.name, target_name, None, metric_data)
+                metric_data = eval.evaluation.loc[:, (target, slice(None), sys)]
+                metric_data.columns = metric_data.columns.get_level_values('metrics')
+                add_evaluation(sys, eval.name, target_name, None, metric_data)
 
-                    for summary in eval.summaries:
-                        summary_data = float(eval.kpi[target, summary, sys])
-                        add_evaluation(system, eval.name, target_name, kpi=summary_data, data=None)
+                for summary in eval.summaries:
+                    summary_data = float(eval.kpi[target, summary, sys])
+                    add_evaluation(sys, eval.name, target_name, kpi=summary_data, data=None)
 
 
     write_excel(settings, summary_tbl, evaluations)
