@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-    th_e_fcst.neural_network
-    ~~~~~~~~~~~~~~~
+    th_e_fcst.ann.model
+    ~~~~~~~~~~~~~~~~~~~
     
     
 """
@@ -12,20 +12,21 @@ import json
 import numpy as np
 import pandas as pd
 import datetime as dt
+import holidays as hl
 import logging
 
+from glob import glob
 from copy import deepcopy
 from typing import Any, Optional, Tuple
 from configparser import ConfigParser as Configurations
 from configparser import SectionProxy as ConfigurationSection
 from pandas.tseries.frequencies import to_offset
-from pvlib.solarposition import get_solarposition
 
-from keras.callbacks import History, EarlyStopping, TensorBoard
-from keras.models import Sequential
-from keras.layers import Dense, Dropout, LeakyReLU, Flatten, Conv1D, MaxPooling1D, LSTM
-from keras.models import model_from_json
-from keras.models import Model as KerasModel
+from tensorflow.keras.callbacks import History, EarlyStopping, TensorBoard
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, LeakyReLU, Flatten, Conv1D, MaxPooling1D, LSTM
+from tensorflow.keras.models import model_from_json
 from th_e_core import System, Model
 
 logger = logging.getLogger(__name__)
@@ -72,10 +73,6 @@ class NeuralNetwork(Model):
             except json.decoder.JSONDecodeError:
                 self.features[key] = value
 
-        # TODO: Save and load these from database
-        self.features['covariance_pa'] = {}
-        self.features['covariance_std'] = {}
-
         resolutions_range = pd.date_range(dt.datetime.now().replace(minute=0, second=0, microsecond=0), periods=0)
 
         self.resolutions = list()
@@ -100,9 +97,17 @@ class NeuralNetwork(Model):
         if self._estimate:
             input_steps += 1
 
-        self._input_shape = (input_steps,
-                             len(self.features['target'] + self.features['input']))
-        self._target_shape = len(self.features['target'])
+        input_features = self.features['target'] + self.features['input']
+        input_count = len(input_features)
+        for feature, _ in self.features['cyclic'].items():
+            if feature in input_features:
+                input_count += 1
+
+        self._input_shape = (input_steps, input_count)
+
+        target_steps = 1
+        target_count = len(self.features['target'])
+        self._target_shape = (target_steps, target_count)
 
     def _build(self, system: System, configs: Configurations, **kwargs) -> None:
         super()._build(system, configs, **kwargs)
@@ -121,20 +126,26 @@ class NeuralNetwork(Model):
         else:
             self._build_layers(configs)
 
-        self.model.compile(optimizer=configs.get('General', 'optimizer'), loss=configs.get('General', 'loss'),
-                           metrics=configs.get('General', 'metrics', fallback=[]))
+        self.model.compile(optimizer=self._decode_optimizer(configs),
+                           metrics=self._decode_metrics(configs),
+                           loss=self._decode_loss(configs))
 
     def _build_layers(self, configs: Configurations) -> None:
-        self.model = Sequential()
+        self.model = Sequential(name='MultiLayerPerceptron')
         self._add_dense(configs['Dense'], first=True)
 
-    def _add_dense(self, configs: ConfigurationSection, first: bool = False, flatten: bool = False) -> None:
+    def _add_dense(self, configs: ConfigurationSection,
+                   first: bool = False,
+                   flatten: bool = False) -> None:
         dropout = configs.getfloat('dropout', fallback=0)
         units = configs.get('units')
         if units.isdigit():
             units = [int(units)] * configs.getint('layers', fallback=1)
         else:
             units = json.loads(units)
+
+        if flatten:
+            self.model.add(Flatten())
 
         length = len(units)
         for i in range(length):
@@ -143,32 +154,53 @@ class NeuralNetwork(Model):
             if first and i == 0:
                 kwargs['input_dim'] = self._input_shape[1]
 
-            if flatten:
-                self.model.add(Flatten())
-
             self.model.add(Dense(units[i], **kwargs))
 
             if dropout > 0.:
                 self.model.add(Dropout(dropout))
 
-        self.model.add(Dense(self._target_shape,
+        self.model.add(Dense(self._target_shape[1],
                              activation=configs['activation'],
                              kernel_initializer=configs['kernel_initializer']))
 
         if configs['activation'] == 'relu':
             self.model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
 
-    def _load(self, inplace: bool = True) -> KerasModel:
+    @staticmethod
+    def _decode_optimizer(configs: Configurations):
+        optimizer = configs.get('General', 'optimizer')
+        if optimizer == 'adam' and configs.has_option('General', 'learning_rate'):
+            optimizer = Adam(learning_rate=configs.getfloat('General', 'learning_rate'))
+
+        return optimizer
+
+    @staticmethod
+    def _decode_metrics(configs: Configurations):
+        return configs.get('General', 'metrics', fallback=[])
+
+    @staticmethod
+    def _decode_loss(configs: Configurations):
+        return configs.get('General', 'loss')
+
+    def _load(self) -> None:
         logger.debug("Loading model for system {} from file".format(self._system.name))
+        try:
+            if os.path.isfile(os.path.join(self.dir, 'model.json')):
+                with open(os.path.join(self.dir, 'model.json'), 'r') as f:
+                    self.model = model_from_json(f.read())
+        except ValueError as e:
+            logger.warning(str(e))
+            self.model = None
+        if self.model is None:
+            self._build_layers(self._configs)
+            logger.info("Built model after failure to read serialized graph")
 
-        with open(os.path.join(self.dir, 'model.json'), 'r') as f:
-            model = model_from_json(f.read())
-            model.load_weights(os.path.join(self.dir, 'model.h5'))
-
-            if inplace:
-                self.model = model
-
-            return model
+        if (glob(os.path.join(self.dir, 'checkpoint*')) and
+                glob(os.path.join(self.dir, 'model.data*')) and
+                os.path.isfile(os.path.join(self.dir, 'model.index'))):
+            self.model.load_weights(os.path.join(self.dir, 'model'))
+        else:
+            self.model.load_weights(os.path.join(self.dir, 'model.h5'))
 
     def _save(self) -> None:
         logger.debug("Saving model for system {} to file".format(self._system.name))
@@ -180,12 +212,17 @@ class NeuralNetwork(Model):
         # Serialize weights to HDF5
         self.model.save_weights(os.path.join(self.dir, 'model.h5'))
 
+        # Serialize weights checkpoint
+        self.model.save_weights(os.path.join(self.dir, 'model'))
+
     def exists(self):
         if not os.path.isdir(self.dir):
             os.makedirs(self.dir, exist_ok=True)
             return False
 
-        exists = (os.path.isfile(os.path.join(self.dir, 'model.json')) and
+        exists = ((glob(os.path.join(self.dir, 'checkpoint*')) and
+                   glob(os.path.join(self.dir, 'model.data*')) and
+                  os.path.isfile(os.path.join(self.dir, 'model.index'))) or
                   os.path.isfile(os.path.join(self.dir, 'model.h5')))
 
         return exists
@@ -216,7 +253,7 @@ class NeuralNetwork(Model):
             end = date + resolution.time_horizon
 
         # Work on copy to retain original input vector to be saved.
-        features = self._scale_features(features)
+        features = deepcopy(features)
 
         # Remove target values from features, as those will be recursively filled with predictions
         features.loc[features.index > date, self.features['target']] = np.NaN
@@ -226,9 +263,9 @@ class NeuralNetwork(Model):
             if date_fcst not in features.index:
                 break
 
-            inputs = self._parse_inputs(features, date)
-            result = self._predict_step(inputs)
-
+            input = self._parse_inputs(features, date)
+            input = self._scale_features(input)
+            result = self._predict_step(input)
             results.loc[date_fcst, self.features['target']] = result
 
             # Add predicted output to features of next iteration
@@ -239,16 +276,13 @@ class NeuralNetwork(Model):
 
         return self._scale_features(results, invert=True)
 
-    def _predict_step(self, inputs: pd.DataFrame):
-        inputs = np.squeeze(inputs.values)
-        if len(inputs.shape) < 3:
-            inputs = inputs.reshape((1, inputs.shape[0], inputs.shape[1]))
+    def _predict_step(self, input: pd.DataFrame) -> np.ndarray | float:
+        input_shape = (1, self._input_shape[0], self._input_shape[1])
+        input = self._reshape_data(input, input_shape)
+        target = self.model(input)  # .predict(input, verbose=LOG_VERBOSE)
+        target = self._reshape_data(target, self._target_shape[1])
 
-        result = self.model.predict(inputs, verbose=LOG_VERBOSE)
-        if (len(result.shape) > 1 and result.shape[1] > 1) or result.shape[0] > 1:
-            return np.squeeze(result)
-
-        return float(result)
+        return target
 
     def train(self, data: pd.DataFrame) -> History:
         features = self._parse_features(data)
@@ -327,8 +361,13 @@ class NeuralNetwork(Model):
                 np.array(targets, dtype=float))
 
     @staticmethod
-    def _squeeze_data(data: pd.DataFrame) -> np.ndarray:
-        return np.squeeze(data.values)
+    def _reshape_data(data: pd.Dataframe | np.ndarray, shape: Tuple | int) -> np.ndarray | float:
+        if isinstance(data, pd.DataFrame):
+            data = data.values
+
+        if isinstance(shape, int) and shape == 1:
+            return float(data)
+        return np.squeeze(data).reshape(shape)
 
     def _parse_data(self, features: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
         targets = []
@@ -339,11 +378,14 @@ class NeuralNetwork(Model):
         while date <= end:
             try:
                 input = self._parse_inputs(features, date)
+                input = self._scale_features(input)
+
                 target = self._parse_targets(features, date)
+                target = self._scale_features(target)
 
                 # If no exception was raised, add the validated data to the set
-                inputs.append(self._squeeze_data(self._scale_features(input)))
-                targets.append(self._squeeze_data(self._scale_features(target)))
+                inputs.append(self._reshape_data(input, self._input_shape))
+                targets.append(self._reshape_data(target, self._target_shape))
 
             except ValueError as e:
                 logger.debug("Skipping %s: %s", date, str(e))
@@ -359,20 +401,20 @@ class NeuralNetwork(Model):
 
         if not isinstance(index, pd.DatetimeIndex):
             index = [self.resolutions[-1].time_step + index]
-        inputs = self.resolutions[-1].resample(deepcopy(features))
+        data = self.resolutions[-1].resample(deepcopy(features))
 
         # TODO: Optionally replace the estimate with the prediction of an ANN
         if self._estimate:
             # Make sure that no future target values exist
-            inputs.loc[index[0]:, self.features['target']] = np.NaN
+            data.loc[index[0]:, self.features['target']] = np.NaN
 
             # TODO: Implement horizon resolutions
-            estimate = inputs.loc[index, self.features['target']]
+            estimate = data.loc[index, self.features['target']]
             for estimate_step in estimate.index:
-                estimate_value = inputs.loc[(inputs.index < index[0]) &
-                                            (inputs.index.hour == estimate_step.hour) &
-                                            (inputs.index.minute == estimate_step.minute),
-                                            self.features['target']].mean(axis=0)
+                estimate_value = data.loc[(data.index < index[0]) &
+                                          (data.index.hour == estimate_step.hour) &
+                                          (data.index.minute == estimate_step.minute),
+                                          self.features['target']].mean(axis=0)
                 if estimate_value.empty:
                     continue
 
@@ -381,31 +423,31 @@ class NeuralNetwork(Model):
             # Estimate the value of targets for times corresponding to the hour to the time to be predicted
             if self._system.contains_type('pv') and 'pv_yield' in self.features['input']:
                 # Use calculated PV yield values as PV estimate
-                estimate.loc[index, 'pv_power'] = inputs.loc[index, 'pv_yield']
+                estimate.loc[index, 'pv_power'] = data.loc[index, 'pv_yield']
 
             if estimate.isnull().values.any():
                 estimate = features[self.features['target']].interpolate(method='linear').loc[index]
 
-            inputs.loc[index, self.features['target']] = estimate
+            data.loc[index, self.features['target']] = estimate
 
-            # Calculate the doubt for the current time step
-            # This is necessary for the recursive iteration
-            inputs = self._calc_doubt(inputs, index)
+        data = self._add_doubt(data, index)
 
-        data = pd.DataFrame()
-        data.index.name = 'time'
+        inputs = pd.DataFrame()
+        inputs.index.name = 'time'
         for resolution in self.resolutions:
             resolution_end = index[0] - resolution.time_step if not self._estimate else index[-1]
             resolution_start = index[0] - resolution.time_step - resolution.time_prior + dt.timedelta(minutes=1)
-            resolution_data = inputs.loc[resolution_start:resolution_end,
-                                         self.features['target'] + self.features['input']]
+            resolution_inputs = resolution.resample(data[resolution_start:resolution_end])
 
-            data = resolution.resample(resolution_data).combine_first(data)
+            inputs = resolution_inputs.combine_first(inputs)
 
-        if data.isnull().values.any():
+        inputs = self._add_meta(inputs)[self.features['target'] + self.features['input']]
+        inputs = self._parse_cyclic(inputs)
+
+        if inputs.isnull().values.any():
             raise ValueError("Input data incomplete for %s" % index)
 
-        return data
+        return inputs
 
     def _parse_targets(self,
                        features: pd.DataFrame,
@@ -413,41 +455,26 @@ class NeuralNetwork(Model):
 
         if not isinstance(index, pd.DatetimeIndex):
             index = [self.resolutions[-1].time_step + index]
-        targets = self.resolutions[-1].resample(deepcopy(features))
 
         # TODO: Implement horizon resolutions
-        data = targets.loc[index, self.features['target']]
-        if data.isnull().values.any():
+        data = self.resolutions[-1].resample(deepcopy(features))
+
+        targets = data.loc[index, self.features['target']]
+        if targets.isnull().values.any():
             raise ValueError("Target data incomplete for %s" % index)
 
-        return data
+        return targets
 
     def _parse_features(self, data):
         columns = self.features['target'] + self.features['input']
+        features = deepcopy(data[np.intersect1d(data.columns, columns)])
 
-        # TODO: use weather pressure for solar position
-        solar = get_solarposition(pd.date_range(data.index[0], data.index[-1], freq='min'),
-                                  self._system.location.latitude,
-                                  self._system.location.longitude,
-                                  altitude=self._system.location.altitude)
-        solar = solar.loc[:, ['azimuth', 'apparent_zenith', 'apparent_elevation']]
-        solar.columns = ['solar_azimuth', 'solar_zenith', 'solar_elevation']
-
-        data = data[np.intersect1d(data.columns, columns)].copy()
-        data['day_of_year'] = data.index.dayofyear
-        data['day_of_week'] = data.index.dayofweek
-
-        features = pd.concat([data, solar], axis=1)
-        features.index.name = 'time'
-
-        features = self._parse_cyclic(features)
-        features = self._calc_doubt(features)
-
-        return features[columns]
+        return features[np.intersect1d(data.columns, columns)]
 
     def _scale_features(self, features, invert=False):
+        scaled_features = deepcopy(features)
         if 'scaling' not in self.features:
-            return features
+            return scaled_features
 
         scaling = self.features.get('scaling', {})
         if 'doubt' in self.features:
@@ -455,36 +482,36 @@ class NeuralNetwork(Model):
                 scaling[feature+'_doubt'] = scaling[feature]
 
         for feature, transformation in scaling.items():
-            if feature not in features.columns:
+            if feature not in scaled_features.columns:
                 continue
 
             if str(transformation).isdigit():
                 if not invert:
-                    features[feature] /= float(transformation)
+                    scaled_features[feature] /= float(transformation)
                 else:
-                    features[feature] *= float(transformation)
+                    scaled_features[feature] *= float(transformation)
 
             # TODO: Save the maximum or std value, to allow the live scaling for small feature sets
             # elif transformation.lower() == 'norm':
             #     if not invert:
-            #         features[feature] /= features[feature].max()
+            #         scaled_featuers[feature] /= scaled_featuers[feature].max()
             #     else:
-            #         features[feature] *= features[feature].max()
+            #         scaled_featuers[feature] *= scaled_featuers[feature].max()
             #
             # elif transformation.lower() == 'std':
-            #     mean = features[feature].mean()
-            #     std = features[feature].std()
+            #     mean = scaled_featuers[feature].mean()
+            #     std = scaled_featuers[feature].std()
             #
             #     if not invert:
-            #         features[feature] = (features[feature] - mean) / std
+            #         scaled_featuers[feature] = (scaled_featuers[feature] - mean) / std
             #     else:
-            #         features[feature] = features[feature] * std + mean
+            #         scaled_featuers[feature] = scaled_featuers[feature] * std + mean
             else:
                 raise ValueError('The transformation "{}" is not defined.'.format(transformation))
 
-        return features
+        return scaled_features
 
-    def _calc_doubt(self, features, times=None):
+    def _add_doubt(self, features, times=None):
         if 'doubt' not in self.features:
             return features
 
@@ -496,13 +523,42 @@ class NeuralNetwork(Model):
 
         return features
 
-    def _parse_cyclic(self, features):
-        for feature, bound in self.features['cyclic'].items():
-            features[feature + '_sin'] = np.sin(2.0 * np.pi * features[feature] / bound)
-            features[feature + '_cos'] = np.cos(2.0 * np.pi * features[feature] / bound)
-            features = features.drop(columns=[feature])
+    def _add_meta(self, features):
+        features['hour_of_day'] = features.index.hour
+        features['day_of_week'] = features.index.dayofweek
+        features['day_of_year'] = features.index.dayofyear - 1
+
+        if self._system.location.country is None:
+            return features
+
+        features['holiday'] = 0
+
+        holiday_args = {
+            'years': list(dict.fromkeys(features.index.year))
+        }
+        if self._system.location.state is not None:
+            holiday_args['subdiv'] = self._system.location.state
+
+        holidays = hl.country_holidays(self._system.location.country, **holiday_args)
+        features.loc[np.isin(features.index.date, list(holidays.keys())), 'holiday'] = 1
 
         return features
+
+    def _parse_cyclic(self, features):
+        cyclic_features = deepcopy(features)
+        if 'cyclic' not in self.features:
+            return cyclic_features
+
+        for feature, bound in self.features['cyclic'].items():
+            if feature not in cyclic_features.columns:
+                continue
+
+            cyclic_index = cyclic_features.columns.get_loc(feature)
+            cyclic_features.insert(cyclic_index, feature + '_cos', np.cos(2.0 * np.pi * features[feature] / bound))
+            cyclic_features.insert(cyclic_index, feature + '_sin', np.sin(2.0 * np.pi * features[feature] / bound))
+            cyclic_features = cyclic_features.drop(columns=[feature])
+
+        return cyclic_features
 
     @staticmethod
     def _parse_kwargs(configs, *args):
@@ -516,7 +572,7 @@ class NeuralNetwork(Model):
 class StackedLSTM(NeuralNetwork):
 
     def _build_layers(self, configs: Configurations) -> None:
-        self.model = Sequential()
+        self.model = Sequential(name='StackedLSTM')
         self._add_lstm(configs['LSTM'], first=True)
         self._add_dense(configs['Dense'])
 
@@ -543,9 +599,10 @@ class StackedLSTM(NeuralNetwork):
 class ConvDilated(NeuralNetwork):
 
     def _build_layers(self, configs: Configurations) -> None:
-        self.model = Sequential()
+        self.model = Sequential(name='ConvolutionalDilation')
         self._add_conv(configs['Conv1D'], first=True)
-        self._add_dense(configs['Dense'], flatten=True)
+        self._add_dense(configs['Dense'])
+        # self._add_dense(configs['Dense'], flatten=True)
 
     def _add_conv(self, configs: ConfigurationSection, first: bool = False) -> None:
         filters = configs.get('filters')
@@ -568,13 +625,17 @@ class ConvDilated(NeuralNetwork):
 
             self.model.add(Conv1D(filters[i], int(configs['kernel_size']), **kwargs))
 
-        self.model.add(MaxPooling1D(int(configs['pool_size'])))
+        self.model.add(Conv1D(filters[-1]/2, 1, activation='linear'))
+
+        if 'pool_size' in configs:
+            pool_size = int(configs['pool_size'])
+            self.model.add(MaxPooling1D(pool_size))
 
 
 class ConvLSTM(ConvDilated, StackedLSTM):
 
     def _build_layers(self, configs: Configurations) -> None:
-        self.model = Sequential()
+        self.model = Sequential(name='ConvolutionalLSTM')
         self._add_conv(configs['Conv1D'], first=True)
         self._add_lstm(configs['LSTM'])
         self._add_dense(configs['Dense'])
