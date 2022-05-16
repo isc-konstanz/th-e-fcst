@@ -3,11 +3,13 @@
 """
     th-e-fcst
     ~~~~~~~~~
-    
+
     To learn how to configure the prediction of timeseries, see "th-e-fcst --help"
 
 """
 import os
+import shutil
+import inspect
 import datetime as dt
 
 from argparse import ArgumentParser, RawTextHelpFormatter
@@ -15,17 +17,13 @@ from configparser import ConfigParser
 
 
 def main(args):
+    from th_e_core import configs
     from th_e_fcst import System
-    
-    settings_file = os.path.join(args.config_dir, 'settings.cfg')
-    if not os.path.isfile(settings_file):
-        raise ValueError('Unable to open simulation settings: {}'.format(settings_file))
-    
-    settings = ConfigParser()
-    settings.read(settings_file)
-    
+
+    settings = configs.read('settings.cfg', **vars(args))
+
     kwargs = vars(args)
-    kwargs.update(dict(settings.items('General')))
+    kwargs.update(settings.items('General'))
     
     systems = System.read(**kwargs)
     if args.action == 'run':
@@ -89,13 +87,13 @@ def _get_parser(root_dir):
                         help="directory where the package and related libraries are located",
                         default=root_dir,
                         metavar='DIR')
-    
+
     parser.add_argument('-c', '--config-directory',
                         dest='config_dir',
                         help="directory to expect configuration files",
                         default='conf',
                         metavar='DIR')
-    
+
     parser.add_argument('-d', '--data-directory',
                         dest='data_dir',
                         help="directory to expect and write result files to",
@@ -106,20 +104,30 @@ def _get_parser(root_dir):
 
 
 if __name__ == "__main__":
-    run_dir = os.path.join(os.path.dirname(os.path.abspath(os.path.realpath(__file__))))
+    run_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(main)))
     if os.path.basename(run_dir) == 'bin':
         run_dir = os.path.dirname(run_dir)
-    
+
     os.chdir(run_dir)
-    
+
+    os.environ['NUMEXPR_MAX_THREADS'] = str(os.cpu_count())
+
     if not os.path.exists('log'):
         os.makedirs('log')
-    
+
+    logging_file = os.path.join(os.path.join(run_dir, 'conf'), 'logging.cfg')
+    if not os.path.isfile(logging_file):
+        logging_default = logging_file.replace('logging.cfg', 'logging.default.cfg')
+        if os.path.isfile(logging_default):
+            shutil.copy(logging_default, logging_file)
+        else:
+            raise FileNotFoundError("Unable to open logging.cfg in: " +
+                                    os.path.join(os.path.join(run_dir, 'conf')))
+
     # Load the logging configuration
     import logging
     import logging.config
-    logging_file = os.path.join(os.path.join(run_dir, 'conf'), 'logging.cfg')
     logging.config.fileConfig(logging_file)
     logger = logging.getLogger('th-e-fcst')
-    
+
     main(_get_parser(run_dir).parse_args())

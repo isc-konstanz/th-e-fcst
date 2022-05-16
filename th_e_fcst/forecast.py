@@ -25,14 +25,20 @@ class Forecast(th_e_core.Forecast):
     def read(cls, system: System, **kwargs) -> Forecast:
         return cls(system, cls._read_configs(system, **kwargs), **kwargs)
 
-    def _activate(self, system, configs, **kwargs):
-        super()._activate(system, configs, **kwargs)
+    def _activate(self, system, configs):
+        super()._activate(system, configs)
         if configs.get('General', 'type', fallback='default').lower() == 'default':
             self._weather = None
         else:
-            self._weather = super().read(system, **kwargs)
+            self._weather = super().read(system)
 
-        self._model = NeuralNetwork.read(system, **kwargs)
+        # TODO: implement ARIMAX prediction
+        self._model = NeuralNetwork.read(system)
+
+    # noinspection PyProtectedMember
+    def build(self, **kwargs) -> pd.Dataframe:
+        from th_e_data import build
+        return build(self.configs, self._weather._database, location=self._system.location, **kwargs)
 
     def _get(self, *args, **kwargs):
         data = self._get_data(*args, **kwargs)
@@ -40,47 +46,81 @@ class Forecast(th_e_core.Forecast):
                                kwargs.get('start', None), 
                                kwargs.get('end', None))
 
-    def _get_data(self, start, end=None, **kwargs):
+    def _get_data(self,
+                  start: pd.Timestamp | dt.datetime,
+                  end:   pd.Timestamp | dt.datetime = None, **_) -> pd.DataFrame:
         resolution = self._model.resolutions[0]
         prior_end = start - resolution.time_step
         prior_start = start - resolution.time_prior\
                             - resolution.time_step + dt.timedelta(minutes=1)
 
-        data = self._get_history(prior_start, prior_end, **kwargs)
+        data = self._get_data_history(prior_start, prior_end)
 
         if self._weather is not None:
-            weather = self._weather.get(start, end, **kwargs)
+            weather = self._weather.get(start, end)
 
             if self._system.contains_type('pv'):
-                solar = self._get_yield(weather)
-                data = pd.concat([data, solar], axis=1)
-
-            data = pd.concat([data, weather], axis=0)
+                solar_yield = self._get_solar_yield(weather)
+                data = pd.concat([data, solar_yield], axis=1)
+            data = pd.concat([data, weather], axis=1)
+        data = pd.concat([data, self._get_solar_position(data.index)], axis=1)
 
         return data
 
-    def _get_history(self, start, end, **kwargs):
-        data = self._system._database.read(start, end, **kwargs)
+    # noinspection PyProtectedMember
+    def _get_data_history(self,
+                          start: pd.Timestamp | dt.datetime,
+                          end:   pd.Timestamp | dt.datetime, **_) -> pd.DataFrame:
+        data = self._system._database.read(start, end)
         data = data[data.columns.drop(list(data.filter(regex='_energy')))]
 
         if self._weather is not None:
-            weather = self._weather._database.read(start, end, **kwargs)
+            weather = self._get_weather(start, end)
 
             if self._system.contains_type('pv'):
-                solar = self._get_yield(weather)
-                data = pd.concat([data, solar], axis=1)
-
+                solar_yield = self._get_solar_yield(weather)
+                data = pd.concat([data, solar_yield], axis=1)
             data = pd.concat([data, weather], axis=1)
+        data = pd.concat([data, self._get_solar_position(data.index)], axis=1)
 
         return data
 
-    def _get_yield(self, weather, **kwargs):
-        data = pd.DataFrame(index=weather.index, columns=['pv_yield']).fillna(0)
+    # noinspection PyProtectedMember
+    def _get_weather(self,
+                     start: pd.Timestamp | dt.datetime,
+                     end:   pd.Timestamp | dt.datetime, **_) -> pd.DataFrame:
+        return self._weather._database.read(start, end)
+
+    def _get_solar_position(self, index: pd.DatetimeIndex) -> pd.DataFrame:
+        data = pd.DataFrame(index=index)
+        # minutes = pd.date_range(weather.index[0], weather.index[-1], tz=weather.index.tz, freq='min')
         try:
-            from th_e_yield.model import Model
-            for árray in self._system.get_type('pv'):
-                model = Model(self._system, árray, self._model.configs, section='Yield', **kwargs)
-                data['pv_yield'] += model.run(weather)['p_ac']
+            # noinspection PyUnresolvedReferences
+            from pvlib.solarposition import get_solarposition
+
+            # TODO: use weather pressure for solar position
+            data = get_solarposition(index,
+                                     self._system.location.latitude,
+                                     self._system.location.longitude,
+                                     altitude=self._system.location.altitude)
+            data = data.loc[:, ['azimuth', 'apparent_zenith', 'apparent_elevation']]
+            data.columns = ['solar_azimuth', 'solar_zenith', 'solar_elevation']
+
+        except ImportError as e:
+            logger.warning("Unable to generate solar position: {}".format(str(e)))
+
+        return data
+
+    def _get_solar_yield(self, weather: pd.DataFrame) -> pd.DataFrame:
+        data = pd.DataFrame(index=weather.index)
+        try:
+            # noinspection PyUnresolvedReferences
+            from th_e_yield import Model
+
+            data['pv_yield'] = 0
+            for array in self._system.get_type('pv'):
+                model = Model(self._system, array, self._model.configs, section='Yield')
+                data.pv_yield += model.run(weather)['p_ac']
 
         except ImportError as e:
             logger.warning("Unable to calculate PV yield: {}".format(str(e)))

@@ -9,8 +9,8 @@
 
 """
 import os
-import sys
 import time
+import shutil
 import inspect
 import traceback
 import pytz as tz
@@ -21,17 +21,12 @@ import calendar as cal
 
 from copy import deepcopy
 from argparse import ArgumentParser, RawTextHelpFormatter
-from configparser import ConfigParser
 from tensorboard import program
 from typing import Union
 
+from th_e_core import configs
 from th_e_core.tools import floor_date, ceil_date
-
-from tables import NaturalNameWarning
-import warnings
-warnings.filterwarnings('ignore', category=NaturalNameWarning)
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(sys.argv[0])))
+import th_e_data.io as io
 
 TARGETS = {
     'pv': 'Photovoltaics',
@@ -40,47 +35,47 @@ TARGETS = {
 }
 
 
-# noinspection PyProtectedMember
+# noinspection PyProtectedMember, SpellCheckingInspection
 def main(args):
-    from th_e_sim.iotools import write_csv
-    from th_e_sim import preparation
     from th_e_fcst import System
+    from th_e_core.tools import ceil_date
 
     logger.info("Starting TH-E Simulation")
 
-    settings_file = os.path.join(args.config_dir, 'settings.cfg')
-    if not os.path.isfile(settings_file):
-        raise ValueError('Unable to open simulation settings: {}'.format(settings_file))
-
-    settings = ConfigParser()
-    settings.read(settings_file)
+    settings = configs.read('settings.cfg', **vars(args))
 
     error = False
     kwargs = vars(args)
-    kwargs.update(dict(settings.items('General')))
+    kwargs.update(settings.items('General'))
 
     tensorboard = _launch_tensorboard(**kwargs)
 
     verbose = settings.getboolean('General', 'verbose', fallback=False)
 
-    start = _get_date(settings['General']['start'])
-    end = _get_date(settings['General']['end']) + dt.timedelta(hours=23, minutes=59)
-
     systems = System.read(**kwargs)
     for system in systems:
         logger.info('Starting TH-E-Simulation of system {}'.format(system.name))
+        timezone = system.location.pytz
         durations = {
             'simulation': {
                 'start': dt.datetime.now()
             }
         }
-        zentrale = os.path.join('\\\\zentrale', 'isc', 'abteilung-systeme')
-        preparation.process_weather(system, os.path.join(zentrale, 'data', 'Meteoblue'))
-        preparation.process_system(system, os.path.join(zentrale, 'data', 'OPSD'))
+        start = _get_time(settings['General']['start'], timezone)
+        end = _get_time(settings['General']['end'], timezone)
+        end = ceil_date(end, system.location.pytz)
+
+        start_train = _get_time(settings['Training']['start'], timezone)
+        end_train = _get_time(settings['Training']['end'], timezone)
+        end_train = ceil_date(end_train, system.location.pytz)
+
+        bldargs = dict(kwargs)
+        bldargs['start'] = start_train
+        bldargs['end'] = end
+
+        system.build(**bldargs)
         try:
             if not system.forecast._model.exists():
-                from th_e_sim.iotools import print_distributions
-
                 logger.debug("Beginning training of neural network for system: {}".format(system.name))
                 durations['training'] = {
                     'start': dt.datetime.now()
@@ -88,18 +83,16 @@ def main(args):
                 features_path = os.path.join(system.configs.get('General', 'data_dir'), 'model', 'features')
                 if os.path.isfile(features_path + '.h5'):
                     with pd.HDFStore(features_path + '.h5', mode='r') as hdf:
-                        features = hdf.get('features')
+                        features = hdf.get('features').loc[start_train:end_train]
                 else:
-                    features = system.forecast._get_history(_get_date(settings['Training']['start']),
-                                                            _get_date(settings['Training']['end'])
-                                                            + dt.timedelta(hours=23, minutes=59))
-
+                    features = system.forecast._get_data_history(start_train, end_train)
                     features = system.forecast._model._parse_features(features)
+                    features = system.forecast._model._add_meta(features)
                     features.to_hdf(features_path + '.h5', 'features', mode='w')
-                    write_csv(system, features, features_path)
 
                     if verbose:
-                        print_distributions(features, path=system.forecast._model.dir)
+                        io.write_csv(system, features, features_path)
+                        io.print_distributions(features, path=system.forecast._model.dir)
 
                 system.forecast._model._train(features)
 
@@ -107,7 +100,7 @@ def main(args):
                 durations['training']['minutes'] = (durations['training']['end'] -
                                                     durations['training']['start']).total_seconds() / 60.0
 
-                logger.debug("Training of neural network for system {} complete after {} minutes"
+                logger.debug("Training of neural network for system {} complete after {:.2f} minutes"
                              .format(system.name, durations['training']['minutes']))
 
             features_dir = os.path.join(system.configs.get('General', 'data_dir'), 'results')
@@ -120,14 +113,19 @@ def main(args):
                 data = system._database.read(start, end)
                 weather = system.forecast._weather._database.read(start, end)
                 if system.contains_type('pv'):
-                    solar = system.forecast._get_yield(weather)
-                    data = pd.concat([data, solar], axis=1)
+                    solar_yield = system.forecast._get_solar_yield(weather)
+                    data = pd.concat([data, solar_yield], axis=1)
 
-                features = system.forecast._model._parse_features(pd.concat([data, weather], axis=1))
+                solar_position = system.forecast._get_solar_position(data.index)
+                data = pd.concat([data, solar_yield,
+                                  weather, solar_position], axis=1)
+
+                features = system.forecast._model._parse_features(data)
+                features = system.forecast._model._add_meta(features)
                 features.to_hdf(features_path + '.h5', 'features', mode='w')
 
                 if verbose:
-                    write_csv(system, features, features_path)
+                    io.write_csv(system, features, features_path)
 
             durations['prediction'] = {
                 'start': dt.datetime.now()
@@ -142,10 +140,10 @@ def main(args):
 
             for results_err in [c for c in results.columns if c.endswith('_err')]:
                 results_file = os.path.join('results', results_err.replace('_err', '').replace('_power', ''))
-                write_csv(system, results, results_file)
+                io.write_csv(system, results, results_file)
 
-            logger.debug("Predictions for system {} complete after {} minutes"
-                          .format(system.name, durations['prediction']['minutes']))
+            logger.debug("Predictions for system {} complete after {:.2f} minutes"
+                         .format(system.name, durations['prediction']['minutes']))
 
             durations['simulation']['end'] = dt.datetime.now()
             durations['simulation']['minutes'] = (durations['simulation']['end'] -
@@ -168,14 +166,15 @@ def main(args):
         evaluate(settings, systems)
 
         if tensorboard:
-            logger.info("TensorBoard will be kept running")
+            # keep_running = input('Keep tensorboard running? [y/n]').lower()
+            # keep_running = keep_running in ['j', 'ja', 'y', 'yes', 'true']
+            keep_running = settings.getboolean('General', 'keep_running', fallback=False)
+            while keep_running:
+                try:
+                    time.sleep(100)
 
-    while tensorboard and not error:
-        try:
-            time.sleep(100)
-
-        except KeyboardInterrupt:
-            tensorboard = False
+                except KeyboardInterrupt:
+                    keep_running = False
 
 
 # noinspection PyProtectedMember
@@ -192,7 +191,7 @@ def simulate(settings, system, features, **kwargs):
     resolution_max = forecast.resolutions[0]
     resolution_data = resolution_min.resample(features)
 
-    system_dir = system._configs['General']['data_dir']
+    system_dir = system.configs['General']['data_dir']
     database = deepcopy(system._database)
     database.dir = os.path.join(system_dir, 'results')
     # database.format = '%Y%m%d'
@@ -242,20 +241,15 @@ def simulate(settings, system, features, **kwargs):
             inputs = forecast._parse_inputs(date_features, date_range)
             targets = forecast._parse_targets(date_features, date_range)
             prediction = forecast._predict(date_features, date)
+            prediction.rename(columns={target: target + '_est' for target in forecast.features['target']})
 
             # results[date] = (inputs, targets, prediction)
-            result = pd.concat([targets,
-                                prediction.rename(columns={
-                                    target: target+'_est' for target in forecast.features['target']
-                                })],
-                               axis=1)
+            result = pd.concat([targets, prediction], axis=1)
 
             for target in forecast.features['target']:
                 result[target + '_err'] = result[target + '_est'] - result[target]
 
-            result = pd.concat([result, resolution_data.loc[result.index, np.setdiff1d(forecast.features['input'],
-                                                                                       forecast.features['target'],
-                                                                                       assume_unique=True)]], axis=1)
+            result = pd.concat([result, resolution_data[result.index]], axis=1)
 
             result.index.name = 'time'
             result['horizon'] = pd.Series(range(1, len(result.index) + 1), result.index)
@@ -266,9 +260,9 @@ def simulate(settings, system, features, **kwargs):
             targets.to_hdf(datastore, date_path+'/targets')
             if verbose:
                 os.makedirs(date_dir, exist_ok=True)
-                database.write(result,  file=date_str+'_outputs.csv', subdir=date_dir)
-                database.write(inputs,  file=date_str+'_inputs.csv',  subdir=date_dir)
-                database.write(targets, file=date_str+'_targets.csv', subdir=date_dir)
+                database.write(result,  file=date_str+'_outputs.csv', subdir=date_dir, rename=False)
+                database.write(inputs,  file=date_str+'_inputs.csv',  subdir=date_dir, rename=False)
+                database.write(targets, file=date_str+'_targets.csv', subdir=date_dir, rename=False)
 
             date = _increment_date(date, interval)
 
@@ -285,7 +279,6 @@ def simulate(settings, system, features, **kwargs):
 
 # noinspection PyProtectedMember
 def evaluate(settings, systems):
-    from th_e_sim.iotools import print_boxplot, write_excel
 
     # noinspection PyProtectedMember
     def apollo(data, data_target):
@@ -367,7 +360,7 @@ def evaluate(settings, systems):
 
         try:
             horizons_data = pd.concat([horizons[1], horizons[12], horizons[24]])
-            print_boxplot(system, horizons_data, horizons_data.index.hour, data_column, data_file,
+            io.print_boxplot(system, horizons_data, horizons_data.index.hour, data_column, data_file,
                           label='Horizons', title='Prometheus', hue='horizon', colors=5)
 
         except ImportError as e:
@@ -386,9 +379,10 @@ def evaluate(settings, systems):
     #
     #     return None, total_count
 
-    summary = pd.DataFrame(index=[s.name for s in systems],
-                           columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
-                                                              ('Durations [min]', 'Prediction')]))
+    summary = pd.DataFrame(index=[s.name for s in systems])
+    # TODO: implement durations metadata json file and load them e.g. if H5 file already exists
+    #                        columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
+    #                                                           ('Durations [min]', 'Prediction')]))
 
     evaluations = {}
     for system in systems:
@@ -396,11 +390,11 @@ def evaluate(settings, systems):
         durations = system.simulation['durations']
 
         # index = pd.IndexSlice
-        summary.loc[system.name, ('Durations [min]', 'Simulation')] = round(durations['simulation']['minutes'])
-        summary.loc[system.name, ('Durations [min]', 'Prediction')] = round(durations['prediction']['minutes'])
-
-        if 'training' in durations.keys():
-            summary.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
+        # summary.loc[system.name, ('Durations [min]', 'Simulation')] = round(durations['simulation']['minutes'])
+        # summary.loc[system.name, ('Durations [min]', 'Prediction')] = round(durations['prediction']['minutes'])
+        #
+        # if 'training' in durations.keys():
+        #     summary.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
 
         def concat_evaluation(name, header, data):
             if data is None:
@@ -417,6 +411,7 @@ def evaluate(settings, systems):
             if kpi is not None:
                 summary.loc[system.name, (header, name)] = kpi
 
+        interval = settings.getint('General', 'interval')
         for target in system.forecast._model.features['target']:
             target_id = target.replace('_power', '')
             target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
@@ -424,23 +419,61 @@ def evaluate(settings, systems):
             if target+'_err' not in results.columns:
                 continue
 
+            target_results = results[target+'_err']
+            target_iqr = target_results.quantile(0.75) - target_results.quantile(0.25)
+            results = results[np.abs((target_results - target_results.median()) / target_iqr) < 2.22]
+#            results = results[np.abs(stats.zscore(results[target+'_err'])) < 3]
+#            results = results[np.logical_or(target_results < target_results.quantile(0.99),
+#                                            target_results > target_results.quantile(0.01))]
+
             if target_id in ['pv']:
                 columns_daylight = np.intersect1d(results.columns, ['ghi', 'dni', 'dhi', 'solar_elevation'])
                 if len(columns_daylight) > 0:
                     results = results[(results[columns_daylight] > 0).any(axis=1)]
 
+            if target_id in ['pv', 'el']:
+                import calendar
+
+                power_file = os.path.join('evaluation', target)
+                power_colors = ['#004F9E', '#4f779e']
+                power_data = results[results.horizon < interval/60]
+                power_data.rename(columns={
+                    target+'_est': 'Prediction',
+                    target:        'Measurement'
+                }, inplace=True)
+                power_data = power_data.loc[:, ['Prediction', 'Measurement']]
+                power_data['hours'] = power_data.index.hour
+                power_melt = pd.melt(power_data, 'hours', value_name='power', var_name='results')
+                _print_data(system, power_melt, 'hours', 'power', power_file, hue='results', style='results',
+                            label='Hours of the day', title='{} power'.format(TARGETS[target_id]), colors=power_colors)
+
+                for month in [m+1 for m in range(12)]:
+                    month_file = os.path.join('evaluation', target_id + '_month{}'.format(month))
+                    month_title = '{} power ({})'.format(TARGETS[target_id], calendar.month_name[month])
+                    month_data = power_data[power_data.index.month == month]
+                    month_melt = pd.melt(month_data, 'hours', value_name='power', var_name='results')
+                    _print_data(system, month_melt, 'hours', 'power', month_file, hue='results', style='results',
+                                label='Hours of the day', title=month_title, colors=power_colors)
+
+                if target_id in ['el']:
+                    for day in range(7):
+                        day_file = os.path.join('evaluation', target_id + '_day{}'.format(day+1))
+                        day_title = '{} power ({})'.format(TARGETS[target_id], calendar.day_name[day])
+                        day_data = power_data[(power_data.index.day_of_week == day)]
+                        day_melt = pd.melt(day_data, 'hours', value_name='power', var_name='results')
+                        _print_data(system, day_melt, 'hours', 'power', day_file, hue='results', style='results',
+                                    label='Hours of the day', title=day_title, colors=power_colors)
+
             add_evaluation('Apollo', target_name, *apollo(deepcopy(results), target))
             add_evaluation('Astraea', target_name, *astraea(deepcopy(results), target))
             add_evaluation('Prometheus', target_name, *prometheus(deepcopy(results), target))
 
-    write_excel(settings, summary, evaluations)
+    io.write_excel(settings, summary, evaluations)
 
 
 def _evaluate_data(system, data, index, column, file, **kwargs):
-    from th_e_sim.iotools import print_boxplot
     try:
-
-        print_boxplot(system, data, index, column, file, **kwargs)
+        io.print_boxplot(system, data, index, column, file, **kwargs)
 
     except ImportError as e:
         logger.debug("Unable to plot boxplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
@@ -449,8 +482,8 @@ def _evaluate_data(system, data, index, column, file, **kwargs):
     return _describe_data(system, data, index, column, file)
 
 
-def _describe_data(system, data, index, column, file):
-    from th_e_sim.iotools import write_csv
+def _describe_data(system, data, index, column, file, write_file=True):
+    from th_e_data.io import write_csv
 
     data = data[column]
     group = data.groupby([index])
@@ -464,9 +497,20 @@ def _describe_data(system, data, index, column, file):
     description.index.name = 'index'
     del description['count']
 
-    write_csv(system, description, file)
+    if write_file:
+        write_csv(system, description, file)
 
     return description
+
+
+def _print_data(system, data, index, column, file, **kwargs):
+    from th_e_data.io import print_lineplot
+    try:
+        print_lineplot(system, data, index, column, file, **kwargs)
+
+    except ImportError as e:
+        logger.debug("Unable to plot lineplot for {} of system {}: {}".format(os.path.abspath(file), system.name,
+                                                                              str(e)))
 
 
 def _launch_tensorboard(**kwargs):
@@ -502,8 +546,8 @@ def _increment_date(date: Union[dt.datetime, pd.Timestamp], interval: int) -> Un
     return increment_date
 
 
-def _get_date(date_str: str) -> dt.datetime:
-    return tz.utc.localize(dt.datetime.strptime(date_str, '%d.%m.%Y'))
+def _get_time(time_str: str, timezone: tz.timezone) -> pd.Timestamp:
+    return pd.Timestamp(timezone.localize(dt.datetime.strptime(time_str, '%d.%m.%Y')))
 
 
 def _get_parser(root_dir: str) -> ArgumentParser:
@@ -551,17 +595,27 @@ if __name__ == "__main__":
 
     os.chdir(run_dir)
 
+    os.environ['NUMEXPR_MAX_THREADS'] = str(os.cpu_count())
+
     if not os.path.exists('log'):
         os.makedirs('log')
+
+    logging_file = os.path.join(os.path.join(run_dir, 'conf'), 'logging.cfg')
+    if not os.path.isfile(logging_file):
+        logging_default = logging_file.replace('logging.cfg', 'logging.default.cfg')
+        if os.path.isfile(logging_default):
+            shutil.copy(logging_default, logging_file)
+        else:
+            raise FileNotFoundError("Unable to open logging.cfg in: " +
+                                    os.path.join(os.path.join(run_dir, 'conf')))
 
     # Load the logging configuration
     import logging
     import logging.config
-    logging_file = os.path.join(os.path.join(run_dir, 'conf'), 'logging.cfg')
     logging.config.fileConfig(logging_file)
-    logging.getLogger('tensorflow').setLevel(logging.INFO)
-    logging.getLogger('matplotlib').setLevel(logging.WARN)
     logging.getLogger('h5py').setLevel(logging.WARN)
+    logging.getLogger('matplotlib').setLevel(logging.WARN)
+    logging.getLogger('tensorflow').setLevel(logging.INFO)
 
     logger = logging.getLogger('th-e-simulation')
 
