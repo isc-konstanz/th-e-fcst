@@ -149,15 +149,17 @@ class NeuralNetwork(Model):
     def _decode_loss(configs: Configurations):
         return configs.get('General', 'loss')
 
-    def _load(self) -> None:
+    def _load(self, from_json: bool = False) -> None:
         logger.debug("Loading model for system {} from file".format(self._system.name))
+        self.model = None
         try:
-            if os.path.isfile(os.path.join(self.dir, 'model.json')):
+            if os.path.isfile(os.path.join(self.dir, 'model.json')) and from_json:
                 with open(os.path.join(self.dir, 'model.json'), 'r') as f:
                     self.model = model_from_json(f.read())
+
         except ValueError as e:
             logger.warning(str(e))
-            self.model = None
+
         if self.model is None:
             self._build_layers(self._configs)
             logger.info("Built model after failure to read serialized graph")
@@ -278,7 +280,7 @@ class NeuralNetwork(Model):
             'verbose': LOG_VERBOSE
         }
         if self._early_stopping:
-            if shuffle:
+                if shuffle:
                 inputs, targets = self._shuffle_data(inputs, targets)
 
             validation_split = int(len(targets) / 10.0)

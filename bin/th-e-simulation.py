@@ -241,7 +241,7 @@ def simulate(settings, system, features, **kwargs):
             inputs = forecast._parse_inputs(date_features, date_range)
             targets = forecast._parse_targets(date_features, date_range)
             prediction = forecast._predict(date_features, date)
-            prediction.rename(columns={target: target + '_est' for target in forecast.features['target']})
+            prediction.rename(columns={target: target + '_est' for target in forecast.features['target']}, inplace=True)
 
             # results[date] = (inputs, targets, prediction)
             result = pd.concat([targets, prediction], axis=1)
@@ -249,7 +249,9 @@ def simulate(settings, system, features, **kwargs):
             for target in forecast.features['target']:
                 result[target + '_err'] = result[target + '_est'] - result[target]
 
-            result = pd.concat([result, resolution_data[result.index]], axis=1)
+            result = pd.concat([result, resolution_data.loc[result.index,
+                                                            [column for column in resolution_data.columns
+                                                             if column not in result.columns]]], axis=1)
 
             result.index.name = 'time'
             result['horizon'] = pd.Series(range(1, len(result.index) + 1), result.index)
