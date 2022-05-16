@@ -131,40 +131,7 @@ class NeuralNetwork(Model):
                            loss=self._decode_loss(configs))
 
     def _build_layers(self, configs: Configurations) -> None:
-        self.model = Sequential(name='MultiLayerPerceptron')
-        self._add_dense(configs['Dense'], first=True)
-
-    def _add_dense(self, configs: ConfigurationSection,
-                   first: bool = False,
-                   flatten: bool = False) -> None:
-        dropout = configs.getfloat('dropout', fallback=0)
-        units = configs.get('units')
-        if units.isdigit():
-            units = [int(units)] * configs.getint('layers', fallback=1)
-        else:
-            units = json.loads(units)
-
-        if flatten:
-            self.model.add(Flatten())
-
-        length = len(units)
-        for i in range(length):
-            kwargs = self._parse_kwargs(configs, 'activation', 'kernel_initializer')
-
-            if first and i == 0:
-                kwargs['input_dim'] = self._input_shape[1]
-
-            self.model.add(Dense(units[i], **kwargs))
-
-            if dropout > 0.:
-                self.model.add(Dropout(dropout))
-
-        self.model.add(Dense(self._target_shape[1],
-                             activation=configs['activation'],
-                             kernel_initializer=configs['kernel_initializer']))
-
-        if configs['activation'] == 'relu':
-            self.model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
+        pass
 
     @staticmethod
     def _decode_optimizer(configs: Configurations):
@@ -245,7 +212,7 @@ class NeuralNetwork(Model):
 
         # TODO: Implement horizon resolutions
         resolution = self.resolutions[-1]
-        results = pd.DataFrame(columns=self.features['target'], dtype=float)
+        targets = pd.DataFrame(columns=self.features['target'], dtype=float)
 
         if resolution.steps_horizon is None:
             end = features.index[-1]
@@ -265,16 +232,16 @@ class NeuralNetwork(Model):
 
             input = self._parse_inputs(features, date)
             input = self._scale_features(input)
-            result = self._predict_step(input)
-            results.loc[date_fcst, self.features['target']] = result
+            target = self._predict_step(input)
+            targets.loc[date_fcst, self.features['target']] = target
 
             # Add predicted output to features of next iteration
             features.loc[(features.index >= date_fcst) &
-                         (features.index < date_fcst + resolution.time_step), self.features['target']] = result
+                         (features.index < date_fcst + resolution.time_step), self.features['target']] = target
 
             date = date_fcst
 
-        return self._scale_features(results, invert=True)
+        return self._scale_features(targets, invert=True)
 
     def _predict_step(self, input: pd.DataFrame) -> np.ndarray | float:
         input_shape = (1, self._input_shape[0], self._input_shape[1])
@@ -365,8 +332,8 @@ class NeuralNetwork(Model):
         if isinstance(data, pd.DataFrame):
             data = data.values
 
-        if isinstance(shape, int) and shape == 1:
-            return float(data)
+        # if isinstance(shape, int) and shape == 1:
+        #     return float(data)
         return np.squeeze(data).reshape(shape)
 
     def _parse_data(self, features: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
@@ -385,7 +352,7 @@ class NeuralNetwork(Model):
 
                 # If no exception was raised, add the validated data to the set
                 inputs.append(self._reshape_data(input, self._input_shape))
-                targets.append(self._reshape_data(target, self._target_shape))
+                targets.append(self._reshape_data(target, self._target_shape[1]))
 
             except ValueError as e:
                 logger.debug("Skipping %s: %s", date, str(e))
@@ -569,7 +536,41 @@ class NeuralNetwork(Model):
         return kwargs
 
 
-class StackedLSTM(NeuralNetwork):
+class MultiLayerPerceptron(NeuralNetwork):
+
+    def _build_layers(self, configs: Configurations) -> None:
+        self.model = Sequential(name='MultiLayerPerceptron')
+        self._add_dense(configs['Dense'], first=True)
+
+    def _add_dense(self, configs: ConfigurationSection, first: bool = False) -> None:
+        dropout = configs.getfloat('dropout', fallback=0)
+        units = configs.get('units')
+        if units.isdigit():
+            units = [int(units)] * configs.getint('layers', fallback=1)
+        else:
+            units = json.loads(units)
+
+        length = len(units)
+        for i in range(length):
+            kwargs = self._parse_kwargs(configs, 'activation', 'kernel_initializer')
+
+            if first and i == 0:
+                kwargs['input_dim'] = self._input_shape[1]
+
+            self.model.add(Dense(units[i], **kwargs))
+
+            if dropout > 0.:
+                self.model.add(Dropout(dropout))
+
+        self.model.add(Dense(self._target_shape[1],
+                             activation=configs['activation'],
+                             kernel_initializer=configs['kernel_initializer']))
+
+        if configs['activation'] == 'relu':
+            self.model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
+
+
+class StackedLSTM(MultiLayerPerceptron):
 
     def _build_layers(self, configs: Configurations) -> None:
         self.model = Sequential(name='StackedLSTM')
@@ -596,15 +597,14 @@ class StackedLSTM(NeuralNetwork):
             self.model.add(LSTM(units[i], **kwargs))
 
 
-class ConvDilated(NeuralNetwork):
+class ConvDilated(MultiLayerPerceptron):
 
     def _build_layers(self, configs: Configurations) -> None:
         self.model = Sequential(name='ConvolutionalDilation')
         self._add_conv(configs['Conv1D'], first=True)
         self._add_dense(configs['Dense'])
-        # self._add_dense(configs['Dense'], flatten=True)
 
-    def _add_conv(self, configs: ConfigurationSection, first: bool = False) -> None:
+    def _add_conv(self, configs: ConfigurationSection, flatten:bool = True, first: bool = False) -> None:
         filters = configs.get('filters')
         if filters.isdigit():
             filters = [int(filters)] * configs.getint('layers', fallback=1)
@@ -625,11 +625,12 @@ class ConvDilated(NeuralNetwork):
 
             self.model.add(Conv1D(filters[i], int(configs['kernel_size']), **kwargs))
 
-        self.model.add(Conv1D(filters[-1]/2, 1, activation='linear'))
-
         if 'pool_size' in configs:
             pool_size = int(configs['pool_size'])
             self.model.add(MaxPooling1D(pool_size))
+
+        if flatten:
+            self.model.add(Flatten())
 
 
 class ConvLSTM(ConvDilated, StackedLSTM):
