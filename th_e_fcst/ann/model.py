@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import json
+import random
 import numpy as np
 import pandas as pd
 import datetime as dt
@@ -17,7 +18,7 @@ import logging
 
 from glob import glob
 from copy import deepcopy
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, List, Dict
 from configparser import ConfigParser as Configurations
 from configparser import SectionProxy as ConfigurationSection
 from pandas.tseries.frequencies import to_offset
@@ -117,7 +118,9 @@ class NeuralNetwork(Model):
 
         self._early_stopping = configs.get('General', 'early_stopping', fallback='True').lower() == 'true'
         if self._early_stopping:
-            self.callbacks.append(EarlyStopping(patience=self.epochs/4, restore_best_weights=True))
+            self._early_stopping_split = configs.getint('General', 'early_stopping_split', fallback=7)
+            self._early_stopping_patience = configs.getint('General', 'early_stopping_patience', fallback=self.epochs/4)
+            self.callbacks.append(EarlyStopping(patience=self._early_stopping_patience, restore_best_weights=True))
 
         # TODO: implement date based backups and naming scheme
         if self.exists():
@@ -261,38 +264,56 @@ class NeuralNetwork(Model):
                features: pd.DataFrame,
                shuffle: bool = True) -> History:
 
-        import tables
-        data_path = os.path.join(self.dir, 'data.h5')
-        if os.path.isfile(data_path):
-            with tables.open_file(data_path, 'r') as hf:
-                inputs = hf.get_node(hf.root, 'inputs')[:]
-                targets = hf.get_node(hf.root, 'targets')[:]
-        else:
-            inputs, targets = self._parse_data(features)
-
-            logger.debug("Built input of %s, %s", inputs.shape, targets.shape)
-            with tables.open_file(data_path, 'w') as hf:
-                hf.create_carray(hf.root, 'inputs', obj=inputs)
-                hf.create_carray(hf.root, 'targets', obj=targets)
-                hf.flush()
-
         kwargs = {
             'verbose': LOG_VERBOSE
         }
-        if self._early_stopping:
+
+        # import tables
+        # data_path = os.path.join(self.dir, 'data.h5')
+        # if os.path.isfile(data_path):
+        #     with tables.open_file(data_path, 'r') as hf:
+        #         data = hf.get_node(hf.root, 'data')[:]
+        # else:
+        #     data = self._parse_data(features)
+        #     with tables.open_file(data_path, 'w') as hf:
+        #         hf.create_carray(hf.root, 'data', obj=data)
+        #         hf.flush()
+
+        data = self._parse_data(features)
+        inputs = []
+        targets = []
+        if not self._early_stopping:
+            for d in data.values():
                 if shuffle:
-                inputs, targets = self._shuffle_data(inputs, targets)
+                    random.shuffle(d)
+                for i in range(len(d)):
+                    inputs.append(d[i]['input'])
+                    targets.append(d[i]['target'])
+        else:
+            validation_inputs = []
+            validation_targets = []
 
-            validation_split = int(len(targets) / 10.0)
-            validation_inputs = inputs[:validation_split]
-            validation_targets = targets[:validation_split]
+            for d in data.values():
+                split = len(d) - int(len(d)/self._early_stopping_split)
+                if shuffle:
+                    random.shuffle(d)
 
-            kwargs['validation_data'] = (validation_inputs, validation_targets)
+                for i in range(len(d)):
+                    if i <= split:
+                        inputs.append(d[i]['input'])
+                        targets.append(d[i]['target'])
+                    else:
+                        validation_inputs.append(d[i]['input'])
+                        validation_targets.append(d[i]['target'])
 
-            inputs = inputs[validation_split:]
-            targets = targets[validation_split:]
+            kwargs['validation_data'] = (np.array(validation_inputs, dtype=float),
+                                         np.array(validation_targets, dtype=float))
 
-        result = self.model.fit(inputs, targets, batch_size=self.batch, epochs=self.epochs, callbacks=self.callbacks,
+        result = self.model.fit(np.array(inputs, dtype=float),
+                                np.array(targets, dtype=float),
+                                callbacks=self.callbacks,
+                                batch_size=self.batch,
+                                epochs=self.epochs,
                                 **kwargs)
 
         # Write normed loss to TensorBoard
@@ -308,39 +329,18 @@ class NeuralNetwork(Model):
         return result
 
     @staticmethod
-    def _shuffle_data(inputs: np.ndarray,
-                      targets: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        import random
-
-        data = []
-        for i in range(len(inputs)):
-            data.append({
-                'input': inputs[i],
-                'target': targets[i]
-            })
-        random.shuffle(data)
-
-        inputs = []
-        targets = []
-        for i in range(len(data)):
-            inputs.append(data[i]['input'])
-            targets.append(data[i]['target'])
-
-        return (np.array(inputs, dtype=float),
-                np.array(targets, dtype=float))
-
-    @staticmethod
     def _reshape_data(data: pd.Dataframe | np.ndarray, shape: Tuple | int) -> np.ndarray | float:
         if isinstance(data, pd.DataFrame):
             data = data.values
 
-        # if isinstance(shape, int) and shape == 1:
-        #     return float(data)
         return np.squeeze(data).reshape(shape)
 
-    def _parse_data(self, features: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-        targets = []
-        inputs = []
+    def _parse_data(self, features: pd.DataFrame) -> Dict[int, List[Dict[str, np.ndarray]]]:
+        data = {}
+
+        # TODO: implement additional method to bin data
+        for index in np.unique(features.index.isocalendar().week):
+            data[index] = []
 
         end = features.index[-1]
         date = features.index[0] + self.resolutions[-1].time_prior
@@ -353,16 +353,16 @@ class NeuralNetwork(Model):
                 target = self._scale_features(target)
 
                 # If no exception was raised, add the validated data to the set
-                inputs.append(self._reshape_data(input, self._input_shape))
-                targets.append(self._reshape_data(target, self._target_shape[1]))
-
+                data[date.week].append({
+                    'input': self._reshape_data(input, self._input_shape),
+                    'target': self._reshape_data(target, self._target_shape[1])
+                })
             except ValueError as e:
                 logger.debug("Skipping %s: %s", date, str(e))
 
             date += dt.timedelta(minutes=self.resolutions[-1].minutes)
 
-        return (np.array(inputs, dtype=float),
-                np.array(targets, dtype=float))
+        return data
 
     def _parse_inputs(self,
                       features: pd.DataFrame,
