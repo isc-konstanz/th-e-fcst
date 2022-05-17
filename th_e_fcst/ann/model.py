@@ -21,6 +21,7 @@ from copy import deepcopy
 from typing import Any, Optional, Tuple, List, Dict
 from configparser import ConfigParser as Configurations
 from configparser import SectionProxy as ConfigurationSection
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pandas.tseries.frequencies import to_offset
 
 from tensorflow.keras.callbacks import History, EarlyStopping, TensorBoard
@@ -58,8 +59,8 @@ class NeuralNetwork(Model):
 
         raise TypeError('Invalid model: {}'.format(type))
 
-    def _configure(self, configs: Configurations, **kwargs) -> None:
-        super()._configure(configs, **kwargs)
+    def _configure(self, configs: Configurations) -> None:
+        super()._configure(configs)
 
         self.dir = os.path.join(configs['General']['data_dir'], 'model')
 
@@ -90,11 +91,9 @@ class NeuralNetwork(Model):
         if len(self.resolutions) < 1:
             raise ValueError("Invalid control configurations without specified step resolutions")
 
-        self._estimate = kwargs.get('estimate') if 'estimate' in kwargs else \
-            configs.get('Features', 'estimate', fallback='true').lower() == 'true'
-
         input_steps = len(resolutions_range)
 
+        self._estimate = configs.get('Features', 'estimate', fallback='true').lower() == 'true'
         if self._estimate:
             input_steps += 1
 
@@ -110,8 +109,8 @@ class NeuralNetwork(Model):
         target_count = len(self.features['target'])
         self._target_shape = (target_steps, target_count)
 
-    def _build(self, system: System, configs: Configurations, **kwargs) -> None:
-        super()._build(system, configs, **kwargs)
+    def _build(self, system: System, configs: Configurations) -> None:
+        super()._build(system, configs)
 
         self.history = History()
         self.callbacks = [self.history, TensorBoard(log_dir=self.dir, histogram_freq=1)]
@@ -122,22 +121,38 @@ class NeuralNetwork(Model):
             self._early_stopping_patience = configs.getint('General', 'early_stopping_patience', fallback=self.epochs/4)
             self.callbacks.append(EarlyStopping(patience=self._early_stopping_patience, restore_best_weights=True))
 
+        self._build_model(configs)
+
+    def _build_model(self, configs: Configurations) -> None:
         # TODO: implement date based backups and naming scheme
         if self.exists():
             self._load()
-
         else:
             self._build_layers(configs)
 
-        self.model.compile(optimizer=self._decode_optimizer(configs),
-                           metrics=self._decode_metrics(configs),
-                           loss=self._decode_loss(configs))
+        self.model.compile(optimizer=self._parse_optimizer(configs),
+                           metrics=self._parse_metrics(configs),
+                           loss=self._parse_loss(configs))
 
     def _build_layers(self, configs: Configurations) -> None:
         pass
 
+    def __getstate__(self):
+        state = self.__dict__.copy()
+
+        # Do not serialize model
+        del state["model"]
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
+        # TODO: Build model back since it was not serialized
+        # self._build_model(self._configs)
+        self.model = None
+
     @staticmethod
-    def _decode_optimizer(configs: Configurations):
+    def _parse_optimizer(configs: Configurations):
         optimizer = configs.get('General', 'optimizer')
         if optimizer == 'adam' and configs.has_option('General', 'learning_rate'):
             optimizer = Adam(learning_rate=configs.getfloat('General', 'learning_rate'))
@@ -145,11 +160,11 @@ class NeuralNetwork(Model):
         return optimizer
 
     @staticmethod
-    def _decode_metrics(configs: Configurations):
+    def _parse_metrics(configs: Configurations):
         return configs.get('General', 'metrics', fallback=[])
 
     @staticmethod
-    def _decode_loss(configs: Configurations):
+    def _parse_loss(configs: Configurations):
         return configs.get('General', 'loss')
 
     def _load(self, from_json: bool = False) -> None:
@@ -267,18 +282,6 @@ class NeuralNetwork(Model):
         kwargs = {
             'verbose': LOG_VERBOSE
         }
-
-        # import tables
-        # data_path = os.path.join(self.dir, 'data.h5')
-        # if os.path.isfile(data_path):
-        #     with tables.open_file(data_path, 'r') as hf:
-        #         data = hf.get_node(hf.root, 'data')[:]
-        # else:
-        #     data = self._parse_data(features)
-        #     with tables.open_file(data_path, 'w') as hf:
-        #         hf.create_carray(hf.root, 'data', obj=data)
-        #         hf.flush()
-
         data = self._parse_data(features)
         inputs = []
         targets = []
@@ -336,15 +339,32 @@ class NeuralNetwork(Model):
         return np.squeeze(data).reshape(shape)
 
     def _parse_data(self, features: pd.DataFrame) -> Dict[int, List[Dict[str, np.ndarray]]]:
-        data = {}
-
         # TODO: implement additional method to bin data
-        for index in np.unique(features.index.isocalendar().week):
-            data[index] = []
-
-        end = features.index[-1]
+        index = np.unique(features.index.isocalendar().week)
+        dates = dict((i, []) for i in index)
         date = features.index[0] + self.resolutions[-1].time_prior
-        while date <= end:
+        while date <= features.index[-1]:
+            date_index = date.week
+            dates[date_index].append(date)
+            date += dt.timedelta(minutes=self.resolutions[-1].minutes)
+
+        data = {}
+        steps = []
+        with ProcessPoolExecutor() as executor:
+            for step_index, step_dates in dates.items():
+                step_features = features[step_dates[0] - self.resolutions[-1].time_prior:step_dates[-1]]
+                steps.append(executor.submit(self._parse_step, step_features, step_index, step_dates))
+
+            for step in as_completed(steps):
+                step_index, step_data = step.result()
+                data[step_index] = step_data
+
+        return data
+
+    def _parse_step(self, features: pd.DataFrame, index: int,
+                    dates: List[pd.Timestamp]) -> Tuple[int, List[Dict[str, np.ndarray]]]:
+        data = []
+        for date in dates:
             try:
                 input = self._parse_inputs(features, date)
                 input = self._scale_features(input)
@@ -353,16 +373,14 @@ class NeuralNetwork(Model):
                 target = self._scale_features(target)
 
                 # If no exception was raised, add the validated data to the set
-                data[date.week].append({
+                data.append({
                     'input': self._reshape_data(input, self._input_shape),
                     'target': self._reshape_data(target, self._target_shape[1])
                 })
-            except ValueError as e:
+            except (KeyError, ValueError) as e:
                 logger.debug("Skipping %s: %s", date, str(e))
 
-            date += dt.timedelta(minutes=self.resolutions[-1].minutes)
-
-        return data
+        return index, data
 
     def _parse_inputs(self,
                       features: pd.DataFrame,

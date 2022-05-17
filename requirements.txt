@@ -12,6 +12,6 @@ keras~=2.6.*
 tensorflow~=2.6.*
 tensorboard~=2.6.*
 th_e_core>=0.4.1
-setuptools~=58.*
+setuptools~=61.*
 matplotlib~=3.5.*
 seaborn~=0.11.2
