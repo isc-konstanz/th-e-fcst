@@ -117,8 +117,7 @@ def main(args):
                     data = pd.concat([data, solar_yield], axis=1)
 
                 solar_position = system.forecast._get_solar_position(data.index)
-                data = pd.concat([data, solar_yield,
-                                  weather, solar_position], axis=1)
+                data = pd.concat([data, weather, solar_position], axis=1)
 
                 features = system.forecast._model._parse_features(data)
                 features = system.forecast._model._add_meta(features)
@@ -181,14 +180,14 @@ def main(args):
 def simulate(settings, system, features, **kwargs):
     forecast = system.forecast._model
 
-    resolution_min = forecast.resolutions[0]
-    if len(forecast.resolutions) > 1:
-        for i in range(len(forecast.resolutions)-1, 0, -1):
-            resolution_min = forecast.resolutions[i]
+    resolution_min = forecast.features.resolutions[0]
+    if len(forecast.features.resolutions) > 1:
+        for i in range(len(forecast.features.resolutions)-1, 0, -1):
+            resolution_min = forecast.features.resolutions[i]
             if resolution_min.steps_horizon is not None:
                 break
 
-    resolution_max = forecast.resolutions[0]
+    resolution_max = forecast.features.resolutions[0]
     resolution_data = resolution_min.resample(features)
 
     system_dir = system.configs['General']['data_dir']
@@ -209,7 +208,7 @@ def simulate(settings, system, features, **kwargs):
     date = floor_date(features.index[0] + resolution_max.time_prior, timezone=system.location.tz)
     end = ceil_date(features.index[-1] - resolution_max.time_horizon, timezone=system.location.tz)
 
-    # training_recursive = settings.getboolean('Training', 'recursive', fallback=False)
+    # training_recursive = settings.getboolean('Training', 'recursive', fallback=True)
     # training_interval = settings.getint('Training', 'interval')
     # training_last = time
 
@@ -222,10 +221,10 @@ def simulate(settings, system, features, **kwargs):
         date_path = '/{0}.'.format(date)
         if date_path in datastore:
             result = datastore.get(date_path+'/outputs')
-            # inputs = datastore.get(date_path+'/inputs')
-            # targets = datastore.get(date_path+'/targets')
+            # input = datastore.get(date_path+'/input')
+            # target = datastore.get(date_path+'/target')
 
-            # results[date] = (inputs, targets, prediction)
+            # results[date] = (input, target, prediction)
             results = pd.concat([results, result], axis=0)
 
             date = _increment_date(date, interval)
@@ -238,15 +237,15 @@ def simulate(settings, system, features, **kwargs):
             date_features = deepcopy(resolution_data[date_prior:date_horizon])
             date_range = date_features[date_start:date_horizon].index
 
-            inputs = forecast._parse_inputs(date_features, date_range)
-            targets = forecast._parse_targets(date_features, date_range)
+            inputs = forecast.features.input(date_features, date_range)
+            targets = forecast.features.target(date_features, date_range)
             prediction = forecast._predict(date_features, date)
-            prediction.rename(columns={target: target + '_est' for target in forecast.features['target']}, inplace=True)
+            prediction.rename(columns={target: target + '_est' for target in forecast.features.target_keys}, inplace=True)
 
-            # results[date] = (inputs, targets, prediction)
+            # results[date] = (input, target, prediction)
             result = pd.concat([targets, prediction], axis=1)
 
-            for target in forecast.features['target']:
+            for target in forecast.features.target_keys:
                 result[target + '_err'] = result[target + '_est'] - result[target]
 
             result = pd.concat([result, resolution_data.loc[result.index,
@@ -258,8 +257,8 @@ def simulate(settings, system, features, **kwargs):
             results = pd.concat([results, result], axis=0)
 
             result.to_hdf(datastore, date_path+'/outputs')
-            inputs.to_hdf(datastore, date_path+'/inputs')
-            targets.to_hdf(datastore, date_path+'/targets')
+            inputs.to_hdf(datastore, date_path+'/input')
+            targets.to_hdf(datastore, date_path+'/target')
             if verbose:
                 os.makedirs(date_dir, exist_ok=True)
                 database.write(result,  file=date_str+'_outputs.csv', subdir=date_dir, rename=False)
@@ -285,7 +284,7 @@ def evaluate(settings, systems):
     # noinspection PyProtectedMember
     def apollo(data, data_target):
         data_doubt = data_target + '_doubt'
-        data_doubts = system.forecast._model.features.get('doubt', {})
+        data_doubts = system.forecast._model.features._doubt
         if data_target not in data_doubts:
             return None, None
 
@@ -381,10 +380,13 @@ def evaluate(settings, systems):
     #
     #     return None, total_count
 
-    summary = pd.DataFrame(index=[s.name for s in systems])
     # TODO: implement durations metadata json file and load them e.g. if H5 file already exists
-    #                        columns=pd.MultiIndex.from_tuples([('Durations [min]', 'Simulation'),
-    #                                                           ('Durations [min]', 'Prediction')]))
+    headers = [('Durations [min]', 'Simulation'), ('Durations [min]', 'Prediction')]
+    if any('training' in system.durations.keys() for system in systems):
+        headers.append(('Durations [min]', 'Training'))
+
+    summary = pd.DataFrame(index=[s.name for s in systems],
+                           columns=pd.MultiIndex.from_tuples(headers))
 
     evaluations = {}
     for system in systems:
@@ -392,11 +394,11 @@ def evaluate(settings, systems):
         durations = system.simulation['durations']
 
         # index = pd.IndexSlice
-        # summary.loc[system.name, ('Durations [min]', 'Simulation')] = round(durations['simulation']['minutes'])
-        # summary.loc[system.name, ('Durations [min]', 'Prediction')] = round(durations['prediction']['minutes'])
-        #
-        # if 'training' in durations.keys():
-        #     summary.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
+        summary.loc[system.name, ('Durations [min]', 'Simulation')] = round(durations['simulation']['minutes'])
+        summary.loc[system.name, ('Durations [min]', 'Prediction')] = round(durations['prediction']['minutes'])
+
+        if 'training' in durations.keys():
+            summary.loc[system.name, ('Durations [min]', 'Training')] = round(durations['training']['minutes'])
 
         def concat_evaluation(name, header, data):
             if data is None:
@@ -414,7 +416,7 @@ def evaluate(settings, systems):
                 summary.loc[system.name, (header, name)] = kpi
 
         interval = settings.getint('General', 'interval')
-        for target in system.forecast._model.features['target']:
+        for target in system.forecast._model.features.target_keys:
             target_id = target.replace('_power', '')
             target_name = target_id if target_id not in TARGETS else TARGETS[target_id]
 

@@ -5,4 +5,5 @@
 
 
 """
+from th_e_fcst.ann.features import Features  # noqa: F401
 from th_e_fcst.ann.model import NeuralNetwork  # noqa: F401

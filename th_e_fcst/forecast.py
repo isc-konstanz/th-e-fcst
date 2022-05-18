@@ -12,7 +12,6 @@ import pandas as pd
 import datetime as dt
 import th_e_core
 
-from configparser import ConfigParser
 from th_e_core import System
 from th_e_fcst import NeuralNetwork
 
@@ -23,7 +22,7 @@ class Forecast(th_e_core.Forecast):
 
     @classmethod
     def read(cls, system: System, **kwargs) -> Forecast:
-        return cls(system, cls._read_configs(system, **kwargs), **kwargs)
+        return cls(system, cls._read_configs(system, **kwargs))
 
     def _activate(self, system, configs):
         super()._activate(system, configs)
@@ -49,7 +48,7 @@ class Forecast(th_e_core.Forecast):
     def _get_data(self,
                   start: pd.Timestamp | dt.datetime,
                   end:   pd.Timestamp | dt.datetime = None, **_) -> pd.DataFrame:
-        resolution = self._model.resolutions[0]
+        resolution = self._model.features.resolutions[0]
         prior_end = start - resolution.time_step
         prior_start = start - resolution.time_prior\
                             - resolution.time_step + dt.timedelta(minutes=1)
