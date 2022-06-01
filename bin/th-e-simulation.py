@@ -20,6 +20,7 @@ import datetime as dt
 import calendar as cal
 
 from copy import deepcopy
+from dateutil.relativedelta import relativedelta
 from argparse import ArgumentParser, RawTextHelpFormatter
 from tensorboard import program
 from typing import Union
@@ -46,11 +47,12 @@ def main(args):
     kwargs = vars(args)
     kwargs.update(settings.items('General'))
 
-    tensorboard = _launch_tensorboard(**kwargs)
+    systems = System.read(**kwargs)
 
     verbose = settings.getboolean('General', 'verbose', fallback=False)
 
-    systems = System.read(**kwargs)
+    tensorboard = _launch_tensorboard(systems, **kwargs)
+
     for system in systems:
         logger.info('Starting TH-E-Simulation of system {}'.format(system.name))
         timezone = system.location.pytz
@@ -117,8 +119,8 @@ def main(args):
                 solar_position = system.forecast._get_solar_position(data.index)
                 data = pd.concat([data, weather, solar_position], axis=1)
 
-                features = system.forecast._model._parse_features(data)
-                features = system.forecast._model._add_meta(features)
+                features = system.forecast._model.features.extract(data)
+                features = system.forecast._model.features._add_meta(features)
                 features.to_hdf(features_path + '.h5', 'features', mode='w')
 
                 if verbose:
@@ -175,7 +177,7 @@ def main(args):
 
 
 # noinspection PyProtectedMember
-def simulate(settings, system, features, **kwargs):
+def simulate(settings, system, features):
     forecast = system.forecast._model
 
     resolution_min = forecast.features.resolutions[0]
@@ -203,12 +205,16 @@ def simulate(settings, system, features, **kwargs):
     verbose = settings.getboolean('General', 'verbose', fallback=False)
 
     interval = settings.getint('General', 'interval')
-    date = floor_date(features.index[0] + resolution_max.time_prior, timezone=system.location.tz)
     end = ceil_date(features.index[-1] - resolution_max.time_horizon, timezone=system.location.tz)
+    start = floor_date(features.index[0] + resolution_max.time_prior, timezone=system.location.tz)
+    date = start
 
-    # training_recursive = settings.getboolean('Training', 'recursive', fallback=True)
-    # training_interval = settings.getint('Training', 'interval')
-    # training_last = time
+    training_recursive = settings.getboolean('Training', 'recursive', fallback=True)
+    if training_recursive:
+        training_interval = settings.getint('Training', 'interval', fallback=24)*60
+        training_date = _next_date(date, training_interval*2)
+        training_last = date
+        date = _next_date(date, training_interval)
 
     # results = {}
     results = pd.DataFrame()
@@ -225,7 +231,7 @@ def simulate(settings, system, features, **kwargs):
             # results[date] = (input, target, prediction)
             results = pd.concat([results, result], axis=0)
 
-            date = _increment_date(date, interval)
+            date = _next_date(date, interval)
             continue
 
         try:
@@ -263,12 +269,22 @@ def simulate(settings, system, features, **kwargs):
                 database.write(inputs,  file=date_str+'_inputs.csv',  subdir=date_dir, rename=False)
                 database.write(targets, file=date_str+'_targets.csv', subdir=date_dir, rename=False)
 
-            date = _increment_date(date, interval)
+            if training_recursive and date >= training_date:
+                if abs((training_date - date).total_seconds()) <= training_interval:
+                    training_features = deepcopy(resolution_data[training_last - resolution_max.time_prior:training_date])
+                    validation_features = deepcopy(resolution_data[training_last - dt.timedelta(days=7):training_last])
+
+                    forecast._train(training_features, validation_features)
+
+                training_last = training_date
+                training_date = _next_date(date, training_interval)
+
+            date = _next_date(date, interval)
 
         except ValueError as e:
             logger.debug("Skipping %s: %s", date, str(e))
             # logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
-            date = _increment_date(date, interval)
+            date = _next_date(date, interval)
 
     database.close()
     datastore.close()
@@ -380,7 +396,7 @@ def evaluate(settings, systems):
 
     # TODO: implement durations metadata json file and load them e.g. if H5 file already exists
     headers = [('Durations [min]', 'Simulation'), ('Durations [min]', 'Prediction')]
-    if any('training' in system.durations.keys() for system in systems):
+    if any('training' in system.simulation['durations'].keys() for system in systems):
         headers.append(('Durations [min]', 'Training'))
 
     summary = pd.DataFrame(index=[s.name for s in systems],
@@ -438,7 +454,7 @@ def evaluate(settings, systems):
 
                 power_file = os.path.join('evaluation', target)
                 power_colors = ['#004F9E', '#4f779e']
-                power_data = results[results.horizon < interval/60]
+                power_data = deepcopy(results[results.horizon < interval/60])
                 power_data.rename(columns={
                     target+'_est': 'Prediction',
                     target:        'Measurement'
@@ -515,10 +531,12 @@ def _print_data(system, data, index, column, file, **kwargs):
                                                                               str(e)))
 
 
-def _launch_tensorboard(**kwargs):
-    launch = kwargs['tensorboard'] if isinstance(kwargs['tensorboard'], bool) \
-                                   else str(kwargs['tensorboard']).lower() == 'true'
-
+def _launch_tensorboard(systems, **kwargs):
+    # noinspection PyProtectedMember
+    launch = any([system.forecast._model._tensorboard for system in systems])
+    if launch:
+        launch = kwargs['tensorboard'] if isinstance(kwargs['tensorboard'], bool) \
+                                       else str(kwargs['tensorboard']).lower() == 'true'
     if launch:
         logging.getLogger('MARKDOWN').setLevel(logging.ERROR)
         logging.getLogger('tensorboard').setLevel(logging.ERROR)
@@ -535,17 +553,8 @@ def _launch_tensorboard(**kwargs):
     return launch
 
 
-def _increment_date(date: Union[dt.datetime, pd.Timestamp], interval: int) -> Union[dt.datetime, pd.Timestamp]:
-    increment_freq = '{}min'.format(interval)
-    increment_delta = dt.timedelta(minutes=interval)
-    increment_count = 1
-
-    increment_date = pd.NaT
-    while increment_date is pd.NaT or increment_date <= date:
-        increment_date = (date + increment_count*increment_delta).floor(increment_freq, ambiguous='NaT')
-        increment_count += 1
-
-    return increment_date
+def _next_date(date: pd.Timestamp, interval: int) -> pd.Timestamp:
+    return (date + relativedelta(minutes=interval)).round('{minutes}s'.format(minutes=interval))
 
 
 def _get_time(time_str: str, timezone: tz.timezone) -> pd.Timestamp:
@@ -617,7 +626,7 @@ if __name__ == "__main__":
     logging.config.fileConfig(logging_file)
     logging.getLogger('h5py').setLevel(logging.WARN)
     logging.getLogger('matplotlib').setLevel(logging.WARN)
-    logging.getLogger('tensorflow').setLevel(logging.INFO)
+    logging.getLogger('tensorflow').setLevel(logging.WARN)
 
     logger = logging.getLogger('th-e-simulation')
 
