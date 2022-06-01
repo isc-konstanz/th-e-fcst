@@ -24,9 +24,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from tensorflow.keras.callbacks import History, EarlyStopping, TensorBoard
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import Dense, Dropout, LeakyReLU, Flatten, Conv1D, MaxPooling1D, LSTM
-from tensorflow.keras.models import model_from_json
 from th_e_fcst.ann import Features
 from th_e_core import System, Model
 
@@ -70,13 +69,23 @@ class NeuralNetwork(Model):
         super()._build(system, configs)
 
         self.history = History()
-        self.callbacks = [self.history, TensorBoard(log_dir=self.dir, histogram_freq=1)]
+        self.callbacks = [self.history]
 
         self._early_stopping = configs.get('General', 'early_stopping', fallback='True').lower() == 'true'
         if self._early_stopping:
-            self._early_stopping_split = configs.getint('General', 'early_stopping_split', fallback=7)
+            self._early_stopping_bins = configs.get('General', 'early_stopping_bins', fallback=None)
+            if self._early_stopping_bins is not None:
+                self._early_stopping_bins = self._early_stopping_bins.lower()
+                if self._early_stopping_bins not in ['hour', 'day_of_year', 'day_of_week', 'week']:
+                    raise ValueError("Unknown early stopping batch method: " + self._early_stopping_bins)
+
+            self._early_stopping_split = configs.getint('General', 'early_stopping_split', fallback=10)
             self._early_stopping_patience = configs.getint('General', 'early_stopping_patience', fallback=self.epochs/4)
             self.callbacks.append(EarlyStopping(patience=self._early_stopping_patience, restore_best_weights=True))
+
+        self._tensorboard = configs.getboolean('General', 'tensorboard', fallback=False)
+        if self._tensorboard:
+            self.callbacks.append(TensorBoard(log_dir=self.dir, histogram_freq=1))
 
         self.features = Features(system, configs)
 
@@ -128,50 +137,45 @@ class NeuralNetwork(Model):
 
     def _load(self, from_json: bool = False) -> None:
         logger.debug("Loading model for system {} from file".format(self._system.name))
-        self.model = None
-        try:
-            if os.path.isfile(os.path.join(self.dir, 'model.json')) and from_json:
-                with open(os.path.join(self.dir, 'model.json'), 'r') as f:
-                    self.model = model_from_json(f.read())
-
-        except ValueError as e:
-            logger.warning(str(e))
-
-        if self.model is None:
-            self._build_layers(self._configs)
-            logger.info("Built model after failure to read serialized graph")
-
-        if (glob(os.path.join(self.dir, 'checkpoint*')) and
-                glob(os.path.join(self.dir, 'model.data*')) and
-                os.path.isfile(os.path.join(self.dir, 'model.index'))):
-            self.model.load_weights(os.path.join(self.dir, 'model'))
+        if (glob(os.path.join(self.dir, 'variables', 'variables.data*')) and
+                os.path.isfile(os.path.join(self.dir, 'variables', 'variables.index')) and
+                os.path.isfile(os.path.join(self.dir, 'saved_model.pb')) and
+                os.path.isfile(os.path.join(self.dir, 'keras_metadata.pb'))):
+            self.model = load_model(os.path.join(self.dir))
         else:
-            self.model.load_weights(os.path.join(self.dir, 'model.h5'))
+            self._build_layers(self._configs)
+
+            if (glob(os.path.join(self.dir, 'checkpoint*')) and
+                    glob(os.path.join(self.dir, 'model.data*')) and
+                    os.path.isfile(os.path.join(self.dir, 'model.index'))):
+                self.model.load_weights(os.path.join(self.dir, 'model'))
+            else:
+                self.model.load_weights(os.path.join(self.dir, 'model.h5'))
 
     def _save(self) -> None:
         logger.debug("Saving model for system {} to file".format(self._system.name))
 
-        # Serialize model to JSON
-        with open(os.path.join(self.dir, 'model.json'), 'w') as f:
-            f.write(self.model.to_json())
-
-        # Serialize weights to HDF5
-        self.model.save_weights(os.path.join(self.dir, 'model.h5'))
-
         # Serialize weights checkpoint
-        self.model.save_weights(os.path.join(self.dir, 'model'))
+        self.model.save(self.dir)
 
     def exists(self):
         if not os.path.isdir(self.dir):
             os.makedirs(self.dir, exist_ok=True)
             return False
 
-        exists = ((glob(os.path.join(self.dir, 'checkpoint*')) and
-                   glob(os.path.join(self.dir, 'model.data*')) and
-                  os.path.isfile(os.path.join(self.dir, 'model.index'))) or
-                  os.path.isfile(os.path.join(self.dir, 'model.h5')))
+        if (glob(os.path.join(self.dir, 'variables', 'variables.data*')) and
+                os.path.isfile(os.path.join(self.dir, 'variables', 'variables.index')) and
+                os.path.isfile(os.path.join(self.dir, 'saved_model.pb')) and
+                os.path.isfile(os.path.join(self.dir, 'keras_metadata.pb'))):
+            return True
 
-        return exists
+        if ((glob(os.path.join(self.dir, 'checkpoint*')) and
+                glob(os.path.join(self.dir, 'model.data*')) and
+                os.path.isfile(os.path.join(self.dir, 'model.index'))) or
+                os.path.isfile(os.path.join(self.dir, 'model.h5'))):
+            return True
+
+        return False
 
     def predict(self,
                 data: pd.DataFrame,
@@ -234,31 +238,42 @@ class NeuralNetwork(Model):
         features = self.features.extract(data)
         return self._train(features)
 
-    def _train(self,
-               features: pd.DataFrame,
-               shuffle: bool = True) -> History:
-
+    def _train(self, features: pd.DataFrame, validation_features: pd.DataFrame = None) -> History:
         kwargs = {
             'verbose': LOG_VERBOSE
         }
-        data = self._parse_features(features)
         inputs = []
         targets = []
-        if not self._early_stopping:
-            for d in data.values():
-                if shuffle:
-                    random.shuffle(d)
-                for i in range(len(d)):
-                    inputs.append(d[i]['input'])
-                    targets.append(d[i]['target'])
+        if not self._early_stopping or \
+                (validation_features is not None and not validation_features.empty):
+
+            data = self._parse_features(features)
+            random.shuffle(data)
+            for i in range(len(data)):
+                inputs.append(data[i]['input'])
+                targets.append(data[i]['target'])
+
+            if validation_features is not None and not validation_features.empty:
+                validation_data = self._parse_features(validation_features)
+                validation_inputs = []
+                validation_targets = []
+
+                random.shuffle(validation_data)
+                for i in range(len(validation_data)):
+                    validation_inputs.append(validation_data[i]['input'])
+                    validation_targets.append(validation_data[i]['target'])
+
+                kwargs['validation_data'] = (np.array(validation_inputs, dtype=float),
+                                             np.array(validation_targets, dtype=float))
         else:
+            data = self._parse_batches(features)
+
             validation_inputs = []
             validation_targets = []
 
-            for d in data.values():
+            for d in data:
                 split = len(d) - int(len(d)/self._early_stopping_split)
-                if shuffle:
-                    random.shuffle(d)
+                random.shuffle(d)
 
                 for i in range(len(d)):
                     if i <= split:
@@ -297,9 +312,12 @@ class NeuralNetwork(Model):
 
         return np.squeeze(data).reshape(shape)
 
-    def _parse_batch(self, features: pd.DataFrame, index: int,
-                     dates: List[pd.Timestamp]) -> Tuple[int, List[Dict[str, np.ndarray]]]:
+    def _parse_features(self,
+                        features: pd.DataFrame,
+                        dates: List[pd.Timestamp] = None) -> Tuple[int, List[Dict[str, np.ndarray]]]:
         data = []
+        if dates is None:
+            dates = self._parse_dates(features)
         for date in dates:
             try:
                 input = self.features.input(features, date)
@@ -316,37 +334,58 @@ class NeuralNetwork(Model):
             except (KeyError, ValueError) as e:
                 logger.debug("Skipping %s: %s", date, str(e))
 
-        return index, data
+        return data
 
-    def _parse_features(self, features: pd.DataFrame) -> Dict[int, List[Dict[str, np.ndarray]]]:
-        # TODO: implement additional method to bin data
-        index = np.unique(features.index.isocalendar().week)
-        dates = dict((i, []) for i in index)
-        date = features.index[0] + self.features.resolutions[-1].time_prior
-        while date <= features.index[-1]:
-            date_index = date.week
-            dates[date_index].append(date)
-            date += dt.timedelta(minutes=self.features.resolutions[-1].minutes)
+    def _parse_batches(self, features: pd.DataFrame) -> List[List[Dict[str, np.ndarray]]]:
+        def parse_batch_index(date: pd.Timestamp) -> int:
+            method = self._early_stopping_bins
+            if method is None:
+                return 0
+            elif method == 'hour':
+                return date.hour
+            elif method == 'day_of_year':
+                return date.dayofyear
+            elif method == 'day_of_week':
+                return date.dayofweek
+            elif method == 'week':
+                return date.week
+
+        batches = {}
+        for date in self._parse_dates(features):
+            index = parse_batch_index(date)
+            if index not in batches.keys():
+                batches[index] = []
+            batches[index].append(date)
 
         data = {}
-        steps = []
-        with ProcessPoolExecutor() as executor:
-            for step_index, step_dates in dates.items():
-                step_features = features[step_dates[0] - self.features.resolutions[-1].time_prior:step_dates[-1]]
-                steps.append(executor.submit(self._parse_batch, step_features, step_index, step_dates))
+        futures = {}
+        with ProcessPoolExecutor(max(os.cpu_count() - 1, 1)) as executor:
+            for batch_index, batch_dates in batches.items():
+                batch_features = features[batch_dates[0] - self.features.resolutions[-1].time_prior:
+                                          batch_dates[-1] + self.features.resolutions[-1].time_step]
+                future = executor.submit(self._parse_features, batch_features, batch_dates)
+                futures[future] = batch_index
 
-            for step in as_completed(steps):
-                step_index, step_data = step.result()
-                data[step_index] = step_data
+            for future in as_completed(futures):
+                result = future.result()
+                index = futures[future]
+                data[index] = result
 
-        return data
+        return list(data.values())
+
+    def _parse_dates(self, features: pd.DataFrame) -> List[pd.Timestamp]:
+        date = features.index[0] + self.features.resolutions[-1].time_prior
+        dates = []
+        while date <= features.index[-1]:
+            dates.append(date)
+            date += dt.timedelta(minutes=self.features.resolutions[-1].minutes)
+        return dates
 
     @staticmethod
     def _parse_kwargs(configs, *args):
         kwargs = {}
         for arg in args:
             kwargs[arg] = configs[arg]
-
         return kwargs
 
 
@@ -418,7 +457,7 @@ class ConvDilated(MultiLayerPerceptron):
         self._add_conv(configs['Conv1D'], first=True)
         self._add_dense(configs['Dense'])
 
-    def _add_conv(self, configs: ConfigurationSection, flatten:bool = True, first: bool = False) -> None:
+    def _add_conv(self, configs: ConfigurationSection, flatten: bool = True, first: bool = False) -> None:
         filters = configs.get('filters')
         if filters.isdigit():
             filters = [int(filters)] * configs.getint('layers', fallback=1)
@@ -451,6 +490,6 @@ class ConvLSTM(ConvDilated, StackedLSTM):
 
     def _build_layers(self, configs: Configurations) -> None:
         self.model = Sequential(name='ConvolutionalLSTM')
-        self._add_conv(configs['Conv1D'], first=True)
+        self._add_conv(configs['Conv1D'], flatten=False, first=True)
         self._add_lstm(configs['LSTM'])
         self._add_dense(configs['Dense'])
