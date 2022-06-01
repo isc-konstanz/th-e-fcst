@@ -32,15 +32,25 @@ class Features(Configurable):
     def _configure(self, configs: Configurations, **kwargs) -> None:
         super()._configure(configs)
 
+        # TODO: Make this part of a wrapper Resolutions list class
+        self._autoregressive = configs.get('General', 'autoregressive', fallback='True').lower() == 'true'
+
+        input_range = pd.date_range(dt.datetime.now().replace(minute=0, second=0, microsecond=0), periods=0)
+        target_range = pd.date_range(dt.datetime.now().replace(minute=0, second=0, microsecond=0), periods=0)
+
         self.resolutions = list()
-        resolutions_range = pd.date_range(dt.datetime.now().replace(minute=0, second=0, microsecond=0), periods=0)
         for resolution_configs in [s for s in configs.sections() if s.lower().startswith('resolution')]:
             resolution = Resolution(**dict(configs.items(resolution_configs)))
 
-            resolution_start = dt.datetime.now().replace(minute=0, second=0, microsecond=0) - resolution.time_prior
-            resolutions_range = resolutions_range.union(pd.date_range(resolution_start,
-                                                                      periods=resolution.steps_prior,
-                                                                      freq='{}min'.format(resolution.minutes)))
+            input_start = dt.datetime.now().replace(minute=0, second=0, microsecond=0) - resolution.time_prior
+            input_range = input_range.union(pd.date_range(input_start,
+                                                          periods=resolution.steps_prior,
+                                                          freq='{}min'.format(resolution.minutes)))
+
+            target_start = dt.datetime.now().replace(minute=0, second=0, microsecond=0) + resolution.time_step
+            target_range = target_range.union(pd.date_range(target_start,
+                                                            periods=resolution.steps_horizon,
+                                                            freq='{}min'.format(resolution.minutes)))
 
             self.resolutions.append(resolution)
 
@@ -62,7 +72,7 @@ class Features(Configurable):
         self.input_keys = parse_feature('input')
         self.target_keys = parse_feature('target')
 
-        input_steps = len(resolutions_range)
+        input_steps = len(input_range)
 
         self._estimate = configs.get('Features', 'estimate', fallback='true').lower() == 'true'
         if self._estimate:
@@ -76,8 +86,13 @@ class Features(Configurable):
 
         self.input_shape = (input_steps, input_count)
 
-        target_steps = 1
+        if self._autoregressive:
+            target_steps = 1
+        else:
+            target_steps = len(target_range)
+
         target_count = len(self.target_keys)
+
         self.target_shape = (target_steps, target_count)
 
     def input(self,
@@ -144,7 +159,21 @@ class Features(Configurable):
         # TODO: Implement horizon resolutions
         data = self.resolutions[-1].resample(deepcopy(features))
 
-        targets = data.loc[index, self.target_keys]
+        if self._autoregressive:
+            targets = data.loc[index, self.target_keys]
+        else:
+            targets = pd.DataFrame()
+            targets.index.name = 'time'
+            for resolution in self.resolutions:
+                if resolution.time_horizon is None:
+                    continue
+
+                resolution_end = index[0] + resolution.time_horizon - dt.timedelta(minutes=1)
+                resolution_start = index[0]
+                resolution_targets = resolution.resample(data[resolution_start:resolution_end])
+
+                targets = resolution_targets.combine_first(targets)
+
         if targets.isnull().values.any():
             raise ValueError("Target data incomplete for %s" % index)
 
