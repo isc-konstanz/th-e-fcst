@@ -40,8 +40,6 @@ def main(args):
     from th_e_fcst import System
     from th_e_core.tools import ceil_date
 
-    logger.info("Starting TH-E Simulation")
-
     settings = configs.read('settings.cfg', **vars(args))
 
     error = False
@@ -65,12 +63,12 @@ def main(args):
         end = _get_time(settings['General']['end'], timezone)
         end = ceil_date(end, system.location.pytz)
 
-        start_train = _get_time(settings['Training']['start'], timezone)
-        end_train = _get_time(settings['Training']['end'], timezone)
-        end_train = ceil_date(end_train, system.location.pytz)
+        training_start = _get_time(settings['Training']['start'], timezone)
+        training_end = _get_time(settings['Training']['end'], timezone)
+        training_end = ceil_date(training_end, system.location.pytz)
 
         bldargs = dict(kwargs)
-        bldargs['start'] = start_train
+        bldargs['start'] = training_start
         bldargs['end'] = end
 
         system.build(**bldargs)
@@ -83,11 +81,11 @@ def main(args):
                 features_path = os.path.join(system.configs.get('General', 'data_dir'), 'model', 'features')
                 if os.path.isfile(features_path + '.h5'):
                     with pd.HDFStore(features_path + '.h5', mode='r') as hdf:
-                        features = hdf.get('features').loc[start_train:end_train]
+                        features = hdf.get('features').loc[training_start:training_end]
                 else:
-                    features = system.forecast._get_data_history(start_train, end_train)
-                    features = system.forecast._model._parse_features(features)
-                    features = system.forecast._model._add_meta(features)
+                    data = system.forecast._get_data_history(training_start, training_end)
+                    features = system.forecast._model.features.extract(data)
+                    features = system.forecast._model.features._add_meta(features)
                     features.to_hdf(features_path + '.h5', 'features', mode='w')
 
                     if verbose:
