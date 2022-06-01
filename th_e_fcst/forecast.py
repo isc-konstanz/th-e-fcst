@@ -114,7 +114,7 @@ class Forecast(th_e_core.Forecast):
         data = pd.DataFrame(index=weather.index)
         try:
             # noinspection PyUnresolvedReferences
-            from th_e_yield import Model
+            from th_e_yield.model import Model
 
             data['pv_yield'] = 0
             for array in self._system.get_type('pv'):
