@@ -31,13 +31,12 @@ AUTHOR = 'ISC Konstanz'
 MAINTAINER_EMAIL = 'steffen.friedriszik@isc-konstanz.de'
 URL = 'http://gitlab.isc-konstanz.de/systems/systems/th-e-fcst'
 
-INSTALL_REQUIRES = ['numpy == 1.21.*',
+INSTALL_REQUIRES = ['numpy == 1.22.*',
                     'pandas == 1.4.*',
-                    'pvlib <= 0.8.1',
                     'keras == 2.6.*',
                     'tensorflow == 2.6.*',
-                    'th_e_core >= 0.4.1',
-                    'th_e_yield >= 0.1.1']
+                    'th_e_core >= 0.4.2',
+                    'th_e_yield >= 0.1.2']
 
 SCRIPTS = ['bin/th-e-fcst']
 
