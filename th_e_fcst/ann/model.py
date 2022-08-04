@@ -209,28 +209,29 @@ class NeuralNetwork(Model):
         features.loc[features.index > date, self.features.target_keys] = np.NaN
 
         while date < end:
-            date_fcst = date + resolution.time_step
-            if date_fcst not in features.index:
+            date_step = date + resolution.time_step
+            if date_step not in features.index:
                 break
 
             input = self.features.input(features, date)
             input = self.features.scale(input)
             target = self._predict_step(input)
-            targets.loc[date_fcst, self.features.target_keys] = target
+            target = self.features.scale(pd.DataFrame(target, columns=self.features.target_keys), invert=True)
+            targets.loc[date_step, self.features.target_keys] = target.values
 
             # Add predicted output to features of next iteration
-            features.loc[(features.index >= date_fcst) &
-                         (features.index < date_fcst + resolution.time_step), self.features.target_keys] = target
+            features.loc[(features.index >= date_step) &
+                         (features.index < date_step + resolution.time_step), self.features.target_keys] = target.values
 
-            date = date_fcst
+            date = date_step
 
-        return self.features.scale(targets, invert=True)
+        return targets
 
     def _predict_step(self, input: pd.DataFrame) -> np.ndarray | float:
         input_shape = (1, self.features.input_shape[0], self.features.input_shape[1])
         input = self._reshape(input, input_shape)
         target = self.model(input)  # .predict(input, verbose=LOG_VERBOSE)
-        target = self._reshape(target, self.features.target_shape[1])
+        target = self._reshape(target, self.features.target_shape)
 
         return target
 
