@@ -35,7 +35,7 @@ INSTALL_REQUIRES = ['numpy == 1.22.*',
                     'pandas == 1.4.*',
                     'keras == 2.6.*',
                     'tensorflow == 2.6.*',
-                    'th_e_core >= 0.4.2',
+                    'th_e_core >= 0.5.0',
                     'th_e_yield >= 0.1.2']
 
 SCRIPTS = ['bin/th-e-fcst']
@@ -58,4 +58,5 @@ setup(
     packages=PACKAGES,
     install_requires=INSTALL_REQUIRES,
     scripts=SCRIPTS,
+    **SETUPTOOLS_KWARGS
 )
