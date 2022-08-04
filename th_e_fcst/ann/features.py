@@ -131,6 +131,9 @@ class Features(Configurable):
             data.loc[index, self.target_keys] = estimate
 
         data = self._add_doubt(data, index)
+        data = self._add_meta(data)[self.target_keys + self.input_keys]
+        data = self._extract(data)
+        data = self._parse_cyclic(data)
 
         inputs = pd.DataFrame()
         inputs.index.name = 'time'
@@ -140,9 +143,6 @@ class Features(Configurable):
             resolution_inputs = resolution.resample(data[resolution_start:resolution_end])
 
             inputs = resolution_inputs.combine_first(inputs)
-
-        inputs = self._add_meta(inputs)[self.target_keys + self.input_keys]
-        inputs = self._parse_cyclic(inputs)
 
         if inputs.isnull().values.any():
             raise ValueError("Input data incomplete for %s" % index)
@@ -180,10 +180,11 @@ class Features(Configurable):
         return targets
 
     def extract(self, data):
-        columns = self.target_keys + self.input_keys
-        features = deepcopy(data[np.intersect1d(data.columns, columns)])
+        return deepcopy(self._extract(data))
 
-        return features
+    def _extract(self, data):
+        columns = self.target_keys + self.input_keys
+        return data[np.intersect1d(data.columns, columns)]
 
     def scale(self, features, invert=False):
         if len(self._scaling) == 0:
