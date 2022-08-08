@@ -130,8 +130,8 @@ class Features(Configurable):
 
             data.loc[index, self.target_keys] = estimate
 
-        data = self._add_doubt(data, index)
-        data = self._add_meta(data)[self.target_keys + self.input_keys]
+        data = self._add_doubt(data)
+        data = self._add_meta(data)
         data = self._extract(data)
         data = self._parse_cyclic(data)
 
@@ -144,7 +144,7 @@ class Features(Configurable):
 
             inputs = resolution_inputs.combine_first(inputs)
 
-        if inputs.isnull().values.any():
+        if inputs.isna().values.any() or len(inputs) < len(index):
             raise ValueError("Input data incomplete for %s" % index)
 
         return inputs
@@ -221,15 +221,12 @@ class Features(Configurable):
 
         return scaled_features
 
-    def _add_doubt(self, features, times=None):
+    def _add_doubt(self, features):
         if len(self._doubt) == 0:
             return features
 
-        if times is None:
-            times = features.index
-
         for feature, feature_cor in self._doubt.items():
-            features.loc[times, feature+'_doubt'] = abs(features.loc[times, feature] - features.loc[times, feature_cor])
+            features[feature+'_doubt'] = abs(features[feature] - features[feature_cor])
 
         return features
 

@@ -315,7 +315,7 @@ class NeuralNetwork(Model):
 
     def _parse_features(self,
                         features: pd.DataFrame,
-                        dates: List[pd.Timestamp] = None) -> Tuple[int, List[Dict[str, np.ndarray]]]:
+                        dates: List[pd.Timestamp] = None) -> List[Dict[str, np.ndarray]]:
         data = []
         if dates is None:
             dates = self._parse_dates(features)
