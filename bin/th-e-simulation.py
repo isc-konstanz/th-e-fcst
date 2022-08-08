@@ -21,6 +21,7 @@ from copy import deepcopy
 from argparse import ArgumentParser, RawTextHelpFormatter
 from tensorboard import program
 
+from th_e_fcst import System
 from th_e_data import Results, Evaluation
 from th_e_core import configs
 from th_e_core.tools import floor_date, ceil_date
@@ -29,8 +30,6 @@ import th_e_data.io as io
 
 # noinspection PyProtectedMember, SpellCheckingInspection
 def simulate(args):
-    from th_e_fcst import System
-
     settings = configs.read('settings.cfg', **vars(args))
 
     verbose = settings.getboolean('General', 'verbose', fallback=False)
@@ -57,7 +56,7 @@ def simulate(args):
         except Exception as e:
             error = True
             logger.error("Error simulating system %s: %s", system.name, str(e))
-            logger.info("%s: %s", type(e).__name__, traceback.format_exc())
+            logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
 
         finally:
             system_results.durations.stop('Simulation')
@@ -104,19 +103,13 @@ def _simulate_training(settings, system, results, verbose=False, **kwargs):
 
     system.build(**bldargs)
 
-    features_path = os.path.join(system.configs.get('General', 'data_dir'), 'model', 'features')
-    if os.path.isfile(features_path + '.h5'):
-        with pd.HDFStore(features_path + '.h5', mode='r') as hdf:
-            features = hdf.get('features').loc[start:end]
-    else:
-        data = system.forecast._get_data_history(start, end)
-        features = system.forecast._model.features.extract(data)
-        features = system.forecast._model.features._add_meta(features)
-        features.to_hdf(features_path + '.h5', 'features', mode='w')
+    features_dir = os.path.join(system.configs.get('General', 'data_dir'), 'model')
+    features_path = os.path.join(features_dir, 'features')
+    features = _load_features(system, start, end, features_dir)
 
-        if verbose:
-            io.write_csv(system, features, features_path)
-            io.print_distributions(features, path=system.forecast._model.dir)
+    if verbose:
+        io.write_csv(system, features, features_path)
+        io.print_distributions(features, path=system.forecast._model.dir)
 
     system.forecast._model._train(features)
 
@@ -142,26 +135,10 @@ def _simulate_prediction(settings, system, results, verbose=False, **kwargs):
 
     features_dir = os.path.join(system.configs.get('General', 'data_dir'), 'results')
     features_path = os.path.join(features_dir, 'features')
-    os.makedirs(features_dir, exist_ok=True)
-    if os.path.isfile(features_path + '.h5'):
-        with pd.HDFStore(features_path + '.h5', mode='r') as hdf:
-            features = hdf.get('features')
-    else:
-        data = system._database.read(start, end)
-        weather = system.forecast._weather._database.read(start, end)
-        if system.contains_type('pv'):
-            solar_yield = system.forecast._get_solar_yield(weather)
-            data = pd.concat([data, solar_yield], axis=1)
+    features = _load_features(system, start, end, features_dir)
 
-        solar_position = system.forecast._get_solar_position(data.index)
-        data = pd.concat([data, weather, solar_position], axis=1)
-
-        features = system.forecast._model.features.extract(data)
-        features = system.forecast._model.features._add_meta(features)
-        features.to_hdf(features_path + '.h5', 'features', mode='w')
-
-        if verbose:
-            io.write_csv(system, features, features_path)
+    if verbose:
+        io.write_csv(system, features, features_path)
 
     logger.debug("Beginning predictions for system: {}".format(system.name))
     results.durations.start('Prediction')
@@ -196,12 +173,15 @@ def _simulate_prediction(settings, system, results, verbose=False, **kwargs):
     while date <= end:
         date_path = date.strftime('%Y-%m-%d/%H-%M-%S')
         if date_path in results:
-            # If this step was simulated already, load the results and skip the prediction
-            results.load(date_path+'/output')
+            try:
+                # If this step was simulated already, load the results and skip the prediction
+                results.load(date_path+'/output')
 
-            date = _next_date(date, interval)
-            continue
+                date = _next_date(date, interval)
+                continue
 
+            except Exception as e:
+                logger.debug("Error loading %s: %s", date, str(e))
         try:
             date_prior = date - resolution_max.time_prior
             date_start = date + resolution_max.time_step
@@ -251,6 +231,22 @@ def _simulate_prediction(settings, system, results, verbose=False, **kwargs):
     results.durations.stop('Prediction')
     logger.debug("Predictions for system {} complete after {:.2f} minutes"
                  .format(system.name, results.durations['Prediction']))
+
+
+# noinspection PyProtectedMember
+def _load_features(system: System, start: dt.datetime, end: dt.datetime, features_dir: str) -> pd.DataFrame:
+    features_path = os.path.join(features_dir, 'features')
+    os.makedirs(features_dir, exist_ok=True)
+    if os.path.isfile(features_path + '.h5'):
+        with pd.HDFStore(features_path + '.h5', mode='r') as hdf:
+            features = hdf.get('features')
+    else:
+        data = system.forecast._get_data_history(start, end)
+        features = system.forecast._model.features.extract(data)
+        features = system.forecast._model.features._add_meta(features)
+        features.to_hdf(features_path + '.h5', 'features', mode='w')
+
+    return features.loc[start:end]
 
 
 def _launch_tensorboard(systems, **kwargs):
