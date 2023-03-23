@@ -21,42 +21,36 @@ from copy import deepcopy
 from argparse import ArgumentParser, RawTextHelpFormatter
 from tensorboard import program
 
+import scisys.io as io
+from scisys import Results, Evaluation
+from corsys import Settings
+from corsys.tools import floor_date, ceil_date
 from th_e_fcst import System
-from th_e_data import Results, Evaluation
-from th_e_core import configs
-from th_e_core.tools import floor_date, ceil_date
-import th_e_data.io as io
 
 
-# noinspection PyProtectedMember, SpellCheckingInspection
-def simulate(args):
-    settings = configs.read('settings.cfg', **vars(args))
+def simulate(**kwargs) -> None:
+    verbose = kwargs.pop('verbose', 'false').lower() == 'true'
 
-    verbose = settings.getboolean('General', 'verbose', fallback=False)
-
-    kwargs = vars(args)
-    kwargs.update(settings.items('General'))
-    kwargs['verbose'] = verbose
-
-    systems = System.read(**kwargs)
+    systems = System.read(settings)
     results = []
     error = False
 
     tensorboard = _launch_tensorboard(systems, **kwargs)
 
     for system in systems:
-        logger.info('Starting TH-E Simulation of system {}'.format(system.name))
+        logger.info('Starting TH-E Evaluation of system {}'.format(system.name))
 
         system_results = Results(system, verbose=verbose)
         system_results.durations.start('Simulation')
         try:
-            _simulate_training(settings, system, system_results, **kwargs)
-            _simulate_prediction(settings, system, system_results, **kwargs)
+            _simulate_training(system, system_results, **kwargs)
+            _simulate_prediction(system, system_results, **kwargs)
 
         except Exception as e:
             error = True
             logger.error("Error simulating system %s: %s", system.name, str(e))
-            logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
+            logger.exception(e)
+            # logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
 
         finally:
             system_results.durations.stop('Simulation')
@@ -66,9 +60,9 @@ def simulate(args):
 
     if not error:
         evaluation = Evaluation.read(**kwargs)
-        evaluation.run(results)
+        evaluation(results)
 
-        logger.info("Finished TH-E Simulation{0}".format('s' if len(systems) > 1 else ''))
+        logger.info("Finished TH-E Evaluation{0}".format('s' if len(systems) > 1 else ''))
 
         if tensorboard:
             # keep_running = input('Keep tensorboard running? [y/n]').lower()
@@ -83,10 +77,8 @@ def simulate(args):
 
 
 # noinspection PyProtectedMember
-def _simulate_training(settings, system, results, verbose=False, **kwargs):
-    forecast = system.forecast._model
-
-    if forecast.exists():
+def _simulate_training(system, results, verbose=False, **kwargs):
+    if system.forecast.exists():
         return
 
     logger.debug("Beginning training of neural network for system: {}".format(system.name))
@@ -103,15 +95,15 @@ def _simulate_training(settings, system, results, verbose=False, **kwargs):
 
     system.build(**bldargs)
 
-    features_dir = os.path.join(system.configs.get('General', 'data_dir'), 'model')
+    features_dir = os.path.join(system.configs.dirs.data, 'model')
     features_path = os.path.join(features_dir, 'features')
     features = _load_features(system, start, end, features_dir)
 
     if verbose:
         io.write_csv(system, features, features_path)
-        io.print_distributions(features, path=system.forecast._model.dir)
+        io.print_distributions(features, path=system.forecast.dir)
 
-    system.forecast._model._train(features)
+    system.forecast._train(features)
 
     results.durations.stop('Training')
     logger.debug("Training of neural network for system {} complete after {:.2f} minutes"
@@ -119,7 +111,7 @@ def _simulate_training(settings, system, results, verbose=False, **kwargs):
 
 
 # noinspection PyProtectedMember
-def _simulate_prediction(settings, system, results, verbose=False, **kwargs):
+def _simulate_prediction(system, results, verbose=False, **kwargs):
     forecast = system.forecast._model
 
     timezone = system.location.pytz
@@ -233,7 +225,7 @@ def _simulate_prediction(settings, system, results, verbose=False, **kwargs):
                  .format(system.name, results.durations['Prediction']))
 
 
-# noinspection PyProtectedMember
+# noinspection PyProtectedMember, PyUnresolvedReferences
 def _load_features(system: System, start: dt.datetime, end: dt.datetime, features_dir: str) -> pd.DataFrame:
     features_path = os.path.join(features_dir, 'features')
     os.makedirs(features_dir, exist_ok=True)
@@ -241,9 +233,9 @@ def _load_features(system: System, start: dt.datetime, end: dt.datetime, feature
         with pd.HDFStore(features_path + '.h5', mode='r') as hdf:
             features = hdf.get('features')
     else:
-        data = system.forecast._get_data_history(start, end)
-        features = system.forecast._model.features.extract(data)
-        features = system.forecast._model.features._add_meta(features)
+        data = system._get_data_history(start, end)
+        features = system.forecast.features.extract(data)
+        features = system.forecast.features._add_meta(features)
         features.to_hdf(features_path + '.h5', 'features', mode='w')
 
     return features.loc[start:end]
@@ -251,7 +243,7 @@ def _load_features(system: System, start: dt.datetime, end: dt.datetime, feature
 
 def _launch_tensorboard(systems, **kwargs):
     # noinspection PyProtectedMember
-    launch = any([system.forecast._model._tensorboard for system in systems])
+    launch = any([system.forecast._tensorboard for system in systems])
     if launch and 'tensorboard' in kwargs:
         launch = kwargs['tensorboard'] if isinstance(kwargs['tensorboard'], bool) \
                                        else str(kwargs['tensorboard']).lower() == 'true'
@@ -263,7 +255,7 @@ def _launch_tensorboard(systems, **kwargs):
         logger_werkzeug.disabled = True
 
         tensorboard = program.TensorBoard()
-        tensorboard.configure(argv=[None, '--logdir', kwargs['data_dir']])
+        tensorboard.configure(argv=[None, '--logdir', settings.dirs.data])
         tensorboard_url = tensorboard.launch()
 
         logger.info("Started TensorBoard at {}".format(tensorboard_url))
@@ -288,35 +280,6 @@ def _get_date(time_str: str, timezone: tz.timezone) -> pd.Timestamp:
     return pd.Timestamp(timezone.localize(dt.datetime.strptime(time_str, '%d.%m.%Y')))
 
 
-def _get_parser(root_dir: str) -> ArgumentParser:
-    from th_e_fcst import __version__
-
-    parser = ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
-    parser.add_argument('-v', '--version',
-                        action='version',
-                        version='%(prog)s {version}'.format(version=__version__))
-
-    parser.add_argument('-r', '--root-directory',
-                        dest='root_dir',
-                        help="directory where the package and related libraries are located",
-                        default=root_dir,
-                        metavar='DIR')
-
-    parser.add_argument('-c', '--config-directory',
-                        dest='config_dir',
-                        help="directory to expect configuration files",
-                        default='conf',
-                        metavar='DIR')
-
-    parser.add_argument('-d', '--data-directory',
-                        dest='data_dir',
-                        help="directory to expect and write result files to",
-                        default='data',
-                        metavar='DIR')
-
-    return parser
-
-
 if __name__ == "__main__":
     run_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(simulate)))
     if os.path.basename(run_dir) == 'bin':
@@ -326,26 +289,9 @@ if __name__ == "__main__":
 
     os.environ['NUMEXPR_MAX_THREADS'] = str(os.cpu_count())
 
-    if not os.path.exists('log'):
-        os.makedirs('log')
+    settings = Settings('th-e-fcst')
 
-    logging_file = os.path.join(os.path.join(run_dir, 'conf'), 'logging.cfg')
-    if not os.path.isfile(logging_file):
-        logging_default = logging_file.replace('logging.cfg', 'logging.default.cfg')
-        if os.path.isfile(logging_default):
-            shutil.copy(logging_default, logging_file)
-        else:
-            raise FileNotFoundError("Unable to open logging.cfg in: " +
-                                    os.path.join(os.path.join(run_dir, 'conf')))
-
-    # Load the logging configuration
     import logging
-    import logging.config
-    logging.config.fileConfig(logging_file)
-    logging.getLogger('h5py').setLevel(logging.WARN)
-    logging.getLogger('matplotlib').setLevel(logging.WARN)
-    logging.getLogger('tensorflow').setLevel(logging.WARN)
 
-    logger = logging.getLogger('th-e-simulation')
-
-    simulate(_get_parser(run_dir).parse_args())
+    logger = logging.getLogger('th-e-fcst')
+    simulate(**settings.general)

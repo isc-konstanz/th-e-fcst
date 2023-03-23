@@ -8,86 +8,96 @@
 from __future__ import annotations
 import logging
 
-import pytz as tz
 import pandas as pd
 import datetime as dt
-import th_e_core
-from th_e_fcst import Forecast
-from th_e_core.tools import convert_timezone
-from configparser import ConfigParser as Configurations
+import pvsys
+from corsys import Component, Configurations
+from corsys.io import DatabaseUnavailableException
+from corsys.weather import WeatherUnavailableException
 from typing import Dict
-from copy import deepcopy
+from .forecast import Forecast
 
 logger = logging.getLogger(__name__)
 
 
-class System(th_e_core.System):
+class System(pvsys.System):
 
-    def _activate(self, components: Dict[str, th_e_core.Component], configs: Configurations) -> None:
-        super()._activate(components, configs)
-
-        self.forecast = Forecast.read(self)
-
-    @property
-    def _component_types(self):
-        return super()._component_types + ['solar', 'array', 'modules']
+    def __activate__(self, components: Dict[str, Component], configs: Configurations) -> None:
+        super().__activate__(components, configs)
+        self._forecast = Forecast.read(self)
 
     # noinspection PyShadowingBuiltins
-    def _component(self, configs, type):
-        if type in ['pv', 'solar', 'array', 'modules']:
-            try:
-                # noinspection PyUnresolvedReferences
-                from th_e_core.cmpt import Photovoltaics
-                return Photovoltaics(self, configs)
+    def __call__(self, *args, **kwargs) -> pd.DataFrame:
+        input = self._get_input(*args, **kwargs)
+        result = self._forecast.get(*args, **kwargs)
+        return pd.concat([result, input], axis=1)
 
-            except ImportError as e:
-                logger.debug("Unable to instance PV configuration: {}".format(str(e)))
+    @property
+    def forecast(self) -> Forecast:
+        return self._forecast
 
-        return super()._component(configs, type)
+    # noinspection PyUnresolvedReferences
+    def _get_input(self, *args, **kwargs) -> pd.DataFrame:
+        input = super()._get_input(*args, **kwargs)
 
-    # noinspection PyProtectedMember
-    def build(self,
-              start: pd.Timestamp | dt.datetime = None,
-              end:   pd.Timestamp | dt.datetime = None, **_) -> None:
+        for cmpt in self.values():
+            if cmpt.type == 'pv':
+                result_pv = self._get_solar_yield(cmpt, input)
+                result['pv_yield'] += result_pv['pv_power'].abs()
 
-        from th_e_data import build
-        database = deepcopy(self._database)
-        database.enabled = False
+        return input
 
-        # noinspection SpellCheckingInspection
-        bldargs = dict()
-        bldargs['start'] = convert_timezone(start, self.location.pytz)
-        bldargs['end'] = convert_timezone(end, self.location.pytz)
+    # noinspection PyUnresolvedReferences
+    def _get_data(self,
+                  start: pd.Timestamp | dt.datetime,
+                  end:   pd.Timestamp | dt.datetime = None, **kwargs) -> pd.DataFrame:
+        resolution = self.forecast.features.resolutions[0]
+        prior_end = start - resolution.time_step
+        prior_start = start - resolution.time_prior\
+                            - resolution.time_step + dt.timedelta(minutes=1)
 
-        weather = self.forecast.build(**bldargs)
+        data = self._get_data_history(prior_start, prior_end)
+        try:
+            input = self._get_input(start, end, **kwargs)
+            data = pd.concat([data, input], axis=1)
 
-        if (weather is None or weather.empty) and not database.exists(**bldargs):
-            weather = self.forecast._get_weather(**bldargs)
+        except WeatherUnavailableException as e:
+            logger.debug(str(e))
 
-        data = build(self.configs, database, weather=weather, **bldargs)
-        if data is not None and not data.empty:
-            from th_e_core.cmpt import Photovoltaics
-            if self.contains_type('pv') and \
-                    (Photovoltaics.POWER not in data.columns or
-                     Photovoltaics.ENERGY not in data.columns):
-                data[Photovoltaics.POWER] = self.forecast._get_solar_yield(weather[data.index[0]:data.index[-1]]).pv_yield
-                data[Photovoltaics.POWER].fillna(0, inplace=True)
-                data[Photovoltaics.ENERGY] = (data[Photovoltaics.POWER] / 1000 *
-                                              (data.index[1] - data.index[0]).seconds / 3600).cumsum()
-
-            if self._database.enabled:
-                self._database.write(data, split_data=True, **bldargs)
-
-    def run(self, date=None, **kwargs):
-        if date is None:
-            date = dt.datetime.now(tz.utc)
-        
-        return self._run(date, **kwargs)
-
-    def _run(self, date, **kwargs):
-        data = self.forecast.get(date, **kwargs)
-        
-        if self._database is not None:
-            self._database.persist(data, **kwargs)
-        
         return data
+
+    # noinspection PyTypeChecker
+    def _get_data_history(self,
+                          start: pd.Timestamp | dt.datetime,
+                          end:   pd.Timestamp | dt.datetime, **kwargs) -> pd.DataFrame:
+        try:
+            data = self.database.read(start, end)
+            data = data[data.columns.drop(list(data.filter(regex='_energy')))]
+
+        except DatabaseUnavailableException as e:
+            data = pd.DataFrame()
+            logger.warning(str(e))
+
+        try:
+            weather = self.weather.database.read(start, end, **kwargs)
+            input = self._validate_input(weather)
+            data = pd.concat([data, input], axis=1)
+
+        except WeatherUnavailableException as e:
+            logger.debug(str(e))
+        except DatabaseUnavailableException as e:
+            logger.warning(str(e))
+
+        data.index.name = 'time'
+        return data
+
+    # noinspection PyUnresolvedReferences, PyTypeChecker, SpellCheckingInspection
+    def _validate_input(self, weather: pd.DataFrame) -> pd.DataFrame:
+        input = super()._validate_input(weather)
+        cmpts_pv = [cmpt for cmpt in self.values() if cmpt.type == 'pv']
+        if len(cmpts_pv) > 0:
+            input['pv_yield'] = 0
+            for cmpt in cmpts_pv:
+                input_pv = self._get_solar_yield(cmpt, input)
+                input['pv_yield'] += input_pv['pv_power'].abs()
+        return input

@@ -6,8 +6,8 @@
     
 """
 from __future__ import annotations
+from typing import Any, List, Callable
 
-import json
 import numpy as np
 import pandas as pd
 import datetime as dt
@@ -15,22 +15,26 @@ import holidays as hl
 import logging
 
 from copy import deepcopy
-from typing import Any, Tuple, List, Dict
 from pandas.tseries.frequencies import to_offset
-from configparser import ConfigParser as Configurations
-from th_e_core import Configurable, System
+from corsys import Configurations, Configurable
+from corsys.cmpt import Context
+from corsys.tools import to_bool
 
 logger = logging.getLogger(__name__)
 
 
 class Features(Configurable):
 
-    def __init__(self, system: System, configs: Configurations) -> None:
-        Configurable.__init__(self, configs)
-        self._system = system
+    @classmethod
+    def read(cls, context: Context, conf_file: str = 'features.cfg') -> Features:
+        return cls(context, Configurations.from_configs(context.configs, conf_file))
 
-    def _configure(self, configs: Configurations, **kwargs) -> None:
-        super()._configure(configs)
+    def __init__(self, context: Context, configs: Configurations) -> None:
+        super().__init__(configs)
+        self._context = context
+
+    def __configure__(self, configs: Configurations) -> None:
+        super().__configure__(configs)
 
         # TODO: Make this part of a wrapper Resolutions list class
         self._autoregressive = configs.get('General', 'autoregressive', fallback='True').lower() == 'true'
@@ -54,37 +58,44 @@ class Features(Configurable):
 
             self.resolutions.append(resolution)
 
-        def parse_feature(key: str, fallback=None) -> Any:
-            config = configs.get('Features', key, fallback=None)
-            if config is None:
-                return fallback
-            return json.loads(config)
+        def parse_section(section: str, cast: Callable = str) -> dict[str, Any]:
+            if configs.has_section(section):
+                return dict({k: cast(v) for k, v in configs.items(section)})
+            return {}
 
-        self._doubt_interval = configs.getint('Features', 'doubt_interval', fallback=60)
-        self._doubt = parse_feature('doubt', fallback={})
-        self._cyclic = parse_feature('cyclic', fallback={})
-        self._scaling = parse_feature('scaling', fallback={})
-
+        self._scaling = parse_section('Scaling', float)
+        self._cyclic = parse_section('Cyclic', float)
+        self._doubt = parse_section('Doubt')
         for feature in self._doubt.keys():
             if feature in self._scaling.keys():
                 self._scaling[feature+'_doubt'] = self._scaling[feature]
 
-        self.input_keys = parse_feature('input')
-        self.target_keys = parse_feature('target')
+        self.target_keys = configs.get('Target', 'values').splitlines()
+        self.input_keys = []
 
+        def parse_cyclic_keys(config_keys: List[str]) -> List[str]:
+            input_keys = []
+            for key in config_keys:
+                if key in self._cyclic.keys():
+                    input_keys.append(key + '_cos')
+                    input_keys.append(key + '_sin')
+                else:
+                    input_keys.append(key)
+                self.input_keys.append(key)
+            return input_keys
+
+        self.input_series_keys = parse_cyclic_keys(configs.get('Input', 'series').splitlines())
+        self.input_value_keys = parse_cyclic_keys(configs.get('Input', 'values').splitlines())
+
+        self._estimate = to_bool(configs.get('Features', 'estimate', fallback='true'))
+        if self._estimate:
+            self.input_value_keys += self.input_series_keys
+
+        input_series_count = len(self.input_series_keys + self.target_keys)
+        input_value_count = len(self.input_value_keys)
         input_steps = len(input_range)
 
-        self._estimate = configs.get('Features', 'estimate', fallback='true').lower() == 'true'
-        if self._estimate:
-            input_steps += 1
-
-        input_features = self.target_keys + self.input_keys
-        input_count = len(input_features)
-        for feature, _ in self._cyclic.items():
-            if feature in input_features:
-                input_count += 1
-
-        self.input_shape = (input_steps, input_count)
+        self.input_shape = [(input_steps, input_series_count), (input_value_count,)]
 
         if self._autoregressive:
             target_steps = 1
@@ -95,6 +106,10 @@ class Features(Configurable):
 
         self.target_shape = (target_steps, target_count)
 
+    @property
+    def context(self) -> Context:
+        return self._context
+
     def input(self,
               features: pd.DataFrame,
               index: pd.DatetimeIndex | pd.Timestamp | dt.datetime) -> pd.DataFrame:
@@ -102,34 +117,6 @@ class Features(Configurable):
         if not isinstance(index, pd.DatetimeIndex):
             index = [self.resolutions[-1].time_step + index]
         data = self.resolutions[-1].resample(deepcopy(features))
-
-        # TODO: Optionally replace the estimate with the prediction of an ANN
-        if self._estimate:
-            # Make sure that no future target values exist
-            data.loc[index[0]:, self.target_keys] = np.NaN
-
-            # TODO: Implement horizon resolutions
-            estimate = data.loc[index, self.target_keys]
-            for estimate_step in estimate.index:
-                estimate_value = data.loc[(data.index < index[0]) &
-                                          (data.index.hour == estimate_step.hour) &
-                                          (data.index.minute == estimate_step.minute),
-                                          self.target_keys].mean(axis=0)
-                if estimate_value.empty:
-                    continue
-
-                estimate.loc[estimate_step, :] = estimate_value.values
-
-            # Estimate the value of target for times corresponding to the hour to the time to be predicted
-            if self._system.contains_type('pv') and 'pv_yield' in self.input_keys:
-                # Use calculated PV yield values as PV estimate
-                estimate.loc[index, 'pv_power'] = data.loc[index, 'pv_yield']
-
-            if estimate.isnull().values.any():
-                estimate = features[self.target_keys].interpolate(method='linear').loc[index]
-
-            data.loc[index, self.target_keys] = estimate
-
         data = self._add_doubt(data)
         data = self._add_meta(data)
         data = self._extract(data)
@@ -146,6 +133,10 @@ class Features(Configurable):
 
         if inputs.isna().values.any() or len(inputs) < len(index):
             raise ValueError("Input data incomplete for %s" % index)
+
+        if self._estimate:
+            # Make sure that no future target values exist
+            inputs.loc[index[0]:, self.target_keys] = np.NaN
 
         return inputs
 
@@ -195,11 +186,11 @@ class Features(Configurable):
             if feature not in scaled_features.columns:
                 continue
 
-            if str(transformation).isdigit():
-                if not invert:
-                    scaled_features[feature] /= float(transformation)
-                else:
-                    scaled_features[feature] *= float(transformation)
+            # if str(transformation).isdigit():
+            if not invert:
+                scaled_features[feature] /= float(transformation)
+            else:
+                scaled_features[feature] *= float(transformation)
 
             # TODO: Save the maximum or std value, to allow the live scaling for small feature sets
             # elif transformation.lower() == 'norm':
@@ -216,8 +207,8 @@ class Features(Configurable):
             #         scaled_features[feature] = (scaled_features[feature] - mean) / std
             #     else:
             #         scaled_features[feature] = scaled_features[feature] * std + mean
-            else:
-                raise ValueError('The transformation "{}" is not defined.'.format(transformation))
+            # else:
+            #     raise ValueError('The transformation "{}" is not defined.'.format(transformation))
 
         return scaled_features
 
@@ -235,7 +226,7 @@ class Features(Configurable):
         features['day_of_week'] = features.index.dayofweek
         features['day_of_year'] = features.index.dayofyear - 1
 
-        if self._system.location.country is None:
+        if self.context.location.country is None:
             return features
 
         features['holiday'] = 0
@@ -243,10 +234,10 @@ class Features(Configurable):
         holiday_args = {
             'years': list(dict.fromkeys(features.index.year))
         }
-        if self._system.location.state is not None:
-            holiday_args['subdiv'] = self._system.location.state
+        if self.context.location.state is not None:
+            holiday_args['subdiv'] = self.context.location.state
 
-        holidays = hl.country_holidays(self._system.location.country, **holiday_args)
+        holidays = hl.country_holidays(self.context.location.country, **holiday_args)
         features.loc[np.isin(features.index.date, list(holidays.keys())), 'holiday'] = 1
 
         return features

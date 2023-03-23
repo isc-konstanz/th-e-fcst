@@ -6,6 +6,7 @@
     
 """
 from __future__ import annotations
+from typing import Any, Optional, Tuple, List, Dict
 
 import os
 import json
@@ -17,17 +18,17 @@ import logging
 
 from glob import glob
 from copy import deepcopy
-from typing import Any, Optional, Tuple, List, Dict
-from configparser import ConfigParser as Configurations
-from configparser import SectionProxy as ConfigurationSection
+from corsys import System, Configurations
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from tensorflow.keras.callbacks import History, EarlyStopping, TensorBoard
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import Dense, Dropout, LeakyReLU, Flatten, Conv1D, MaxPooling1D, LSTM
-from th_e_fcst.ann import Features
-from th_e_core import System, Model
+from tensorflow.keras.callbacks import History, EarlyStopping, TensorBoard
+from tensorflow.keras.layers import Input, Concatenate, Flatten, Reshape, Dense, Dropout, \
+                                    LeakyReLU, Conv1D, MaxPooling1D, LSTM
+from tensorflow.keras.models import load_model
+from tensorflow.keras import Model
+from ..base import Forecast
+from . import Features
 
 logger = logging.getLogger(__name__)
 
@@ -36,37 +37,18 @@ LOG_VERBOSE = 0
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
-class NeuralNetwork(Model):
+class NeuralNetwork(Forecast):
 
-    @classmethod
-    def read(cls, system: System, **kwargs) -> NeuralNetwork:
-        configs = cls._read_configs(system, **kwargs)
-        model = configs.get('General', 'model', fallback='default').lower()
+    def __configure__(self, configs: Configurations) -> None:
+        super().__configure__(configs)
 
-        if model in ['mlp', 'ann', 'dense', 'default']:
-            return NeuralNetwork(system, configs)
-
-        elif model in ['convdilated', 'conv', 'cnn']:
-            return ConvDilated(system, configs)
-
-        elif model == 'convlstm':
-            return ConvLSTM(system, configs)
-
-        elif model == 'lstm':
-            return StackedLSTM(system, configs)
-
-        raise TypeError('Invalid model: {}'.format(type))
-
-    def _configure(self, configs: Configurations) -> None:
-        super()._configure(configs)
-
-        self.dir = os.path.join(configs['General']['data_dir'], 'model')
+        self.dir = os.path.join(configs.dirs.data, 'model')
 
         self.epochs = configs.getint('General', 'epochs')
         self.batch = configs.getint('General', 'batch')
 
-    def _build(self, system: System, configs: Configurations) -> None:
-        super()._build(system, configs)
+    def __build__(self, system: System, configs: Configurations) -> None:
+        super().__build__(system, configs)
 
         self.history = History()
         self.callbacks = [self.history]
@@ -87,23 +69,17 @@ class NeuralNetwork(Model):
         if self._tensorboard:
             self.callbacks.append(TensorBoard(log_dir=self.dir, histogram_freq=1))
 
-        self.features = Features(system, configs)
+        self.features = Features.read(system)
 
-        self._build_model(configs)
-
-    def _build_model(self, configs: Configurations) -> None:
         # TODO: implement date based backups and naming scheme
         if self.exists():
-            self._load()
+            self.model = self._load_model()
         else:
-            self._build_layers(configs)
+            self.model = self._build_model(configs)
 
         self.model.compile(optimizer=self._parse_optimizer(configs),
                            metrics=self._parse_metrics(configs),
                            loss=self._parse_loss(configs))
-
-    def _build_layers(self, configs: Configurations) -> None:
-        pass
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -135,22 +111,156 @@ class NeuralNetwork(Model):
     def _parse_loss(configs: Configurations):
         return configs.get('General', 'loss')
 
-    def _load(self, from_json: bool = False) -> None:
+    def _build_model(self, configs: Configurations) -> Model:
+        input_series = Input(shape=self.features.input_shape[0])
+        input_values = Input(shape=self.features.input_shape[1])
+
+        x = input_series
+        if configs.has_section('Conv1D'):
+            x = self._build_conv(input_series, **configs['Conv1D'])
+
+        if configs.has_section('LSTM'):
+            x = self._build_lstm(x, **configs['LSTM'])
+
+        x = Concatenate()([Flatten()(x),
+                           Flatten()(input_values)])
+
+        x = self._build_dense(x, **configs['Dense'])
+
+        outputs = self._build_output(x, self.features.target_shape)
+        model = Model(inputs=[input_series, input_values],
+                      outputs=outputs,
+                      name='TH-E-Forecast')
+
+        # TODO: implement date based backups and naming scheme
+        return model
+
+    @staticmethod
+    def _build_conv(x,
+                    filters: int | str | List[int] = 32,
+                    layers: int = 3,
+                    padding: str = 'causal',
+                    activation: str = 'relu',
+                    kernel_size: int = 2,
+                    pool_size: int = 0,
+                    **kwargs):
+
+        if isinstance(filters, str):
+            if filters.isdigit():
+                filters = int(filters)
+            else:
+                filters = json.loads(filters)
+        if isinstance(filters, int):
+            filters = [filters] * int(layers)
+
+        if isinstance(pool_size, str):
+            pool_size = int(pool_size)
+
+        kwargs['activation'] = activation
+        kwargs['padding'] = padding
+
+        # TODO: Handle dilation in configuration
+        length = len(filters)
+        for i in range(length):
+            if i == 0:
+                kwargs['dilation_rate'] = 1
+            else:
+                kwargs['dilation_rate'] = 2**i
+
+            x = Conv1D(filters[i], int(kernel_size), **kwargs)(x)
+
+        if pool_size > 0:
+            x = MaxPooling1D(pool_size)(x)
+
+        return x
+
+    @staticmethod
+    def _build_lstm(x,
+                    units: int | str | List[int] = 32,
+                    layers: int = 1,
+                    activation: str = 'relu',
+                    **kwargs):
+        if isinstance(units, str):
+            if units.isdigit():
+                units = int(units)
+            else:
+                units = json.loads(units)
+        if isinstance(units, int):
+            units = [units] * int(layers)
+
+        kwargs['activation'] = activation
+
+        length = len(units)
+        for i in range(length):
+            if i < length-1:
+                kwargs['return_sequences'] = True
+
+            x = LSTM(units[i], **kwargs)(x)
+        return x
+
+    @staticmethod
+    def _build_dense(x,
+                     units: int | str | List[int] = 32,
+                     layers: int = 3,
+                     dropout: int = 0,
+                     activation: str = 'relu',
+                     **kwargs):
+        if isinstance(units, str):
+            if units.isdigit():
+                units = int(units)
+            else:
+                units = json.loads(units)
+        if isinstance(units, int):
+            units = [units] * int(layers)
+
+        if isinstance(dropout, str):
+            dropout = float(dropout)
+
+        kwargs['activation'] = activation
+
+        length = len(units)
+        for i in range(length):
+            x = Dense(units[i], **kwargs)(x)
+
+            if dropout > 0.:
+                x = Dropout(dropout)(x)
+        return x
+
+    @staticmethod
+    def _build_output(x,
+                      shape: tuple,
+                      activation: str = 'relu',
+                      leaky_alpha: float = 1e-6,
+                      **kwargs):
+        if isinstance(leaky_alpha, str):
+            leaky_alpha = float(leaky_alpha)
+
+        kwargs['activation'] = activation
+
+        x = Dense(np.prod(shape), **kwargs)(x)
+
+        if activation == 'relu':
+            x = LeakyReLU(alpha=leaky_alpha)(x)
+        return Reshape(shape)(x)
+
+    def _load_model(self, from_json: bool = False) -> Model:
         logger.debug("Loading model for system {} from file".format(self._system.name))
         if (glob(os.path.join(self.dir, 'variables', 'variables.data*')) and
                 os.path.isfile(os.path.join(self.dir, 'variables', 'variables.index')) and
                 os.path.isfile(os.path.join(self.dir, 'saved_model.pb')) and
                 os.path.isfile(os.path.join(self.dir, 'keras_metadata.pb'))):
-            self.model = load_model(os.path.join(self.dir))
+
+            model = load_model(os.path.join(self.dir))
         else:
-            self._build_layers(self._configs)
+            model = self._build_model(self._configs)
 
             if (glob(os.path.join(self.dir, 'checkpoint*')) and
                     glob(os.path.join(self.dir, 'model.data*')) and
                     os.path.isfile(os.path.join(self.dir, 'model.index'))):
-                self.model.load_weights(os.path.join(self.dir, 'model'))
+                model.load_weights(os.path.join(self.dir, 'model'))
             else:
-                self.model.load_weights(os.path.join(self.dir, 'model.h5'))
+                model.load_weights(os.path.join(self.dir, 'model.h5'))
+        return model
 
     def _save(self) -> None:
         logger.debug("Saving model for system {} to file".format(self._system.name))
@@ -228,10 +338,11 @@ class NeuralNetwork(Model):
         return targets
 
     def _predict_step(self, input: pd.DataFrame) -> np.ndarray | float:
-        input_shape = (1, self.features.input_shape[0], self.features.input_shape[1])
-        input = self._reshape(input, input_shape)
+        # input_shape = (1, self.features.input_shape[0], self.features.input_shape[1])
+        input = self._parse_input(input, self.features.input_shape)
+
         target = self.model(input)  # .predict(input, verbose=LOG_VERBOSE)
-        target = self._reshape(target, self.features.target_shape)
+        target = self._parse_target(target, self.features.target_shape)
 
         return target
 
@@ -243,34 +354,40 @@ class NeuralNetwork(Model):
         kwargs = {
             'verbose': LOG_VERBOSE
         }
-        inputs = []
-        targets = []
+        input_series = []
+        input_values = []
+        target_values = []
         if not self._early_stopping or \
                 (validation_features is not None and not validation_features.empty):
 
             data = self._parse_features(features)
             random.shuffle(data)
             for i in range(len(data)):
-                inputs.append(data[i]['input'])
-                targets.append(data[i]['target'])
+                input_series.append(data[i]['input'][0])
+                input_values.append(data[i]['input'][1])
+                target_values.append(data[i]['target'])
 
             if validation_features is not None and not validation_features.empty:
                 validation_data = self._parse_features(validation_features)
-                validation_inputs = []
-                validation_targets = []
+                validation_input_series = []
+                validation_input_values = []
+                validation_target_values = []
 
                 random.shuffle(validation_data)
                 for i in range(len(validation_data)):
-                    validation_inputs.append(validation_data[i]['input'])
-                    validation_targets.append(validation_data[i]['target'])
+                    validation_input_series.append(validation_data[i]['input'][0])
+                    validation_input_values.append(validation_data[i]['input'][1])
+                    validation_target_values.append(validation_data[i]['target'])
 
-                kwargs['validation_data'] = (np.array(validation_inputs, dtype=float),
-                                             np.array(validation_targets, dtype=float))
+                kwargs['validation_data'] = ([np.array(validation_input_series, dtype=float),
+                                              np.array(validation_input_values, dtype=float)],
+                                             np.array(validation_target_values, dtype=float))
         else:
             data = self._parse_batches(features)
 
-            validation_inputs = []
-            validation_targets = []
+            validation_input_series = []
+            validation_input_values = []
+            validation_target_values = []
 
             for d in data:
                 split = len(d) - int(len(d)/self._early_stopping_split)
@@ -278,17 +395,21 @@ class NeuralNetwork(Model):
 
                 for i in range(len(d)):
                     if i <= split:
-                        inputs.append(d[i]['input'])
-                        targets.append(d[i]['target'])
+                        input_series.append(d[i]['input'][0])
+                        input_values.append(d[i]['input'][1])
+                        target_values.append(d[i]['target'])
                     else:
-                        validation_inputs.append(d[i]['input'])
-                        validation_targets.append(d[i]['target'])
+                        validation_input_series.append(d[i]['input'][0])
+                        validation_input_values.append(d[i]['input'][1])
+                        validation_target_values.append(d[i]['target'])
 
-            kwargs['validation_data'] = (np.array(validation_inputs, dtype=float),
-                                         np.array(validation_targets, dtype=float))
+            kwargs['validation_data'] = ([np.array(validation_input_series, dtype=float),
+                                          np.array(validation_input_values, dtype=float)],
+                                         np.array(validation_target_values, dtype=float))
 
-        result = self.model.fit(np.array(inputs, dtype=float),
-                                np.array(targets, dtype=float),
+        result = self.model.fit([np.array(input_series, dtype=float),
+                                 np.array(input_values, dtype=float)],
+                                np.array(target_values, dtype=float),
                                 callbacks=self.callbacks,
                                 batch_size=self.batch,
                                 epochs=self.epochs,
@@ -306,12 +427,21 @@ class NeuralNetwork(Model):
         self._save()
         return result
 
-    @staticmethod
-    def _reshape(data: pd.Dataframe | np.ndarray, shape: Tuple | int) -> np.ndarray | float:
-        if isinstance(data, pd.DataFrame):
-            data = data.values
+    def _parse_input(self,
+                     data: pd.Dataframe,
+                     date: pd.Timestamp | dt.datetime,
+                     shape: Tuple | int) -> List[np.ndarray, np.ndarray]:
+        input_series = data.loc[data.index <= date, self.features.target_keys + self.features.input_series_keys]
+        input_values = data.loc[data.index > date, self.features.input_value_keys]
+        return [np.squeeze(input_series.values).reshape(shape[0]),
+                np.squeeze(input_values.values).reshape(shape[1])]
 
-        return np.squeeze(data).reshape(shape)
+    def _parse_target(self,
+                      data: pd.Dataframe,
+                      date: pd.Timestamp | dt.datetime,
+                      shape: Tuple | int) -> np.ndarray | float:
+        target = data.loc[data.index > date, self.features.target_keys]
+        return np.squeeze(target.values).reshape(shape)
 
     def _parse_features(self,
                         features: pd.DataFrame,
@@ -329,8 +459,8 @@ class NeuralNetwork(Model):
 
                 # If no exception was raised, add the validated data to the set
                 data.append({
-                    'input': self._reshape(input, self.features.input_shape),
-                    'target': self._reshape(target, self.features.target_shape[1])
+                    'input': self._parse_input(input, date, self.features.input_shape),
+                    'target': self._parse_target(target, date, self.features.target_shape[1])
                 })
             except (KeyError, ValueError) as e:
                 logger.debug("Skipping %s: %s", date, str(e))
@@ -338,6 +468,8 @@ class NeuralNetwork(Model):
         return data
 
     def _parse_batches(self, features: pd.DataFrame) -> List[List[Dict[str, np.ndarray]]]:
+
+        # noinspection PyShadowingNames
         def parse_batch_index(date: pd.Timestamp) -> int:
             method = self._early_stopping_bins
             if method is None:
@@ -351,6 +483,7 @@ class NeuralNetwork(Model):
             elif method == 'week':
                 return date.week
 
+        data = {}
         batches = {}
         for date in self._parse_dates(features):
             index = parse_batch_index(date)
@@ -358,19 +491,33 @@ class NeuralNetwork(Model):
                 batches[index] = []
             batches[index].append(date)
 
-        data = {}
-        futures = {}
-        with ProcessPoolExecutor(max(os.cpu_count() - 1, 1)) as executor:
-            for batch_index, batch_dates in batches.items():
-                batch_features = features[batch_dates[0] - self.features.resolutions[-1].time_prior:
-                                          batch_dates[-1] + self.features.resolutions[-1].time_step]
-                future = executor.submit(self._parse_features, batch_features, batch_dates)
-                futures[future] = batch_index
+        # noinspection PyShadowingNames
+        def batch_append(batch_index: int, batch_data: List[Dict[str, np.ndarray]]) -> None:
+            if len(batch_data) > 0:
+                data[batch_index] = batch_data
+            else:
+                logger.debug("Skipping empty batch index: %s", batch_index)
 
-            for future in as_completed(futures):
-                result = future.result()
-                index = futures[future]
-                data[index] = result
+        # noinspection PyShadowingNames
+        def extract_features(batch_dates: List[dt.datetime]) -> pd.DataFrame:
+            extract_resolution = self.features.resolutions[-1]
+            return features[batch_dates[0] - extract_resolution.time_prior:
+                            batch_dates[-1] + extract_resolution.time_step]
+
+        threading = True  # FIXME: Make configurable
+        if threading:
+            futures = {}
+            with ProcessPoolExecutor(max(os.cpu_count() - 1, 1)) as executor:
+                for batch_index, batch_dates in batches.items():
+                    future = executor.submit(self._parse_features, extract_features(batch_dates), batch_dates)
+                    futures[future] = batch_index
+
+                for future in as_completed(futures):
+                    batch_index = futures[future]
+                    batch_append(batch_index, future.result())
+        else:
+            for batch_index, batch_dates in batches.items():
+                batch_append(batch_index, self._parse_features(extract_features(batch_dates), batch_dates))
 
         return list(data.values())
 
@@ -381,116 +528,3 @@ class NeuralNetwork(Model):
             dates.append(date)
             date += dt.timedelta(minutes=self.features.resolutions[-1].minutes)
         return dates
-
-    @staticmethod
-    def _parse_kwargs(configs, *args):
-        kwargs = {}
-        for arg in args:
-            kwargs[arg] = configs[arg]
-        return kwargs
-
-
-class MultiLayerPerceptron(NeuralNetwork):
-
-    def _build_layers(self, configs: Configurations) -> None:
-        self.model = Sequential(name='MultiLayerPerceptron')
-        self._add_dense(configs['Dense'], first=True)
-
-    def _add_dense(self, configs: ConfigurationSection, first: bool = False) -> None:
-        dropout = configs.getfloat('dropout', fallback=0)
-        units = configs.get('units')
-        if units.isdigit():
-            units = [int(units)] * configs.getint('layers', fallback=1)
-        else:
-            units = json.loads(units)
-
-        length = len(units)
-        for i in range(length):
-            kwargs = self._parse_kwargs(configs, 'activation', 'kernel_initializer')
-
-            if first and i == 0:
-                kwargs['input_dim'] = self.features.input_shape[1]
-
-            self.model.add(Dense(units[i], **kwargs))
-
-            if dropout > 0.:
-                self.model.add(Dropout(dropout))
-
-        self.model.add(Dense(self.features.target_shape[1],
-                             activation=configs['activation'],
-                             kernel_initializer=configs['kernel_initializer']))
-
-        if configs['activation'] == 'relu':
-            self.model.add(LeakyReLU(alpha=float(configs['leaky_alpha'])))
-
-
-class StackedLSTM(MultiLayerPerceptron):
-
-    def _build_layers(self, configs: Configurations) -> None:
-        self.model = Sequential(name='StackedLSTM')
-        self._add_lstm(configs['LSTM'], first=True)
-        self._add_dense(configs['Dense'])
-
-    def _add_lstm(self, configs: ConfigurationSection, first: bool = False) -> None:
-        units = configs.get('units')
-        if units.isdigit():
-            units = [int(units)] * configs.getint('layers', fallback=1)
-        else:
-            units = json.loads(units)
-
-        length = len(units)
-        for i in range(length):
-            kwargs = self._parse_kwargs(configs, 'activation')
-
-            if i == 0 and first:
-                kwargs['input_shape'] = self.features.input_shape
-
-            elif i < length-1:
-                kwargs['return_sequences'] = True
-
-            self.model.add(LSTM(units[i], **kwargs))
-
-
-class ConvDilated(MultiLayerPerceptron):
-
-    def _build_layers(self, configs: Configurations) -> None:
-        self.model = Sequential(name='ConvolutionalDilation')
-        self._add_conv(configs['Conv1D'], first=True)
-        self._add_dense(configs['Dense'])
-
-    def _add_conv(self, configs: ConfigurationSection, flatten: bool = True, first: bool = False) -> None:
-        filters = configs.get('filters')
-        if filters.isdigit():
-            filters = [int(filters)] * configs.getint('layers', fallback=1)
-        else:
-            filters = json.loads(filters)
-
-        # TODO: Handle padding and dilation in configuration
-        length = len(filters)
-        for i in range(length):
-            kwargs = self._parse_kwargs(configs, 'activation', 'kernel_initializer')
-            kwargs['padding'] = 'causal'
-
-            if first and i == 0:
-                kwargs['input_shape'] = self.features.input_shape
-                kwargs['dilation_rate'] = 1
-            else:
-                kwargs['dilation_rate'] = 2**i
-
-            self.model.add(Conv1D(filters[i], int(configs['kernel_size']), **kwargs))
-
-        if 'pool_size' in configs:
-            pool_size = int(configs['pool_size'])
-            self.model.add(MaxPooling1D(pool_size))
-
-        if flatten:
-            self.model.add(Flatten())
-
-
-class ConvLSTM(ConvDilated, StackedLSTM):
-
-    def _build_layers(self, configs: Configurations) -> None:
-        self.model = Sequential(name='ConvolutionalLSTM')
-        self._add_conv(configs['Conv1D'], flatten=False, first=True)
-        self._add_lstm(configs['LSTM'])
-        self._add_dense(configs['Dense'])
