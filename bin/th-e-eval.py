@@ -1,34 +1,32 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 """
-    th-e-simulation
-    ~~~~~~~~~~~~~~~
+    th-e-eval
+    ~~~~~~~~~
     
-    
-    To learn how to configure specific settings, see "th-e-simulation --help"
+    To learn how to configure specific settings, see "th-e-eval --help"
 
 """
 import os
 import time
-import shutil
 import inspect
-import traceback
 import pytz as tz
 import pandas as pd
 import datetime as dt
 
 from copy import deepcopy
-from argparse import ArgumentParser, RawTextHelpFormatter
-from tensorboard import program
+from typing import Optional
 
 import scisys.io as io
 from scisys import Results, Evaluation
 from corsys import Settings
-from corsys.tools import floor_date, ceil_date
+from corsys.tools import floor_date, ceil_date, to_date, to_bool
+from argparse import ArgumentParser, RawTextHelpFormatter
+from tensorboard.program import TensorBoard
 from th_e_fcst import System
 
 
-def simulate(**kwargs) -> None:
+def main(**kwargs) -> None:
     verbose = kwargs.pop('verbose', 'false').lower() == 'true'
 
     systems = System.read(settings)
@@ -43,8 +41,9 @@ def simulate(**kwargs) -> None:
         system_results = Results(system, verbose=verbose)
         system_results.durations.start('Simulation')
         try:
-            _simulate_training(system, system_results, **kwargs)
-            _simulate_prediction(system, system_results, **kwargs)
+            if not system.forecast.exists():
+                train(system, system_results, **kwargs)
+            predict(system, system_results, **kwargs)
 
         except Exception as e:
             error = True
@@ -67,26 +66,26 @@ def simulate(**kwargs) -> None:
         if tensorboard:
             # keep_running = input('Keep tensorboard running? [y/n]').lower()
             # keep_running = keep_running in ['j', 'ja', 'y', 'yes', 'true']
-            keep_running = settings.getboolean('General', 'keep_running', fallback=False)
-            while keep_running:
+            keep_running = settings.getint('General', 'keep_running', fallback=15)
+            while keep_running > 0:
                 try:
-                    time.sleep(100)
+                    time.sleep(60)
+                    keep_running -= 1
 
                 except KeyboardInterrupt:
-                    keep_running = False
+                    keep_running = 0
+
+            tensorboard.stop()
 
 
 # noinspection PyProtectedMember
-def _simulate_training(system, results, verbose=False, **kwargs):
-    if system.forecast.exists():
-        return
-
+def train(system, results, verbose=False, **kwargs):
     logger.debug("Beginning training of neural network for system: {}".format(system.name))
     results.durations.start('Training')
 
     timezone = system.location.pytz
-    start = _get_date(settings['Training']['start'], timezone)
-    end = _get_date(settings['Training']['end'], timezone)
+    start = to_date(settings['Training']['start'], timezone)
+    end = to_date(settings['Training']['end'], timezone)
     end = ceil_date(end, system.location.pytz)
 
     bldargs = dict(kwargs)
@@ -103,7 +102,7 @@ def _simulate_training(system, results, verbose=False, **kwargs):
         io.write_csv(system, features, features_path)
         io.print_distributions(features, path=system.forecast.dir)
 
-    system.forecast._train(features)
+    system.forecast._train(features, threading=True)
 
     results.durations.stop('Training')
     logger.debug("Training of neural network for system {} complete after {:.2f} minutes"
@@ -111,12 +110,10 @@ def _simulate_training(system, results, verbose=False, **kwargs):
 
 
 # noinspection PyProtectedMember
-def _simulate_prediction(system, results, verbose=False, **kwargs):
-    forecast = system.forecast._model
-
+def predict(system, results, verbose=False, **kwargs):
     timezone = system.location.pytz
-    start = _get_date(settings['General']['start'], timezone)
-    end = _get_date(settings['General']['end'], timezone)
+    start = to_date(settings['General']['start'], timezone)
+    end = to_date(settings['General']['end'], timezone)
     end = ceil_date(end, system.location.pytz)
 
     bldargs = dict(kwargs)
@@ -125,7 +122,7 @@ def _simulate_prediction(system, results, verbose=False, **kwargs):
 
     system.build(**bldargs)
 
-    features_dir = os.path.join(system.configs.get('General', 'data_dir'), 'results')
+    features_dir = os.path.join(system.configs.dirs.data, 'results')
     features_path = os.path.join(features_dir, 'features')
     features = _load_features(system, start, end, features_dir)
 
@@ -135,14 +132,14 @@ def _simulate_prediction(system, results, verbose=False, **kwargs):
     logger.debug("Beginning predictions for system: {}".format(system.name))
     results.durations.start('Prediction')
 
-    resolution_min = forecast.features.resolutions[0]
-    if len(forecast.features.resolutions) > 1:
-        for i in range(len(forecast.features.resolutions)-1, 0, -1):
-            resolution_min = forecast.features.resolutions[i]
+    resolution_max = system.forecast.features.resolutions[0]
+    resolution_min = system.forecast.features.resolutions[0]
+    if len(system.forecast.features.resolutions) > 1:
+        for i in range(len(system.forecast.features.resolutions)-1, 0, -1):
+            resolution_min = system.forecast.features.resolutions[i]
             if resolution_min.steps_horizon is not None:
                 break
 
-    resolution_max = forecast.features.resolutions[0]
     resolution_data = resolution_min.resample(features)
 
     # Reactivate this, when multiprocessing will be implemented
@@ -151,8 +148,8 @@ def _simulate_prediction(system, results, verbose=False, **kwargs):
     #    logger = process.get_logger()
 
     interval = settings.getint('General', 'interval')
-    end = ceil_date(features.index[-1] - resolution_max.time_horizon, timezone=system.location.tz)
-    start = floor_date(features.index[0] + resolution_max.time_prior, timezone=system.location.tz)
+    end = ceil_date(features.index[-1] - resolution_min.time_horizon, timezone=system.location.timezone)
+    start = floor_date(features.index[0] + resolution_max.time_prior, timezone=system.location.timezone)
     date = start
 
     training_recursive = settings.getboolean('Training', 'recursive', fallback=True)
@@ -177,19 +174,20 @@ def _simulate_prediction(system, results, verbose=False, **kwargs):
         try:
             date_prior = date - resolution_max.time_prior
             date_start = date + resolution_max.time_step
-            date_horizon = date + resolution_max.time_horizon
+            date_horizon = date + resolution_min.time_horizon
             date_features = deepcopy(resolution_data[date_prior:date_horizon])
             date_range = date_features[date_start:date_horizon].index
 
-            input = forecast.features.input(date_features, date_range)
-            target = forecast.features.target(date_features, date_range)
-            prediction = forecast._predict(date_features, date)
-            prediction.rename(columns={target: target + '_est' for target in forecast.features.target_keys}, inplace=True)
+            input = system.forecast.features.input(date_features, date_range)
+            target = system.forecast.features.target(date_features, date_range)
+            prediction = system.forecast._predict(date_features, date)
+            prediction.rename(columns={target: target + '_est' for target in system.forecast.features.target_keys},
+                              inplace=True)
 
             result = pd.concat([target, prediction], axis=1)
 
             # Add error columns for all targets
-            for target_key in forecast.features.target_keys:
+            for target_key in system.forecast.features.target_keys:
                 result[target_key + '_err'] = result[target_key + '_est'] - result[target_key]
 
             result = pd.concat([result, resolution_data.loc[result.index,
@@ -208,7 +206,7 @@ def _simulate_prediction(system, results, verbose=False, **kwargs):
                     training_features = deepcopy(resolution_data[training_last - resolution_max.time_prior:training_date])
                     validation_features = deepcopy(resolution_data[training_last - dt.timedelta(days=7):training_last])
 
-                    forecast._train(training_features, validation_features)
+                    system.forecast._train(training_features, validation_features)
 
                 training_last = training_date
                 training_date = _next_date(date, training_interval)
@@ -241,26 +239,26 @@ def _load_features(system: System, start: dt.datetime, end: dt.datetime, feature
     return features.loc[start:end]
 
 
-def _launch_tensorboard(systems, **kwargs):
+def _launch_tensorboard(systems, **kwargs) -> Optional[TensorBoard]:
     # noinspection PyProtectedMember
-    launch = any([system.forecast._tensorboard for system in systems])
-    if launch and 'tensorboard' in kwargs:
-        launch = kwargs['tensorboard'] if isinstance(kwargs['tensorboard'], bool) \
-                                       else str(kwargs['tensorboard']).lower() == 'true'
-    if launch:
+    tensorboard_launch = any([system.forecast._tensorboard for system in systems])
+    if tensorboard_launch and 'tensorboard' in kwargs:
+        tensorboard_launch = to_bool(kwargs['tensorboard'])
+
+    tensorboard = None
+    if tensorboard_launch:
         logging.getLogger('MARKDOWN').setLevel(logging.ERROR)
         logging.getLogger('tensorboard').setLevel(logging.ERROR)
         logger_werkzeug = logging.getLogger('werkzeug')
         logger_werkzeug.setLevel(logging.ERROR)
         logger_werkzeug.disabled = True
 
-        tensorboard = program.TensorBoard()
+        tensorboard = TensorBoard()
         tensorboard.configure(argv=[None, '--logdir', settings.dirs.data])
         tensorboard_url = tensorboard.launch()
-
         logger.info("Started TensorBoard at {}".format(tensorboard_url))
 
-    return launch
+    return tensorboard
 
 
 def _next_date(date: pd.Timestamp, interval: int) -> pd.Timestamp:
@@ -276,22 +274,24 @@ def _next_date(date: pd.Timestamp, interval: int) -> pd.Timestamp:
     return date
 
 
-def _get_date(time_str: str, timezone: tz.timezone) -> pd.Timestamp:
-    return pd.Timestamp(timezone.localize(dt.datetime.strptime(time_str, '%d.%m.%Y')))
-
-
 if __name__ == "__main__":
-    run_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(simulate)))
+    from th_e_fcst import __version__
+
+    run_dir = os.path.dirname(os.path.abspath(inspect.getsourcefile(main)))
     if os.path.basename(run_dir) == 'bin':
         run_dir = os.path.dirname(run_dir)
 
     os.chdir(run_dir)
-
     os.environ['NUMEXPR_MAX_THREADS'] = str(os.cpu_count())
 
-    settings = Settings('th-e-fcst')
+    parser = ArgumentParser(description=__doc__, formatter_class=RawTextHelpFormatter)
+    parser.add_argument('-v', '--version',
+                        action='version',
+                        version='%(prog)s {version}'.format(version=__version__))
+
+    settings = Settings('th-e-fcst', parser=parser)
 
     import logging
 
     logger = logging.getLogger('th-e-fcst')
-    simulate(**settings.general)
+    main(**settings.general)

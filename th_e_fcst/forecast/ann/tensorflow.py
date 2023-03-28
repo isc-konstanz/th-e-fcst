@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-    th_e_fcst.ann.model
-    ~~~~~~~~~~~~~~~~~~~
+    th_e_fcst.forecast.ann.tensorflow
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     
     
 """
@@ -18,15 +18,16 @@ import logging
 
 from glob import glob
 from copy import deepcopy
+from itertools import chain
 from corsys import System, Configurations
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import History, EarlyStopping, TensorBoard
-from tensorflow.keras.layers import Input, Concatenate, Flatten, Reshape, Dense, Dropout, \
+from keras.optimizers import Adam
+from keras.callbacks import History, EarlyStopping, TensorBoard
+from keras.layers import Input, Concatenate, Flatten, Dense, Dropout, \
                                     LeakyReLU, Conv1D, MaxPooling1D, LSTM
-from tensorflow.keras.models import load_model
-from tensorflow.keras import Model
+from keras.models import load_model
+from keras import Model
 from ..base import Forecast
 from . import Features
 
@@ -37,7 +38,7 @@ LOG_VERBOSE = 0
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
-class NeuralNetwork(Forecast):
+class TensorForecast(Forecast):
 
     def __configure__(self, configs: Configurations) -> None:
         super().__configure__(configs)
@@ -114,23 +115,22 @@ class NeuralNetwork(Forecast):
     def _build_model(self, configs: Configurations) -> Model:
         input_series = Input(shape=self.features.input_shape[0])
         input_values = Input(shape=self.features.input_shape[1])
+        inputs = [input_series, input_values]
 
-        x = input_series
+        tensors = input_series
         if configs.has_section('Conv1D'):
-            x = self._build_conv(input_series, **configs['Conv1D'])
+            tensors = self._build_conv(tensors, **configs['Conv1D'])
 
         if configs.has_section('LSTM'):
-            x = self._build_lstm(x, **configs['LSTM'])
+            tensors = self._build_lstm(tensors, **configs['LSTM'])
 
-        x = Concatenate()([Flatten()(x),
-                           Flatten()(input_values)])
+        tensors = Concatenate()([Flatten()(tensors),
+                                 Flatten()(input_values)])
 
-        x = self._build_dense(x, **configs['Dense'])
+        tensors = self._build_dense(tensors, **configs['Dense'])
 
-        outputs = self._build_output(x, self.features.target_shape)
-        model = Model(inputs=[input_series, input_values],
-                      outputs=outputs,
-                      name='TH-E-Forecast')
+        outputs = self._build_output(tensors, self.features.target_shape)
+        model = Model(inputs=inputs, outputs=outputs, name='TH-E-Forecast')
 
         # TODO: implement date based backups and naming scheme
         return model
@@ -196,6 +196,7 @@ class NeuralNetwork(Forecast):
                 kwargs['return_sequences'] = True
 
             x = LSTM(units[i], **kwargs)(x)
+
         return x
 
     @staticmethod
@@ -237,11 +238,15 @@ class NeuralNetwork(Forecast):
 
         kwargs['activation'] = activation
 
-        x = Dense(np.prod(shape), **kwargs)(x)
+        outputs = []
+        for _ in range(shape[1]):
+            output = Dense(shape[0], **kwargs)(x)
 
-        if activation == 'relu':
-            x = LeakyReLU(alpha=leaky_alpha)(x)
-        return Reshape(shape)(x)
+            if activation == 'relu':
+                output = LeakyReLU(alpha=leaky_alpha)(output)
+
+            outputs.append(output)
+        return outputs
 
     def _load_model(self, from_json: bool = False) -> Model:
         logger.debug("Loading model for system {} from file".format(self._system.name))
@@ -263,10 +268,12 @@ class NeuralNetwork(Forecast):
         return model
 
     def _save(self) -> None:
+        save_date = dt.datetime.now(self.system.location.timezone)
         logger.debug("Saving model for system {} to file".format(self._system.name))
 
         # Serialize weights checkpoint
         self.model.save(self.dir)
+        self.model.save_weights(os.path.join(self.dir, f"model-SNAPSHOT{save_date.strftime('%Y%m%d-%H%M%S')}.h5"))
 
     def exists(self):
         if not os.path.isdir(self.dir):
@@ -303,14 +310,20 @@ class NeuralNetwork(Forecast):
                  features: pd.DataFrame,
                  date: pd.Timestamp | dt.datetime):
 
-        # TODO: Implement horizon resolutions
-        resolution = self.features.resolutions[-1]
+        # resolution_max = self.features.resolutions[0]
+        resolution_min = self.features.resolutions[0]
+        if len(self.features.resolutions) > 1:
+            for i in range(len(self.features.resolutions) - 1, 0, -1):
+                resolution_min = self.features.resolutions[i]
+                if resolution_min.steps_horizon is not None:
+                    break
+
         targets = pd.DataFrame(columns=self.features.target_keys, dtype=float)
 
-        if resolution.steps_horizon is None:
+        if resolution_min.steps_horizon is None:
             end = features.index[-1]
         else:
-            end = date + resolution.time_horizon
+            end = date + resolution_min.time_horizon
 
         # Work on copy to retain original input vector to be saved.
         features = deepcopy(features)
@@ -319,30 +332,35 @@ class NeuralNetwork(Forecast):
         features.loc[features.index > date, self.features.target_keys] = np.NaN
 
         while date < end:
-            date_step = date + resolution.time_step
+            date_step = date + resolution_min.time_step
             if date_step not in features.index:
                 break
 
             input = self.features.input(features, date)
             input = self.features.scale(input)
-            target = self._predict_step(input)
+            target = self._predict_step(input, date)
             target = self.features.scale(pd.DataFrame(target, columns=self.features.target_keys), invert=True)
             targets.loc[date_step, self.features.target_keys] = target.values
 
             # Add predicted output to features of next iteration
             features.loc[(features.index >= date_step) &
-                         (features.index < date_step + resolution.time_step), self.features.target_keys] = target.values
+                         (features.index < date_step + resolution_min.time_step),
+                         self.features.target_keys] = target.values
 
             date = date_step
 
         return targets
 
-    def _predict_step(self, input: pd.DataFrame) -> np.ndarray | float:
-        # input_shape = (1, self.features.input_shape[0], self.features.input_shape[1])
-        input = self._parse_input(input, self.features.input_shape)
+    def _predict_step(self,
+                      input: pd.DataFrame,
+                      date: pd.Timestamp | dt.datetime) -> np.ndarray | float:
+        input_shape = [tuple(chain.from_iterable(
+            (list([1]), list(self.features.input_shape[i]))))
+            for i in range(len(self.features.input_shape))]
+        input = self._parse_input(input, date, input_shape)
 
         target = self.model(input)  # .predict(input, verbose=LOG_VERBOSE)
-        target = self._parse_target(target, self.features.target_shape)
+        target = np.squeeze(target).reshape(self.features.target_shape)
 
         return target
 
@@ -350,7 +368,10 @@ class NeuralNetwork(Forecast):
         features = self.features.extract(data)
         return self._train(features)
 
-    def _train(self, features: pd.DataFrame, validation_features: pd.DataFrame = None) -> History:
+    def _train(self,
+               training_features: pd.DataFrame,
+               validation_features: pd.DataFrame = None,
+               threading: bool = False) -> History:
         kwargs = {
             'verbose': LOG_VERBOSE
         }
@@ -360,7 +381,7 @@ class NeuralNetwork(Forecast):
         if not self._early_stopping or \
                 (validation_features is not None and not validation_features.empty):
 
-            data = self._parse_features(features)
+            data = self._parse_features(training_features)
             random.shuffle(data)
             for i in range(len(data)):
                 input_series.append(data[i]['input'][0])
@@ -383,7 +404,7 @@ class NeuralNetwork(Forecast):
                                               np.array(validation_input_values, dtype=float)],
                                              np.array(validation_target_values, dtype=float))
         else:
-            data = self._parse_batches(features)
+            data = self._parse_batches(training_features, threading)
 
             validation_input_series = []
             validation_input_values = []
@@ -463,11 +484,11 @@ class NeuralNetwork(Forecast):
                     'target': self._parse_target(target, date, self.features.target_shape[1])
                 })
             except (KeyError, ValueError) as e:
-                logger.debug("Skipping %s: %s", date, str(e))
+                logger.warning("Skipping %s: %s", date, str(e))
 
         return data
 
-    def _parse_batches(self, features: pd.DataFrame) -> List[List[Dict[str, np.ndarray]]]:
+    def _parse_batches(self, features: pd.DataFrame, threading: bool = False) -> List[List[Dict[str, np.ndarray]]]:
 
         # noinspection PyShadowingNames
         def parse_batch_index(date: pd.Timestamp) -> int:
@@ -500,11 +521,9 @@ class NeuralNetwork(Forecast):
 
         # noinspection PyShadowingNames
         def extract_features(batch_dates: List[dt.datetime]) -> pd.DataFrame:
-            extract_resolution = self.features.resolutions[-1]
-            return features[batch_dates[0] - extract_resolution.time_prior:
-                            batch_dates[-1] + extract_resolution.time_step]
+            return features[batch_dates[0] - self.features.resolutions[0].time_prior:
+                            batch_dates[-1] + self.features.resolutions[-1].time_step]
 
-        threading = True  # FIXME: Make configurable
         if threading:
             futures = {}
             with ProcessPoolExecutor(max(os.cpu_count() - 1, 1)) as executor:
@@ -522,7 +541,7 @@ class NeuralNetwork(Forecast):
         return list(data.values())
 
     def _parse_dates(self, features: pd.DataFrame) -> List[pd.Timestamp]:
-        date = features.index[0] + self.features.resolutions[-1].time_prior
+        date = features.index[0] + self.features.resolutions[0].time_prior
         dates = []
         while date <= features.index[-1]:
             dates.append(date)

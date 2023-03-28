@@ -6,4 +6,4 @@
 
 """
 from .features import Features  # noqa: F401
-from .model import NeuralNetwork  # noqa: F401
+from .tensorflow import TensorForecast  # noqa: F401

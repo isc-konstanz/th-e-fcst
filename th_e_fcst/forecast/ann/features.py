@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import datetime as dt
 import holidays as hl
+import warnings
 import logging
 
 from copy import deepcopy
@@ -51,10 +52,11 @@ class Features(Configurable):
                                                           periods=resolution.steps_prior,
                                                           freq='{}min'.format(resolution.minutes)))
 
-            target_start = dt.datetime.now().replace(minute=0, second=0, microsecond=0) + resolution.time_step
-            target_range = target_range.union(pd.date_range(target_start,
-                                                            periods=resolution.steps_horizon,
-                                                            freq='{}min'.format(resolution.minutes)))
+            if resolution.steps_horizon:
+                target_start = dt.datetime.now().replace(minute=0, second=0, microsecond=0) + resolution.time_step
+                target_range = target_range.union(pd.date_range(target_start,
+                                                                periods=resolution.steps_horizon,
+                                                                freq='{}min'.format(resolution.minutes)))
 
             self.resolutions.append(resolution)
 
@@ -87,7 +89,7 @@ class Features(Configurable):
         self.input_series_keys = parse_cyclic_keys(configs.get('Input', 'series').splitlines())
         self.input_value_keys = parse_cyclic_keys(configs.get('Input', 'values').splitlines())
 
-        self._estimate = to_bool(configs.get('Features', 'estimate', fallback='true'))
+        self._estimate = to_bool(configs.get('General', 'estimate', fallback='true'))
         if self._estimate:
             self.input_value_keys += self.input_series_keys
 
@@ -125,18 +127,18 @@ class Features(Configurable):
         inputs = pd.DataFrame()
         inputs.index.name = 'time'
         for resolution in self.resolutions:
-            resolution_end = index[0] - resolution.time_step if not self._estimate else index[-1]
+            resolution_end = index[-1]
             resolution_start = index[0] - resolution.time_step - resolution.time_prior + dt.timedelta(minutes=1)
-            resolution_inputs = resolution.resample(data[resolution_start:resolution_end])
+            resolution_offset = resolution_end.hour*60 + resolution_end.minute
+            resolution_inputs = resolution.resample(data[resolution_start:resolution_end], offset=resolution_offset)
 
             inputs = resolution_inputs.combine_first(inputs)
 
         if inputs.isna().values.any() or len(inputs) < len(index):
             raise ValueError("Input data incomplete for %s" % index)
 
-        if self._estimate:
-            # Make sure that no future target values exist
-            inputs.loc[index[0]:, self.target_keys] = np.NaN
+        # Make sure that no future target values exist
+        inputs.loc[index[0]:, self.target_keys] = np.NaN
 
         return inputs
 
@@ -217,8 +219,8 @@ class Features(Configurable):
             return features
 
         for feature, feature_cor in self._doubt.items():
-            features[feature+'_doubt'] = abs(features[feature] - features[feature_cor])
-
+            if feature+'_doubt' in self.input_keys:
+                features[feature+'_doubt'] = abs(features[feature] - features[feature_cor])
         return features
 
     def _add_meta(self, features):
@@ -284,8 +286,11 @@ class Resolution:
 
         return dt.timedelta(minutes=self.minutes * self.steps_horizon)
 
-    def resample(self, features: pd.DataFrame) -> pd.DataFrame:
-        data = features.resample('{}min'.format(self.minutes), closed='right').mean()
-        data.index += to_offset('{}min'.format(self.minutes))
+    def resample(self, features: pd.DataFrame, offset=None) -> pd.DataFrame:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning)
+
+            data = features.resample('{}min'.format(self.minutes), closed='right', base=offset).mean()
+            data.index += to_offset('{}min'.format(self.minutes))
 
         return data

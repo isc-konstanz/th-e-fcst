@@ -21,8 +21,8 @@ class Forecast(ABC, Configurable):
         configs = Configurations.from_configs(system.configs, conf_file)
         type = configs.get('General', 'type', fallback='default').lower()
         if type in ['ann', 'neuralnetwork', 'default']:
-            from .ann import NeuralNetwork
-            return NeuralNetwork(system, configs)
+            from .ann import TensorForecast
+            return TensorForecast(system, configs)
 
         raise TypeError('Invalid forecast type: {}'.format(type))
 
