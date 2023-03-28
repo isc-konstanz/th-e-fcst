@@ -19,18 +19,19 @@ VERSION = info['__version__']
 DESCRIPTION = 'TH-E Forecast provides a set of functions to predict timeseries.'
 
 # Get the long description from the README file
-# with open(path.join(here, 'README.md')) as f:
-#     README = f.read()
+with open(path.join(here, 'README.md')) as f:
+    README = f.read()
 
 NAME = 'th-e-fcst'
 LICENSE = 'LGPLv3'
 AUTHOR = 'ISC Konstanz'
 MAINTAINER_EMAIL = 'adrian.minde@isc-konstanz.de'
-URL = 'http://gitlab.isc-konstanz.de/systems/systems/th-e-fcst'
+URL = 'http://gitlab.isc-konstanz.de/systems/th-e-fcst'
 
 INSTALL_REQUIRES = [
-    'keras >= 2.6.0',
-    'tensorflow >= 2.6.0',
+    'holidays',
+    'keras <= 2.10',
+    'tensorflow <= 2.10',
     'pvsys @ git+https://github.com/isc-konstanz/pvsys.git@master'
 ]
 
@@ -52,7 +53,7 @@ setup(
     version=VERSION,
     license=LICENSE,
     description=DESCRIPTION,
-    # long_description=README,
+    long_description=README,
     author=AUTHOR,
     author_email=MAINTAINER_EMAIL,
     packages=PACKAGES,
