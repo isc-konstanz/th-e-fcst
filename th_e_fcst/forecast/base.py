@@ -23,6 +23,9 @@ class Forecast(ABC, Configurable):
         if model in ['ann', 'neuralnetwork', 'default']:
             from .ann import TensorForecast
             return TensorForecast(system, configs)
+        if model == 'database':
+            from .db import DatabaseForecast
+            return DatabaseForecast(system, configs)
 
         raise TypeError('Invalid forecast model: {}'.format(model))
 
