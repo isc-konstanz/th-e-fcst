@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-    th-e-fcst.forecast
-    ~~~~~~~~~~~~~~~~~~
+    th-e-fcst.forecast.base
+    ~~~~~~~~~~~~~~~~~~~~~~~
     
     
 """
@@ -11,37 +11,47 @@ from abc import ABC, abstractmethod
 import pandas as pd
 import datetime as dt
 from corsys import System, Configurable, Configurations
+from .. import Resolutions
 
 
 class Forecast(ABC, Configurable):
 
-    # noinspection PyShadowingBuiltins
     @classmethod
     def read(cls, system: System, conf_file: str = 'forecast.cfg') -> Forecast:
         configs = Configurations.from_configs(system.configs, conf_file)
-        type = configs.get('General', 'type', fallback='default').lower()
-        if type in ['ann', 'neuralnetwork', 'default']:
+        model = configs.get('General', 'model', fallback='default').lower()
+        if model in ['ann', 'neuralnetwork', 'default']:
             from .ann import TensorForecast
             return TensorForecast(system, configs)
 
-        raise TypeError('Invalid forecast type: {}'.format(type))
+        raise TypeError('Invalid forecast model: {}'.format(model))
 
     def __init__(self, system: System, configs: Configurations, *args, **kwargs) -> None:
         super().__init__(configs, *args, **kwargs)
         self._system = system
-        self.__build__(system, configs)
 
-    def __build__(self, system: System, configs: Configurations) -> None:
+    def __configure__(self, configs: Configurations) -> None:
+        super().__configure__(configs)
+        self._resolutions = Resolutions.read(configs)
+
+    def __activate__(self, system: System) -> None:
         pass
+
+    @property
+    def resolutions(self) -> Resolutions:
+        return self._resolutions
 
     @property
     def system(self) -> System:
         return self._system
 
+    def activate(self) -> None:
+        self.__activate__(self._system)
+
     def get(self,
             start: pd.Timestamp | dt.datetime = pd.Timestamp.now(),
             end:   pd.Timestamp | dt.datetime = None,
-            **kwargs) -> pd.DataFrame:
+            *args, **kwargs) -> pd.DataFrame:
         """
         Retrieves the forecasted data for a specified time interval
 
@@ -63,19 +73,13 @@ class Forecast(ABC, Configurable):
         :rtype:
             :class:`pandas.DataFrame`
         """
-        return self._get_range(self.predict(start, end, **kwargs), start, end)
+        return self._get_range(self.predict(start, end, *args, **kwargs), start, end)
 
     @staticmethod
     def _get_range(forecast: pd.DataFrame,
                    start:    pd.Timestamp | dt.datetime,
                    end:      pd.Timestamp | dt.datetime) -> pd.DataFrame:
-
-        if start is None or start < forecast.index[0]:
-            start = forecast.index[0]
-        if end is None or end > forecast.index[-1]:
-            end = forecast.index[-1]
-
-        return forecast.loc[start:end]
+        return forecast[(forecast.index >= start) & (forecast.index <= end)]
 
     @abstractmethod
     def predict(self, *args, **kwargs) -> pd.DataFrame:

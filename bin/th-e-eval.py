@@ -15,7 +15,7 @@ import pandas as pd
 import datetime as dt
 
 from copy import deepcopy
-from typing import Optional
+from typing import Optional, Union
 
 import scisys.io as io
 from scisys import Results, Evaluation
@@ -58,8 +58,8 @@ def main(**kwargs) -> None:
         results.append(system_results)
 
     if not error:
-        evaluation = Evaluation.read(**kwargs)
-        evaluation(results)
+        evaluations = Evaluation.read(settings)
+        evaluations(results)
 
         logger.info("Finished TH-E Evaluation{0}".format('s' if len(systems) > 1 else ''))
 
@@ -75,7 +75,7 @@ def main(**kwargs) -> None:
                 except KeyboardInterrupt:
                     keep_running = 0
 
-            tensorboard.stop()
+            # tensorboard.stop()
 
 
 # noinspection PyProtectedMember
@@ -92,44 +92,44 @@ def train(system, results, verbose=False, **kwargs):
     bldargs['start'] = start
     bldargs['end'] = end
 
-    system.build(**bldargs)
+    data = system.build(**bldargs)
 
     features_dir = os.path.join(system.configs.dirs.data, 'model')
     features_path = os.path.join(features_dir, 'features')
-    features = _load_features(system, start, end, features_dir)
+    features = _load_features(system, start, end, data, features_dir)
 
     if verbose:
         io.write_csv(system, features, features_path)
         io.print_distributions(features, path=system.forecast.dir)
 
-    system.forecast._train(features, threading=True)
+    system.forecast._train(features, threading=settings.getboolean('General', 'threading', fallback=True))
 
     results.durations.stop('Training')
     logger.debug("Training of neural network for system {} complete after {:.2f} minutes"
                  .format(system.name, results.durations['Training']))
 
 
-# noinspection PyProtectedMember
+# noinspection PyProtectedMember, PyShadowingBuiltins
 def predict(system, results, verbose=False, **kwargs):
-    timezone = system.location.pytz
+    timezone = system.location.timezone
     start = to_date(settings['General']['start'], timezone)
     end = to_date(settings['General']['end'], timezone)
-    end = ceil_date(end, system.location.pytz)
+    end = ceil_date(end, timezone)
 
     bldargs = dict(kwargs)
     bldargs['start'] = start
     bldargs['end'] = end
 
-    system.build(**bldargs)
+    data = system.build(**bldargs)
 
     features_dir = os.path.join(system.configs.dirs.data, 'results')
     features_path = os.path.join(features_dir, 'features')
-    features = _load_features(system, start, end, features_dir)
+    features = _load_features(system, start, end, data, features_dir)
 
     if verbose:
         io.write_csv(system, features, features_path)
 
-    logger.debug("Beginning predictions for system: {}".format(system.name))
+    logger.debug("Starting predictions for system: {}".format(system.name))
     results.durations.start('Prediction')
 
     resolution_max = system.forecast.features.resolutions[0]
@@ -172,28 +172,30 @@ def predict(system, results, verbose=False, **kwargs):
             except Exception as e:
                 logger.debug("Error loading %s: %s", date, str(e))
         try:
-            date_prior = date - resolution_max.time_prior
-            date_start = date + resolution_max.time_step
-            date_horizon = date + resolution_min.time_horizon
+            date_start = date + resolution_min.time_step
+            date_prior = date_start - resolution_max.time_prior
+            date_horizon = date_start + resolution_min.time_horizon
             date_features = deepcopy(resolution_data[date_prior:date_horizon])
             date_range = date_features[date_start:date_horizon].index
 
             input = system.forecast.features.input(date_features, date_range)
             target = system.forecast.features.target(date_features, date_range)
-            prediction = system.forecast._predict(date_features, date)
-            prediction.rename(columns={target: target + '_est' for target in system.forecast.features.target_keys},
-                              inplace=True)
+            target.rename(columns={t: t + '_ref' for t in system.forecast.features.target_keys},
+                          inplace=True)
 
-            result = pd.concat([target, prediction], axis=1)
+            prediction = system.forecast._predict(date_features, date)
+
+            result = pd.concat([prediction, target], axis=1)
 
             # Add error columns for all targets
             for target_key in system.forecast.features.target_keys:
-                result[target_key + '_err'] = result[target_key + '_est'] - result[target_key]
+                result[target_key + '_err'] = result[target_key] - result[target_key]
 
             result = pd.concat([result, resolution_data.loc[result.index,
                                                             [column for column in resolution_data.columns
                                                              if column not in result.columns]]], axis=1)
 
+            results[date_path+'/output'] = result
             result.index.name = 'time'
             result['horizon'] = pd.Series(range(1, len(result.index) + 1), result.index)
 
@@ -214,7 +216,7 @@ def predict(system, results, verbose=False, **kwargs):
             date = _next_date(date, interval)
 
         except ValueError as e:
-            logger.debug("Skipping %s: %s", date, str(e))
+            logger.warning("Skipping %s: %s", date, str(e))
             # logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
             date = _next_date(date, interval)
 
@@ -224,14 +226,17 @@ def predict(system, results, verbose=False, **kwargs):
 
 
 # noinspection PyProtectedMember, PyUnresolvedReferences
-def _load_features(system: System, start: dt.datetime, end: dt.datetime, features_dir: str) -> pd.DataFrame:
+def _load_features(system: System,
+                   start: Union[pd.Timestamp, dt.datetime],
+                   end: Union[pd.Timestamp, dt.datetime],
+                   data: pd.DataFrame,
+                   features_dir: str) -> pd.DataFrame:
     features_path = os.path.join(features_dir, 'features')
     os.makedirs(features_dir, exist_ok=True)
     if os.path.isfile(features_path + '.h5'):
         with pd.HDFStore(features_path + '.h5', mode='r') as hdf:
             features = hdf.get('features')
     else:
-        data = system._get_data_history(start, end)
         features = system.forecast.features.extract(data)
         features = system.forecast.features._add_meta(features)
         features.to_hdf(features_path + '.h5', 'features', mode='w')

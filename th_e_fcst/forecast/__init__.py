@@ -6,6 +6,3 @@
 
 """
 from .base import Forecast  # noqa: F401
-
-from . import ann  # noqa: F401
-from .ann import TensorForecast  # noqa: F401

@@ -6,7 +6,7 @@
     
 """
 from __future__ import annotations
-from typing import Any, Optional, Tuple, List, Dict
+from typing import Tuple, List, Dict
 
 import os
 import json
@@ -20,6 +20,7 @@ from glob import glob
 from copy import deepcopy
 from itertools import chain
 from corsys import System, Configurations
+from corsys.tools import to_bool
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from keras.optimizers import Adam
@@ -45,42 +46,44 @@ class TensorForecast(Forecast):
 
         self.dir = os.path.join(configs.dirs.data, 'model')
 
-        self.epochs = configs.getint('General', 'epochs')
-        self.batch = configs.getint('General', 'batch')
+        self.epochs = configs.getint(Configurations.GENERAL, 'epochs')
+        self.batch = configs.getint(Configurations.GENERAL, 'batch')
 
-    def __build__(self, system: System, configs: Configurations) -> None:
-        super().__build__(system, configs)
+    def __activate__(self, system: System) -> None:
+        super().__activate__(system)
+
+        self.features = Features.build(system)
 
         self.history = History()
         self.callbacks = [self.history]
 
-        self._early_stopping = configs.get('General', 'early_stopping', fallback='True').lower() == 'true'
+        self._early_stopping = to_bool(self.configs.get(Configurations.GENERAL, 'early_stopping', fallback='True'))
         if self._early_stopping:
-            self._early_stopping_bins = configs.get('General', 'early_stopping_bins', fallback=None)
+            self._early_stopping_bins = self.configs.get(Configurations.GENERAL, 'early_stopping_bins', fallback=None)
             if self._early_stopping_bins is not None:
                 self._early_stopping_bins = self._early_stopping_bins.lower()
                 if self._early_stopping_bins not in ['hour', 'day_of_year', 'day_of_week', 'week']:
                     raise ValueError("Unknown early stopping batch method: " + self._early_stopping_bins)
 
-            self._early_stopping_split = configs.getint('General', 'early_stopping_split', fallback=10)
-            self._early_stopping_patience = configs.getint('General', 'early_stopping_patience', fallback=self.epochs/4)
+            self._early_stopping_split = self.configs.getint(Configurations.GENERAL,
+                                                             'early_stopping_split', fallback=10)
+            self._early_stopping_patience = self.configs.getint(Configurations.GENERAL,
+                                                                'early_stopping_patience', fallback=self.epochs/4)
             self.callbacks.append(EarlyStopping(patience=self._early_stopping_patience, restore_best_weights=True))
 
-        self._tensorboard = configs.getboolean('General', 'tensorboard', fallback=False)
+        self._tensorboard = self.configs.getboolean(Configurations.GENERAL, 'tensorboard', fallback=False)
         if self._tensorboard:
             self.callbacks.append(TensorBoard(log_dir=self.dir, histogram_freq=1))
-
-        self.features = Features.read(system)
 
         # TODO: implement date based backups and naming scheme
         if self.exists():
             self.model = self._load_model()
         else:
-            self.model = self._build_model(configs)
+            self.model = self._build_model(self.configs)
 
-        self.model.compile(optimizer=self._parse_optimizer(configs),
-                           metrics=self._parse_metrics(configs),
-                           loss=self._parse_loss(configs))
+        self.model.compile(optimizer=self._parse_optimizer(self.configs),
+                           metrics=self._parse_metrics(self.configs),
+                           loss=self._parse_loss(self.configs))
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -98,19 +101,19 @@ class TensorForecast(Forecast):
 
     @staticmethod
     def _parse_optimizer(configs: Configurations):
-        optimizer = configs.get('General', 'optimizer')
-        if optimizer == 'adam' and configs.has_option('General', 'learning_rate'):
-            optimizer = Adam(learning_rate=configs.getfloat('General', 'learning_rate'))
+        optimizer = configs.get(Configurations.GENERAL, 'optimizer')
+        if optimizer == 'adam' and configs.has_option(Configurations.GENERAL, 'learning_rate'):
+            optimizer = Adam(learning_rate=configs.getfloat(Configurations.GENERAL, 'learning_rate'))
 
         return optimizer
 
     @staticmethod
     def _parse_metrics(configs: Configurations):
-        return configs.get('General', 'metrics', fallback=[])
+        return configs.get(Configurations.GENERAL, 'metrics', fallback=[])
 
     @staticmethod
     def _parse_loss(configs: Configurations):
-        return configs.get('General', 'loss')
+        return configs.get(Configurations.GENERAL, 'loss')
 
     def _build_model(self, configs: Configurations) -> Model:
         input_series = Input(shape=self.features.input_shape[0])
@@ -273,7 +276,7 @@ class TensorForecast(Forecast):
 
         # Serialize weights checkpoint
         self.model.save(self.dir)
-        self.model.save_weights(os.path.join(self.dir, f"model-SNAPSHOT{save_date.strftime('%Y%m%d-%H%M%S')}.h5"))
+        self.model.save_weights(os.path.join(self.dir, f"model-SNAPSHOT{save_date.strftime('%Y%m%d')}.h5"))
 
     def exists(self):
         if not os.path.isdir(self.dir):
@@ -296,12 +299,7 @@ class TensorForecast(Forecast):
 
     def predict(self,
                 data: pd.DataFrame,
-                date: pd.Timestamp | dt.datetime,
-                *args: Optional[Any]) -> pd.DataFrame:
-
-        if len(args) > 0 and isinstance(args[0], pd.DataFrame):
-            forecast = list(args).pop(0)
-            data = pd.concat([data, forecast], axis=1)
+                date: pd.Timestamp | dt.datetime) -> pd.DataFrame:
 
         features = self.features.extract(data)
         return self._predict(features, date)

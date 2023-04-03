@@ -8,18 +8,17 @@
 from __future__ import annotations
 from typing import Any, List, Callable
 
+import pytz as tz
 import numpy as np
 import pandas as pd
 import datetime as dt
 import holidays as hl
-import warnings
 import logging
 
 from copy import deepcopy
-from pandas.tseries.frequencies import to_offset
 from corsys import Configurations, Configurable
-from corsys.cmpt import Context
 from corsys.tools import to_bool
+from ... import System, Resolutions
 
 logger = logging.getLogger(__name__)
 
@@ -27,38 +26,25 @@ logger = logging.getLogger(__name__)
 class Features(Configurable):
 
     @classmethod
-    def read(cls, context: Context, conf_file: str = 'features.cfg') -> Features:
-        return cls(context, Configurations.from_configs(context.configs, conf_file))
+    def build(cls, system: System, conf_file: str = 'features.cfg') -> Features:
+        configs = Configurations.from_configs(system.configs, conf_file)
+        features = cls(system, configs)
+        features.__build__(configs)
+        return features
 
-    def __init__(self, context: Context, configs: Configurations) -> None:
-        super().__init__(configs)
-        self._context = context
+    def __init__(self, system: System, configs: Configurations, *args, **kwargs) -> None:
+        super().__init__(configs, *args, **kwargs)
+        self._system = system
 
     def __configure__(self, configs: Configurations) -> None:
         super().__configure__(configs)
 
+        self._estimate = to_bool(configs.get('General', 'estimate', fallback='true'))
+
         # TODO: Make this part of a wrapper Resolutions list class
-        self._autoregressive = configs.get('General', 'autoregressive', fallback='True').lower() == 'true'
+        self._autoregressive = to_bool(configs.get('General', 'autoregressive', fallback='true'))
 
-        input_range = pd.date_range(dt.datetime.now().replace(minute=0, second=0, microsecond=0), periods=0)
-        target_range = pd.date_range(dt.datetime.now().replace(minute=0, second=0, microsecond=0), periods=0)
-
-        self.resolutions = list()
-        for resolution_configs in [s for s in configs.sections() if s.lower().startswith('resolution')]:
-            resolution = Resolution(**dict(configs.items(resolution_configs)))
-
-            input_start = dt.datetime.now().replace(minute=0, second=0, microsecond=0) - resolution.time_prior
-            input_range = input_range.union(pd.date_range(input_start,
-                                                          periods=resolution.steps_prior,
-                                                          freq='{}min'.format(resolution.minutes)))
-
-            if resolution.steps_horizon:
-                target_start = dt.datetime.now().replace(minute=0, second=0, microsecond=0) + resolution.time_step
-                target_range = target_range.union(pd.date_range(target_start,
-                                                                periods=resolution.steps_horizon,
-                                                                freq='{}min'.format(resolution.minutes)))
-
-            self.resolutions.append(resolution)
+    def __build__(self, configs: Configurations) -> None:
 
         def parse_section(section: str, cast: Callable = str) -> dict[str, Any]:
             if configs.has_section(section):
@@ -89,28 +75,31 @@ class Features(Configurable):
         self.input_series_keys = parse_cyclic_keys(configs.get('Input', 'series').splitlines())
         self.input_value_keys = parse_cyclic_keys(configs.get('Input', 'values').splitlines())
 
-        self._estimate = to_bool(configs.get('General', 'estimate', fallback='true'))
         if self._estimate:
             self.input_value_keys += self.input_series_keys
 
         input_series_count = len(self.input_series_keys + self.target_keys)
         input_value_count = len(self.input_value_keys)
-        input_steps = len(input_range)
+        input_steps = self.resolutions.steps_prior
 
         self.input_shape = [(input_steps, input_series_count), (input_value_count,)]
 
         if self._autoregressive:
             target_steps = 1
         else:
-            target_steps = len(target_range)
+            target_steps = self.resolutions.steps_horizon
 
         target_count = len(self.target_keys)
 
         self.target_shape = (target_steps, target_count)
 
     @property
-    def context(self) -> Context:
-        return self._context
+    def resolutions(self) -> Resolutions:
+        return self._system.forecast.resolutions
+
+    @property
+    def system(self) -> System:
+        return self._system
 
     def input(self,
               features: pd.DataFrame,
@@ -118,7 +107,10 @@ class Features(Configurable):
 
         if not isinstance(index, pd.DatetimeIndex):
             index = [self.resolutions[-1].time_step + index]
-        data = self.resolutions[-1].resample(deepcopy(features))
+
+        # Convert to UTC before resampling, to avoid offset issues
+        timezone = features.index.tzinfo
+        data = self.resolutions[-1].resample(deepcopy(features.tz_convert(tz.utc)))
         data = self._add_doubt(data)
         data = self._add_meta(data)
         data = self._extract(data)
@@ -127,10 +119,16 @@ class Features(Configurable):
         inputs = pd.DataFrame()
         inputs.index.name = 'time'
         for resolution in self.resolutions:
-            resolution_end = index[-1]
-            resolution_start = index[0] - resolution.time_step - resolution.time_prior + dt.timedelta(minutes=1)
-            resolution_offset = resolution_end.hour*60 + resolution_end.minute
-            resolution_inputs = resolution.resample(data[resolution_start:resolution_end], offset=resolution_offset)
+            if resolution.steps_prior is None:
+                continue
+
+            resolution_end = index[-1].tz_convert(tz.utc)
+            resolution_start = (index[0].tz_convert(tz.utc)
+                                - resolution.time_step
+                                - resolution.time_prior + dt.timedelta(minutes=1))
+            resolution_offset = resolution_end.hour * 60 + resolution_end.minute
+            resolution_inputs = resolution.resample(data[resolution_start:resolution_end],
+                                                    offset=resolution_offset)
 
             inputs = resolution_inputs.combine_first(inputs)
 
@@ -140,7 +138,7 @@ class Features(Configurable):
         # Make sure that no future target values exist
         inputs.loc[index[0]:, self.target_keys] = np.NaN
 
-        return inputs
+        return inputs.tz_convert(timezone)
 
     def target(self,
                features: pd.DataFrame,
@@ -150,7 +148,9 @@ class Features(Configurable):
             index = [self.resolutions[-1].time_step + index]
 
         # TODO: Implement horizon resolutions
-        data = self.resolutions[-1].resample(deepcopy(features))
+        # Convert to UTC before resampling, to avoid offset issues
+        timezone = features.index.tzinfo
+        data = self.resolutions[-1].resample(deepcopy(features.tz_convert(tz.utc)))
 
         if self._autoregressive:
             targets = data.loc[index, self.target_keys]
@@ -158,19 +158,21 @@ class Features(Configurable):
             targets = pd.DataFrame()
             targets.index.name = 'time'
             for resolution in self.resolutions:
-                if resolution.time_horizon is None:
+                if resolution.steps_horizon is None:
                     continue
 
-                resolution_end = index[0] + resolution.time_horizon - dt.timedelta(minutes=1)
-                resolution_start = index[0]
-                resolution_targets = resolution.resample(data[resolution_start:resolution_end])
+                resolution_end = index[0].tz_convert(tz.utc) + resolution.time_horizon - dt.timedelta(minutes=1)
+                resolution_start = index[0].tz_convert(tz.utc)
+                resolution_offset = resolution_end.hour * 60 + resolution_end.minute
+                resolution_targets = resolution.resample(data[resolution_start:resolution_end],
+                                                         offset=resolution_offset)
 
                 targets = resolution_targets.combine_first(targets)
 
         if targets.isnull().values.any():
             raise ValueError("Target data incomplete for %s" % index)
 
-        return targets
+        return targets.tz_convert(timezone)
 
     def extract(self, data):
         return deepcopy(self._extract(data))
@@ -228,7 +230,7 @@ class Features(Configurable):
         features['day_of_week'] = features.index.dayofweek
         features['day_of_year'] = features.index.dayofyear - 1
 
-        if self.context.location.country is None:
+        if self.system.location.country is None:
             return features
 
         features['holiday'] = 0
@@ -236,10 +238,10 @@ class Features(Configurable):
         holiday_args = {
             'years': list(dict.fromkeys(features.index.year))
         }
-        if self.context.location.state is not None:
-            holiday_args['subdiv'] = self.context.location.state
+        if self.system.location.state is not None:
+            holiday_args['subdiv'] = self.system.location.state
 
-        holidays = hl.country_holidays(self.context.location.country, **holiday_args)
+        holidays = hl.country_holidays(self.system.location.country, **holiday_args)
         features.loc[np.isin(features.index.date, list(holidays.keys())), 'holiday'] = 1
 
         return features
@@ -259,38 +261,3 @@ class Features(Configurable):
             cyclic_features = cyclic_features.drop(columns=[feature])
 
         return cyclic_features
-
-
-class Resolution:
-
-    def __init__(self, minutes, steps_prior=None, steps_horizon=None):
-        self.minutes = int(minutes)
-        self.steps_prior = int(steps_prior) if steps_prior else None
-        self.steps_horizon = int(steps_horizon) if steps_horizon else None
-
-    @property
-    def time_step(self) -> dt.timedelta:
-        return dt.timedelta(minutes=self.minutes)
-
-    @property
-    def time_prior(self) -> dt.timedelta | None:
-        if self.steps_prior is None:
-            return None
-
-        return dt.timedelta(minutes=self.minutes * self.steps_prior)
-
-    @property
-    def time_horizon(self) -> dt.timedelta | None:
-        if self.steps_horizon is None:
-            return None
-
-        return dt.timedelta(minutes=self.minutes * self.steps_horizon)
-
-    def resample(self, features: pd.DataFrame, offset=None) -> pd.DataFrame:
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=FutureWarning)
-
-            data = features.resample('{}min'.format(self.minutes), closed='right', base=offset).mean()
-            data.index += to_offset('{}min'.format(self.minutes))
-
-        return data
