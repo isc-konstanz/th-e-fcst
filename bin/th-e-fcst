@@ -85,7 +85,6 @@ if __name__ == "__main__":
         run_dir = os.path.dirname(run_dir)
 
     os.chdir(run_dir)
-
     os.environ['NUMEXPR_MAX_THREADS'] = str(os.cpu_count())
 
     settings = Settings('th-e-fcst', parser=_get_parser())

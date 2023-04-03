@@ -102,7 +102,6 @@ class Resolutions(Sequence):
         else:
             raise ValueError(f'Unable to retrieve "{how}" time horizon')
 
-    @property
     def time_horizon(self, how: str = 'max') -> dt.timedelta | None:
         return self.get_horizon(how).time_horizon
 
