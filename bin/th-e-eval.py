@@ -14,6 +14,7 @@ import pytz as tz
 import pandas as pd
 import datetime as dt
 
+from tqdm import tqdm
 from copy import deepcopy
 from typing import Optional, Union
 
@@ -88,15 +89,9 @@ def train(system, results, verbose=False, **kwargs):
     end = to_date(settings['Training']['end'], timezone)
     end = ceil_date(end, system.location.pytz)
 
-    bldargs = dict(kwargs)
-    bldargs['start'] = start
-    bldargs['end'] = end
-
-    data = system.build(**bldargs)
-
     features_dir = os.path.join(system.configs.dirs.data, 'model')
     features_path = os.path.join(features_dir, 'features')
-    features = _load_features(system, start, end, data, features_dir)
+    features = _load_features(system, start, end, features_dir)
 
     if verbose:
         io.write_csv(system, features, features_path)
@@ -116,22 +111,6 @@ def predict(system, results, verbose=False, **kwargs):
     end = to_date(settings['General']['end'], timezone)
     end = ceil_date(end, timezone)
 
-    bldargs = dict(kwargs)
-    bldargs['start'] = start
-    bldargs['end'] = end
-
-    data = system.build(**bldargs)
-
-    features_dir = os.path.join(system.configs.dirs.data, 'results')
-    features_path = os.path.join(features_dir, 'features')
-    features = _load_features(system, start, end, data, features_dir)
-
-    if verbose:
-        io.write_csv(system, features, features_path)
-
-    logger.debug("Starting predictions for system: {}".format(system.name))
-    results.durations.start('Prediction')
-
     resolution_max = system.forecast.features.resolutions[0]
     resolution_min = system.forecast.features.resolutions[0]
     if len(system.forecast.features.resolutions) > 1:
@@ -140,7 +119,16 @@ def predict(system, results, verbose=False, **kwargs):
             if resolution_min.steps_horizon is not None:
                 break
 
-    resolution_data = resolution_min.resample(features)
+    features_dir = os.path.join(system.configs.dirs.data, 'results')
+    features_path = os.path.join(features_dir, 'features')
+    features = _load_features(system, start, end, features_dir)
+    features = resolution_min.resample(features)
+
+    if verbose:
+        io.write_csv(system, features, features_path)
+
+    logger.debug("Starting predictions for system: {}".format(system.name))
+    results.durations.start('Prediction')
 
     # Reactivate this, when multiprocessing will be implemented
     # global logger
@@ -150,33 +138,34 @@ def predict(system, results, verbose=False, **kwargs):
     interval = settings.getint('General', 'interval')
     end = ceil_date(features.index[-1] - resolution_min.time_horizon, timezone=system.location.timezone)
     start = floor_date(features.index[0] + resolution_max.time_prior, timezone=system.location.timezone)
-    date = start
 
+    training_interval = settings.getint('Training', 'interval', fallback=24)*60
     training_recursive = settings.getboolean('Training', 'recursive', fallback=True)
     if training_recursive:
-        training_interval = settings.getint('Training', 'interval', fallback=24)*60
-        training_date = _next_date(date, training_interval*2)
-        training_last = date
-        date = _next_date(date, training_interval)
+        training_date = _next_date(start, training_interval*2)
+        training_last = start
+        start = _next_date(start, training_interval)
+    else:
+        training_date = None
+        training_last = None
 
-    while date <= end:
+    for date in tqdm(pd.date_range(start, end, tz=timezone, freq=f'{interval}min').round(f'{interval}min')):
         date_path = date.strftime('%Y-%m-%d/%H-%M-%S')
         if date_path in results:
             try:
                 # If this step was simulated already, load the results and skip the prediction
                 results.load(date_path+'/output')
-
-                date = _next_date(date, interval)
                 continue
 
             except Exception as e:
                 logger.debug("Error loading %s: %s", date, str(e))
         try:
-            date_start = date + resolution_min.time_step
-            date_prior = date_start - resolution_max.time_prior
-            date_horizon = date_start + resolution_min.time_horizon
-            date_features = deepcopy(resolution_data[date_prior:date_horizon])
-            date_range = date_features[date_start:date_horizon].index
+            horizon_start = date + resolution_min.time_step
+            horizon_end = date + resolution_min.time_horizon
+            prior_start = date - resolution_max.time_prior + dt.timedelta(minutes=1)
+
+            date_features = deepcopy(features[prior_start:horizon_end])
+            date_range = date_features[horizon_start:horizon_end].index
 
             input = system.forecast.features.input(date_features, date_range)
             target = system.forecast.features.target(date_features, date_range)
@@ -189,36 +178,31 @@ def predict(system, results, verbose=False, **kwargs):
 
             # Add error columns for all targets
             for target_key in system.forecast.features.target_keys:
-                result[target_key + '_err'] = result[target_key] - result[target_key]
+                result[target_key + '_err'] = result[target_key] - result[target_key + '_ref']
 
-            result = pd.concat([result, resolution_data.loc[result.index,
-                                                            [column for column in resolution_data.columns
-                                                             if column not in result.columns]]], axis=1)
+            result = pd.concat([result, features.loc[result.index, [c for c in features.columns
+                                                                    if c not in result.columns]]], axis=1)
 
-            results[date_path+'/output'] = result
             result.index.name = 'time'
-            result['horizon'] = pd.Series(range(1, len(result.index) + 1), result.index)
+            result['horizon'] = pd.Series((result.index - date).total_seconds()/3600, result.index)
 
-            results[date_path+'/output'] = result
-            results[date_path+'/input'] = input
-            results[date_path+'/target'] = target
+            results.set(date_path+'/output', result, how='concat')
+            results.set(date_path+'/input', input)
+            results.set(date_path+'/target', target)
 
             if training_recursive and date >= training_date:
                 if abs((training_date - date).total_seconds()) <= training_interval:
-                    training_features = deepcopy(resolution_data[training_last - resolution_max.time_prior:training_date])
-                    validation_features = deepcopy(resolution_data[training_last - dt.timedelta(days=7):training_last])
+                    training_features = deepcopy(features[training_last - resolution_max.time_prior:training_date])
+                    validation_features = deepcopy(features[training_last - dt.timedelta(days=7):training_last])
 
                     system.forecast._train(training_features, validation_features)
 
                 training_last = training_date
                 training_date = _next_date(date, training_interval)
 
-            date = _next_date(date, interval)
-
         except ValueError as e:
             logger.warning("Skipping %s: %s", date, str(e))
             # logger.debug("%s: %s", type(e).__name__, traceback.format_exc())
-            date = _next_date(date, interval)
 
     results.durations.stop('Prediction')
     logger.debug("Predictions for system {} complete after {:.2f} minutes"
@@ -229,7 +213,6 @@ def predict(system, results, verbose=False, **kwargs):
 def _load_features(system: System,
                    start: Union[pd.Timestamp, dt.datetime],
                    end: Union[pd.Timestamp, dt.datetime],
-                   data: pd.DataFrame,
                    features_dir: str) -> pd.DataFrame:
     features_path = os.path.join(features_dir, 'features')
     os.makedirs(features_dir, exist_ok=True)
@@ -237,6 +220,7 @@ def _load_features(system: System,
         with pd.HDFStore(features_path + '.h5', mode='r') as hdf:
             features = hdf.get('features')
     else:
+        data = system.build(start=start, end=end)
         features = system.forecast.features.extract(data)
         features = system.forecast.features._add_meta(features)
         features.to_hdf(features_path + '.h5', 'features', mode='w')
@@ -273,7 +257,7 @@ def _next_date(date: pd.Timestamp, interval: int) -> pd.Timestamp:
 
         # FIXME: verify pandas version includes fix in commit from 17. Nov 20221:
         # https://github.com/pandas-dev/pandas/pull/44357
-        date = date.astimezone(tz.utc).round('{minutes}s'.format(minutes=interval))\
+        date = date.astimezone(tz.utc).round('{minutes}min'.format(minutes=interval))\
                    .astimezone(timezone)
 
     return date

@@ -304,6 +304,7 @@ class TensorForecast(Forecast):
         features = self.features.extract(data)
         return self._predict(features, date)
 
+    # noinspection PyShadowingBuiltins
     def _predict(self,
                  features: pd.DataFrame,
                  date: pd.Timestamp | dt.datetime):
@@ -349,6 +350,7 @@ class TensorForecast(Forecast):
 
         return targets
 
+    # noinspection PyShadowingBuiltins
     def _predict_step(self,
                       input: pd.DataFrame,
                       date: pd.Timestamp | dt.datetime) -> np.ndarray | float:

@@ -39,14 +39,15 @@ class System(pvsys.System):
             return None
 
         if Photovoltaics.POWER not in data.columns:
-            cmpts_input = super()._validate_input(data)
             cmpts_pv = [cmpt for cmpt in self.values() if cmpt.type == 'pv']
             if len(cmpts_pv) > 0:
-                data[Photovoltaics.POWER] = 0
+                data = super()._validate_input(data)
+                data_pv = pd.Series(index=data.index, data=0)
                 for cmpt in cmpts_pv:
-                    input_pv = self._get_solar_yield(cmpt, cmpts_input)
-                    data[Photovoltaics.POWER] += input_pv[Photovoltaics.POWER].abs()
+                    input_pv = self._get_solar_yield(cmpt, data)
+                    data_pv += input_pv[Photovoltaics.POWER].abs()
 
+                data[Photovoltaics.POWER] = data_pv
                 data_time = pd.DataFrame(index=data.index, data=data.index)
                 data_time.columns = ['date']
                 data_time['hours'] = ((data_time['date'] - data_time['date'].shift(1)) / np.timedelta64(1, 'h')).bfill()
@@ -58,27 +59,26 @@ class System(pvsys.System):
     def __call__(self, date: pd.Timestamp | dt.datetime = None, **kwargs) -> pd.DataFrame:
         if date is None:
             date = pd.Timestamp.now(tz=self.location.timezone)
-        date = floor_date(date)
+        date = floor_date(date, timezone=self.location.timezone, freq='T')
 
-        data_start = date - self.forecast.resolutions.get_prior(how='max').time_prior + dt.timedelta(minutes=1)
-        data_end = date
-        data = self._get_data(data_start, data_end)
+        return self._predict(date, **kwargs)
 
-        forecast_start = data_end + self.forecast.resolutions.get_horizon(how='min').time_step
-        forecast_end = forecast_start + self.forecast.resolutions.get_horizon(how='max').time_horizon
+    # noinspection PyShadowingBuiltins
+    def predict(self, date: pd.Timestamp | dt.datetime, **kwargs) -> pd.DataFrame:
+        start = date + self.forecast.resolutions.get_horizon(how='min').time_step
+        end = date + self.forecast.resolutions.get_horizon(how='max').time_horizon
+
+        prior = date - self.forecast.resolutions.get_prior(how='max').time_prior + dt.timedelta(minutes=1)
+        data = self._get_data(prior, date)
         try:
-            input = self._get_input(forecast_start, forecast_end, **kwargs)
+            input = self._get_input(start, end, **kwargs)
             data = pd.concat([data, input], axis=1)
 
         except WeatherUnavailableException as e:
             logger.debug(str(e))
 
-        forecast = self.forecast.get(forecast_start, forecast_end, data)
+        forecast = self.forecast(start, end, data)
         return forecast.combine_first(data)
-
-    @property
-    def forecast(self) -> Forecast:
-        return self._forecast
 
     # noinspection PyUnresolvedReferences, PyShadowingBuiltins
     def _get_input(self, *args, **kwargs) -> pd.DataFrame:
@@ -126,3 +126,7 @@ class System(pvsys.System):
                 input_pv = self._get_solar_yield(cmpt, input)
                 input['pv_yield'] += input_pv['pv_power'].abs()
         return input
+
+    @property
+    def forecast(self) -> Forecast:
+        return self._forecast

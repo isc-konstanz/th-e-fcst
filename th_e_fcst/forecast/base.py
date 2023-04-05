@@ -40,21 +40,10 @@ class Forecast(ABC, Configurable):
     def __activate__(self, system: System) -> None:
         pass
 
-    @property
-    def resolutions(self) -> Resolutions:
-        return self._resolutions
-
-    @property
-    def system(self) -> System:
-        return self._system
-
-    def activate(self) -> None:
-        self.__activate__(self._system)
-
-    def get(self,
-            start: pd.Timestamp | dt.datetime = pd.Timestamp.now(),
-            end:   pd.Timestamp | dt.datetime = None,
-            *args, **kwargs) -> pd.DataFrame:
+    def __call__(self,
+                 start: pd.Timestamp | dt.datetime = pd.Timestamp.now(),
+                 end:   pd.Timestamp | dt.datetime = None,
+                 *args, **kwargs) -> pd.DataFrame:
         """
         Retrieves the forecasted data for a specified time interval
 
@@ -77,6 +66,17 @@ class Forecast(ABC, Configurable):
             :class:`pandas.DataFrame`
         """
         return self._get_range(self.predict(start, end, *args, **kwargs), start, end)
+
+    @property
+    def resolutions(self) -> Resolutions:
+        return self._resolutions
+
+    @property
+    def system(self) -> System:
+        return self._system
+
+    def activate(self) -> None:
+        self.__activate__(self._system)
 
     @staticmethod
     def _get_range(forecast: pd.DataFrame,

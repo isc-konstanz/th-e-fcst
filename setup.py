@@ -36,7 +36,10 @@ INSTALL_REQUIRES = [
 ]
 
 EXTRAS_REQUIRE = {
-    'eval': ['scisys[excel,plot] @ git+https://github.com/isc-konstanz/scisys.git@master']
+    'eval': [
+        'tqdm',
+        'scisys[excel,plot] @ git+https://github.com/isc-konstanz/scisys.git@master'
+    ]
 }
 
 SCRIPTS = ['bin/th-e-fcst']
