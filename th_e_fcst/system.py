@@ -17,7 +17,7 @@ from corsys import Component, Configurations
 from corsys.io import DatabaseUnavailableException
 from corsys.weather import WeatherUnavailableException
 from corsys.tools import floor_date
-from corsys.cmpt import Photovoltaics
+from corsys.cmpt import Photovoltaic
 from .forecast import Forecast
 
 logger = logging.getLogger(__name__)
@@ -33,25 +33,26 @@ class System(pvsys.System):
         super().__activate__(components)
         self._forecast.activate()
 
+    # noinspection PyTypeChecker
     def __build__(self, **kwargs) -> Optional[pd.DataFrame]:
         data = super().__build__(**kwargs)
         if data is None or data.empty:
             return None
 
-        if Photovoltaics.POWER not in data.columns:
-            cmpts_pv = [cmpt for cmpt in self.values() if cmpt.type == 'pv']
-            if len(cmpts_pv) > 0:
-                data = super()._validate_input(data)
-                data_pv = pd.Series(index=data.index, data=0)
-                for cmpt in cmpts_pv:
-                    input_pv = self._get_solar_yield(cmpt, data)
-                    data_pv += input_pv[Photovoltaics.POWER].abs()
+        if self.contains_type(Photovoltaic.TYPE):
+            data = super()._validate_input(data)
 
-                data[Photovoltaics.POWER] = data_pv
+            if Photovoltaic.POWER not in data.columns:
+                data_pv = pd.Series(index=data.index, data=0)
+                for pv in self.get_type(Photovoltaic.TYPE):
+                    input_pv = self._get_solar_yield(pv, data)
+                    data_pv += input_pv[Photovoltaic.POWER].abs()
+
+                data[Photovoltaic.POWER] = data_pv
                 data_time = pd.DataFrame(index=data.index, data=data.index)
                 data_time.columns = ['date']
                 data_time['hours'] = ((data_time['date'] - data_time['date'].shift(1)) / np.timedelta64(1, 'h')).bfill()
-                data[Photovoltaics.ENERGY] = (data[Photovoltaics.POWER] / 1000 * data_time['hours']).cumsum()
+                data[Photovoltaic.ENERGY] = (data[Photovoltaic.POWER] / 1000 * data_time['hours']).cumsum()
 
         return data
 
