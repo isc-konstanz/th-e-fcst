@@ -139,17 +139,30 @@ def predict(system, results, verbose=False, **kwargs):
     end = ceil_date(features.index[-1] - resolution_min.time_horizon, timezone=system.location.timezone)
     start = floor_date(features.index[0] + resolution_max.time_prior, timezone=system.location.timezone)
 
+    # noinspection PyShadowingNames
+    def next_training(date: pd.Timestamp, interval: int) -> pd.Timestamp:
+        date += dt.timedelta(minutes=interval)
+        if interval > 60:
+            # FIXME: verify pandas version includes fix in commit from 17. Nov 20221:
+            # https://github.com/pandas-dev/pandas/pull/44357
+            date = date.astimezone(tz.utc).round('{minutes}min'.format(minutes=interval))\
+                       .astimezone(timezone)
+        return date
+
     training_interval = settings.getint('Training', 'interval', fallback=24)*60
     training_recursive = settings.getboolean('Training', 'recursive', fallback=True)
     if training_recursive:
-        training_date = _next_date(start, training_interval*2)
+        training_date = next_training(start, training_interval*2)
         training_last = start
-        start = _next_date(start, training_interval)
+        start = next_training(start, training_interval)
     else:
         training_date = None
         training_last = None
 
-    for date in tqdm(pd.date_range(start, end, tz=timezone, freq=f'{interval}min').round(f'{interval}min')):
+    predict_range = pd.date_range(start, end, tz=timezone, freq=f'{interval}min')
+    if interval > 60:
+        predict_range = predict_range.round(f'{interval}min')
+    for date in tqdm(predict_range, desc=system.name):
         date_path = date.strftime('%Y-%m-%d/%H-%M-%S')
         if date_path in results:
             try:
@@ -198,7 +211,7 @@ def predict(system, results, verbose=False, **kwargs):
                     system.forecast._train(training_features, validation_features)
 
                 training_last = training_date
-                training_date = _next_date(date, training_interval)
+                training_date = next_training(date, training_interval)
 
         except ValueError as e:
             logger.warning("Skipping %s: %s", date, str(e))
@@ -250,19 +263,6 @@ def _launch_tensorboard(systems, **kwargs) -> Optional[TensorBoard]:
     return tensorboard
 
 
-def _next_date(date: pd.Timestamp, interval: int) -> pd.Timestamp:
-    date += dt.timedelta(minutes=interval)
-    if interval >= 60:
-        timezone = date.tzinfo
-
-        # FIXME: verify pandas version includes fix in commit from 17. Nov 20221:
-        # https://github.com/pandas-dev/pandas/pull/44357
-        date = date.astimezone(tz.utc).round('{minutes}min'.format(minutes=interval))\
-                   .astimezone(timezone)
-
-    return date
-
-
 if __name__ == "__main__":
     from th_e_fcst import __version__
 
@@ -281,6 +281,5 @@ if __name__ == "__main__":
     settings = Settings('th-e-fcst', parser=parser)
 
     import logging
-
     logger = logging.getLogger('th-e-fcst')
     main(**settings.general)
