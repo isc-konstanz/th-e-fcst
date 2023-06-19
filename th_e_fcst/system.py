@@ -27,11 +27,11 @@ class System(pvsys.System):
 
     def __configure__(self, configs: Configurations) -> None:
         super().__configure__(configs)
-        self._forecast = Forecast.read(self)
+        self.forecast = Forecast.read(self)
 
     def __activate__(self, components: Dict[str, Component]) -> None:
         super().__activate__(components)
-        self._forecast.activate()
+        self.forecast.activate()
 
     # noinspection PyTypeChecker
     def __build__(self, **kwargs) -> Optional[pd.DataFrame]:
@@ -127,7 +127,3 @@ class System(pvsys.System):
                 input_pv = self._get_solar_yield(cmpt, input)
                 input['pv_yield'] += input_pv['pv_power'].abs()
         return input
-
-    @property
-    def forecast(self) -> Forecast:
-        return self._forecast
