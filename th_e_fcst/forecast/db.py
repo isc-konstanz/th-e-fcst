@@ -35,7 +35,7 @@ class DatabaseForecast(Forecast):
                 format: str = '%d.%m.%Y',
                 **kwargs) -> pd.DataFrame:
 
-        start = to_date(start, timezone=self.system.location.timezone)
-        end = to_date(end, timezone=self.system.location.timezone)
+        start = to_date(start, timezone=self.system.location.timezone, format=format)
+        end = to_date(end, timezone=self.system.location.timezone, format=format)
 
         return self.database.read(start=start, end=end, **kwargs)
