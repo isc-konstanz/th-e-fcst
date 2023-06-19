@@ -14,7 +14,10 @@ from th_e_fcst.resolution import (  # noqa: F401
 )
 
 from th_e_fcst import forecast  # noqa: F401
-from th_e_fcst.forecast import Forecast  # noqa: F401
+from th_e_fcst.forecast import (  # noqa: F401
+    Forecast,
+    ForecastException
+)
 
 from th_e_fcst import system  # noqa: F401
 from th_e_fcst.system import System  # noqa: F401

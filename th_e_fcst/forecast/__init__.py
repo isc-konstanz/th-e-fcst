@@ -5,4 +5,4 @@
 
 
 """
-from .base import Forecast  # noqa: F401
+from .base import Forecast, ForecastException  # noqa: F401

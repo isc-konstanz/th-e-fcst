@@ -19,8 +19,8 @@ VERSION = info['__version__']
 DESCRIPTION = 'TH-E Forecast provides a set of functions to predict timeseries.'
 
 # Get the long description from the README file
-with open(path.join(here, 'README.md')) as f:
-    README = f.read()
+# with open(path.join(here, 'README.md')) as f:
+#     README = f.read()
 
 NAME = 'th-e-fcst'
 LICENSE = 'LGPLv3'
@@ -32,13 +32,13 @@ INSTALL_REQUIRES = [
     'holidays',
     'keras <= 2.10',
     'tensorflow <= 2.10',
-    'pvsys @ git+https://github.com/isc-konstanz/pvsys.git@master'
+    'pvsys @ git+https://github.com/isc-konstanz/pvsys.git@v0.2.7'
 ]
 
 EXTRAS_REQUIRE = {
     'eval': [
         'tqdm',
-        'scisys[excel,plot] @ git+https://github.com/isc-konstanz/scisys.git@master'
+        'scisys[excel,plot] @ git+https://github.com/isc-konstanz/scisys.git@v0.2.7'
     ]
 }
 
@@ -56,7 +56,7 @@ setup(
     version=VERSION,
     license=LICENSE,
     description=DESCRIPTION,
-    long_description=README,
+    # long_description=README,
     author=AUTHOR,
     author_email=MAINTAINER_EMAIL,
     packages=PACKAGES,

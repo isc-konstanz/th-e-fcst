@@ -62,7 +62,7 @@ class System(pvsys.System):
             date = pd.Timestamp.now(tz=self.location.timezone)
         date = floor_date(date, timezone=self.location.timezone, freq='T')
 
-        return self._predict(date, **kwargs)
+        return self.predict(date, **kwargs)
 
     # noinspection PyShadowingBuiltins
     def predict(self, date: pd.Timestamp | dt.datetime, **kwargs) -> pd.DataFrame:

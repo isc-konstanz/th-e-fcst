@@ -42,7 +42,7 @@ def main(**kwargs) -> None:
         system_results = Results(system, verbose=verbose)
         system_results.durations.start('Simulation')
         try:
-            if not system.forecast.exists():
+            if not system.forecast.active:
                 train(system, system_results, **kwargs)
             predict(system, system_results, **kwargs)
 
@@ -95,7 +95,7 @@ def train(system, results, verbose=False, **kwargs):
 
     if verbose:
         io.write_csv(system, features, features_path)
-        io.print_distributions(features, path=system.forecast.dir)
+        io.print_histograms(features, path=system.forecast.dir)
 
     system.forecast._train(features, threading=settings.getboolean('General', 'threading', fallback=True))
 
@@ -111,11 +111,11 @@ def predict(system, results, verbose=False, **kwargs):
     end = to_date(settings['General']['end'], timezone)
     end = ceil_date(end, timezone)
 
-    resolution_max = system.forecast.features.resolutions[0]
-    resolution_min = system.forecast.features.resolutions[0]
-    if len(system.forecast.features.resolutions) > 1:
-        for i in range(len(system.forecast.features.resolutions)-1, 0, -1):
-            resolution_min = system.forecast.features.resolutions[i]
+    resolution_max = system.forecast.resolutions[0]
+    resolution_min = system.forecast.resolutions[0]
+    if len(system.forecast.resolutions) > 1:
+        for i in range(len(system.forecast.resolutions)-1, 0, -1):
+            resolution_min = system.forecast.resolutions[i]
             if resolution_min.steps_horizon is not None:
                 break
 

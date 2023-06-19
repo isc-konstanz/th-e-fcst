@@ -278,7 +278,8 @@ class TensorForecast(Forecast):
         self.model.save(self.dir)
         self.model.save_weights(os.path.join(self.dir, f"model-SNAPSHOT{save_date.strftime('%Y%m%d')}.h5"))
 
-    def exists(self):
+    @property
+    def active(self) -> bool:
         if not os.path.isdir(self.dir):
             os.makedirs(self.dir, exist_ok=True)
             return False
