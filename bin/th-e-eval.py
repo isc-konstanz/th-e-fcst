@@ -234,7 +234,7 @@ def _load_features(system: System,
             features = hdf.get('features')
     else:
         data = system.build(start=start, end=end)
-        features = system.forecast.features.extract(data)
+        features = system.forecast.features.validate(data)
         features = system.forecast.features._add_meta(features)
         features.to_hdf(features_path + '.h5', 'features', mode='w')
 

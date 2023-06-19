@@ -174,7 +174,15 @@ class Features(Configurable):
 
         return targets.tz_convert(timezone)
 
-    def extract(self, data):
+    # noinspection PyProtectedMember, SpellCheckingInspection
+    def validate(self, data):
+        cmpts_pv = [cmpt for cmpt in self.system.values() if cmpt.type == 'pv']
+        if len(cmpts_pv) > 0 and \
+                'pv_yield' in self.input_keys:
+            data['pv_yield'] = 0
+            for cmpt in cmpts_pv:
+                data_pv = self.system._get_solar_yield(cmpt, data)
+                data['pv_yield'] += data_pv['pv_power'].abs()
         return deepcopy(self._extract(data))
 
     def _extract(self, data):

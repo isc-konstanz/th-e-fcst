@@ -302,7 +302,7 @@ class TensorForecast(Forecast):
                 data: pd.DataFrame,
                 date: pd.Timestamp | dt.datetime) -> pd.DataFrame:
 
-        features = self.features.extract(data)
+        features = self.features.validate(data)
         return self._predict(features, date)
 
     # noinspection PyShadowingBuiltins

@@ -73,24 +73,13 @@ class System(pvsys.System):
         data = self._get_data(prior, date)
         try:
             input = self._get_input(start, end, **kwargs)
-            data = pd.concat([data, input], axis=1)
+            data = pd.concat([data, input], axis='index')
 
         except WeatherUnavailableException as e:
             logger.debug(str(e))
 
         forecast = self.forecast(start, end, data)
         return forecast.combine_first(data)
-
-    # noinspection PyUnresolvedReferences, PyShadowingBuiltins
-    def _get_input(self, *args, **kwargs) -> pd.DataFrame:
-        input = super()._get_input(*args, **kwargs)
-
-        for cmpt in self.values():
-            if cmpt.type == 'pv':
-                result_pv = self._get_solar_yield(cmpt, input)
-                result['pv_yield'] += result_pv['pv_power'].abs()
-
-        return input
 
     # noinspection PyTypeChecker, PyShadowingBuiltins
     def _get_data(self,
@@ -107,7 +96,7 @@ class System(pvsys.System):
         try:
             weather = self.weather.database.read(start, end, **kwargs)
             input = self._validate_input(weather)
-            data = pd.concat([data, input], axis=1)
+            data = pd.concat([data, input], axis='index')
 
         except WeatherUnavailableException as e:
             logger.debug(str(e))
@@ -116,14 +105,3 @@ class System(pvsys.System):
 
         data.index.name = 'time'
         return data[(data.index >= start) & (data.index <= end)]
-
-    # noinspection PyUnresolvedReferences, PyTypeChecker, PyShadowingBuiltins
-    def _validate_input(self, weather: pd.DataFrame) -> pd.DataFrame:
-        input = super()._validate_input(weather)
-        cmpts_pv = [cmpt for cmpt in self.values() if cmpt.type == 'pv']
-        if len(cmpts_pv) > 0:
-            input['pv_yield'] = 0
-            for cmpt in cmpts_pv:
-                input_pv = self._get_solar_yield(cmpt, input)
-                input['pv_yield'] += input_pv['pv_power'].abs()
-        return input
