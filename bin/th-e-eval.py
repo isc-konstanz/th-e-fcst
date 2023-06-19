@@ -243,7 +243,7 @@ def _load_features(system: System,
 
 def _launch_tensorboard(systems, **kwargs) -> Optional[TensorBoard]:
     # noinspection PyProtectedMember
-    tensorboard_launch = any([system.forecast._tensorboard for system in systems])
+    tensorboard_launch = any([getattr(system.forecast, '_tensorboard', False) for system in systems])
     if tensorboard_launch and 'tensorboard' in kwargs:
         tensorboard_launch = to_bool(kwargs['tensorboard'])
 
