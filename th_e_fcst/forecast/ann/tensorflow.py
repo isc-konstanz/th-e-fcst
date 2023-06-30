@@ -76,7 +76,7 @@ class TensorForecast(Forecast):
             self.callbacks.append(TensorBoard(log_dir=self.dir, histogram_freq=1))
 
         # TODO: implement date based backups and naming scheme
-        if self.exists():
+        if self.is_trained():
             self.model = self._load_model()
         else:
             self.model = self._build_model(self.configs)
@@ -252,7 +252,7 @@ class TensorForecast(Forecast):
         return outputs
 
     def _load_model(self, from_json: bool = False) -> Model:
-        logger.debug("Loading model for system {} from file".format(self._system.name))
+        logger.debug("Loading model for system {} from file".format(self.system.name))
         if (glob(os.path.join(self.dir, 'variables', 'variables.data*')) and
                 os.path.isfile(os.path.join(self.dir, 'variables', 'variables.index')) and
                 os.path.isfile(os.path.join(self.dir, 'saved_model.pb')) and
@@ -272,7 +272,7 @@ class TensorForecast(Forecast):
 
     def _save(self) -> None:
         save_date = dt.datetime.now(self.system.location.timezone)
-        logger.debug("Saving model for system {} to file".format(self._system.name))
+        logger.debug("Saving model for system {} to file".format(self.system.name))
 
         # Serialize weights checkpoint
         self.model.save(self.dir)
@@ -280,23 +280,7 @@ class TensorForecast(Forecast):
 
     @property
     def active(self) -> bool:
-        if not os.path.isdir(self.dir):
-            os.makedirs(self.dir, exist_ok=True)
-            return False
-
-        if (glob(os.path.join(self.dir, 'variables', 'variables.data*')) and
-                os.path.isfile(os.path.join(self.dir, 'variables', 'variables.index')) and
-                os.path.isfile(os.path.join(self.dir, 'saved_model.pb')) and
-                os.path.isfile(os.path.join(self.dir, 'keras_metadata.pb'))):
-            return True
-
-        if ((glob(os.path.join(self.dir, 'checkpoint*')) and
-                glob(os.path.join(self.dir, 'model.data*')) and
-                os.path.isfile(os.path.join(self.dir, 'model.index'))) or
-                os.path.isfile(os.path.join(self.dir, 'model.h5'))):
-            return True
-
-        return False
+        return self.is_trained()
 
     def predict(self,
                 data: pd.DataFrame,
@@ -365,8 +349,27 @@ class TensorForecast(Forecast):
 
         return target
 
+    def is_trained(self) -> bool:
+        if not os.path.isdir(self.dir):
+            os.makedirs(self.dir, exist_ok=True)
+            return False
+
+        if (glob(os.path.join(self.dir, 'variables', 'variables.data*')) and
+                os.path.isfile(os.path.join(self.dir, 'variables', 'variables.index')) and
+                os.path.isfile(os.path.join(self.dir, 'saved_model.pb')) and
+                os.path.isfile(os.path.join(self.dir, 'keras_metadata.pb'))):
+            return True
+
+        if ((glob(os.path.join(self.dir, 'checkpoint*')) and
+                glob(os.path.join(self.dir, 'model.data*')) and
+                os.path.isfile(os.path.join(self.dir, 'model.index'))) or
+                os.path.isfile(os.path.join(self.dir, 'model.h5'))):
+            return True
+
+        return False
+
     def train(self, data: pd.DataFrame) -> History:
-        features = self.features.extract(data)
+        features = self.features.validate(data)
         return self._train(features)
 
     def _train(self,
@@ -452,7 +455,7 @@ class TensorForecast(Forecast):
     def _parse_input(self,
                      data: pd.Dataframe,
                      date: pd.Timestamp | dt.datetime,
-                     shape: Tuple | int) -> List[np.ndarray, np.ndarray]:
+                     shape: List | Tuple | int) -> List[np.ndarray, np.ndarray]:
         input_series = data.loc[data.index <= date, self.features.target_keys + self.features.input_series_keys]
         input_values = data.loc[data.index > date, self.features.input_value_keys]
         return [np.squeeze(input_series.values).reshape(shape[0]),

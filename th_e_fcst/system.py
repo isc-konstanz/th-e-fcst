@@ -73,7 +73,7 @@ class System(pvsys.System):
         data = self._get_data(prior, date)
         try:
             input = self._get_input(start, end, **kwargs)
-            data = pd.concat([data, input], axis='index')
+            data = pd.concat([data, input], axis='columns')
 
         except WeatherUnavailableException as e:
             logger.debug(str(e))
@@ -96,7 +96,7 @@ class System(pvsys.System):
         try:
             weather = self.weather.database.read(start, end, **kwargs)
             input = self._validate_input(weather)
-            data = pd.concat([data, input], axis='index')
+            data = pd.concat([data, input], axis='columns')
 
         except WeatherUnavailableException as e:
             logger.debug(str(e))

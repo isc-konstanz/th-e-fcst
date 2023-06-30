@@ -54,14 +54,16 @@ class Features(Configurable):
         self._scaling = parse_section('Scaling', float)
         self._cyclic = parse_section('Cyclic', float)
         self._doubt = parse_section('Doubt')
-        for feature in self._doubt.keys():
-            if feature in self._scaling.keys():
-                self._scaling[feature+'_doubt'] = self._scaling[feature]
 
         self.target_keys = configs.get('Target', 'values').splitlines()
         self.input_keys = []
 
-        def parse_cyclic_keys(config_keys: List[str]) -> List[str]:
+        # noinspection PyShadowingBuiltins
+        def insert_if_missing(element: str, list: List[str]) -> None:
+            if element not in list:
+                list.insert(0, element)
+
+        def parse_feature_keys(config_keys: List[str]) -> List[str]:
             input_keys = []
             for key in config_keys:
                 if key in self._cyclic.keys():
@@ -72,8 +74,17 @@ class Features(Configurable):
                 self.input_keys.append(key)
             return input_keys
 
-        self.input_series_keys = parse_cyclic_keys(configs.get('Input', 'series').splitlines())
-        self.input_value_keys = parse_cyclic_keys(configs.get('Input', 'values').splitlines())
+        self.input_series_keys = parse_feature_keys(configs.get('Input', 'series').splitlines())
+        self.input_value_keys = parse_feature_keys(configs.get('Input', 'values').splitlines())
+
+        for doubt_feature, doubt_reference in self._doubt.items():
+            doubt_key = f'{doubt_feature}_doubt'
+            insert_if_missing(doubt_key, self.input_keys)
+            insert_if_missing(doubt_key, self.input_series_keys)
+            insert_if_missing(doubt_reference, self.input_keys)
+
+            if doubt_feature in self._scaling.keys():
+                self._scaling[doubt_key] = self._scaling[doubt_feature]
 
         if self._estimate:
             self.input_value_keys += self.input_series_keys
@@ -182,7 +193,7 @@ class Features(Configurable):
             data['pv_yield'] = 0
             for cmpt in cmpts_pv:
                 data_pv = self.system._get_solar_yield(cmpt, data)
-                data['pv_yield'] += data_pv['pv_power'].abs()
+                data['pv_yield'] += data_pv['pv_power']
         return deepcopy(self._extract(data))
 
     def _extract(self, data):
@@ -228,9 +239,9 @@ class Features(Configurable):
         if len(self._doubt) == 0:
             return features
 
-        for feature, feature_cor in self._doubt.items():
-            if feature+'_doubt' in self.input_keys:
-                features[feature+'_doubt'] = abs(features[feature] - features[feature_cor])
+        for feature, feature_ref in self._doubt.items():
+            if feature in self.target_keys + self.input_keys:
+                features[feature+'_doubt'] = features[feature] - features[feature_ref]
         return features
 
     def _add_meta(self, features):
