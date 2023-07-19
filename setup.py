@@ -32,7 +32,6 @@ INSTALL_REQUIRES = [
     'holidays',
     'keras <= 2.10',
     'tensorflow <= 2.10',
-    'corsys @ git+https://github.com/isc-konstanz/corsys.git@v0.8.2',
     'pvsys @ git+https://github.com/isc-konstanz/pvsys.git@v0.2.8'
 ]
 
