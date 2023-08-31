@@ -39,8 +39,6 @@ class Features(Configurable):
     def __configure__(self, configs: Configurations) -> None:
         super().__configure__(configs)
 
-        self._estimate = to_bool(configs.get('General', 'estimate', fallback='true'))
-
         # TODO: Make this part of a wrapper Resolutions list class
         self._autoregressive = to_bool(configs.get('General', 'autoregressive', fallback='true'))
 
@@ -77,23 +75,17 @@ class Features(Configurable):
         self.input_series_keys = parse_feature_keys(configs.get('Input', 'series').splitlines())
         self.input_value_keys = parse_feature_keys(configs.get('Input', 'values').splitlines())
 
+        # Add series values before adding doubt, as doubt will be reliant on target values
+        self.input_value_keys = list(dict.fromkeys(self.input_series_keys+self.input_value_keys))
+
         for doubt_feature, doubt_reference in self._doubt.items():
             doubt_key = f'{doubt_feature}_doubt'
-            insert_if_missing(doubt_key, self.input_keys)
+            # insert_if_missing(doubt_reference, self.input_keys)
+            # insert_if_missing(doubt_key, self.input_keys)
             insert_if_missing(doubt_key, self.input_series_keys)
-            insert_if_missing(doubt_reference, self.input_keys)
 
             if doubt_feature in self._scaling.keys():
                 self._scaling[doubt_key] = self._scaling[doubt_feature]
-
-        if self._estimate:
-            self.input_value_keys += self.input_series_keys
-
-        input_series_count = len(self.input_series_keys + self.target_keys)
-        input_value_count = len(self.input_value_keys)
-        input_steps = self.resolutions.steps_prior
-
-        self.input_shape = [(input_steps, input_series_count), (input_value_count,)]
 
         if self._autoregressive:
             target_steps = 1
@@ -103,6 +95,17 @@ class Features(Configurable):
         target_count = len(self.target_keys)
 
         self.target_shape = (target_steps, target_count)
+
+        input_series_count = len(self.input_series_keys)
+        input_value_count = len(self.input_value_keys)
+        input_steps = self.resolutions.steps_prior
+
+        self.input_shape = []
+
+        for _ in range(target_count):
+            self.input_shape.append((input_steps,))
+        self.input_shape.append((input_steps, input_series_count))
+        self.input_shape.append((input_value_count,))
 
     @property
     def resolutions(self) -> Resolutions:
@@ -123,9 +126,7 @@ class Features(Configurable):
         timezone = features.index.tzinfo
         data = self.resolutions[-1].resample(deepcopy(features.tz_convert(tz.utc)))
         data = self._add_doubt(data)
-        data = self._add_meta(data)
         data = self._extract(data)
-        data = self._parse_cyclic(data)
 
         inputs = pd.DataFrame()
         inputs.index.name = 'time'
@@ -142,6 +143,10 @@ class Features(Configurable):
                                                     offset=resolution_offset)
 
             inputs = resolution_inputs.combine_first(inputs)
+
+        # Add meta data after resampling, to avoid artefacts for border crossings
+        inputs = self._add_meta(inputs)
+        inputs = self._parse_cyclic(inputs)
 
         if inputs.isna().values.any() or len(inputs) < len(index):
             raise ValueError("Input data incomplete for %s" % index)

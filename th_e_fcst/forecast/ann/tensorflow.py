@@ -20,13 +20,14 @@ from glob import glob
 from copy import deepcopy
 from itertools import chain
 from corsys import System, Configurations
-from corsys.tools import to_bool
+from corsys.tools import to_bool, to_float
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+from kerasbeats import NBeatsModel
 from keras.optimizers import Adam
 from keras.callbacks import History, EarlyStopping, TensorBoard
-from keras.layers import Input, Concatenate, Flatten, Dense, Dropout, \
-                                    LeakyReLU, Conv1D, MaxPooling1D, LSTM
+from keras.layers import Input, Concatenate, Flatten, Reshape, Dropout, LeakyReLU,\
+                         Dense, Conv1D, MaxPooling1D, TimeDistributed, LSTM
 from keras.models import load_model
 from keras import Model
 from ..base import Forecast
@@ -109,44 +110,94 @@ class TensorForecast(Forecast):
 
     @staticmethod
     def _parse_metrics(configs: Configurations):
-        return configs.get(Configurations.GENERAL, 'metrics', fallback=[])
+        metrics = configs.get(Configurations.GENERAL, 'metrics', fallback=None)
+        if not metrics:
+            metrics = []
+        elif metrics.isdigit():
+            metrics = [int(metrics)]
+        else:
+            metrics = json.loads(metrics)
+        return metrics
 
     @staticmethod
     def _parse_loss(configs: Configurations):
         return configs.get(Configurations.GENERAL, 'loss')
 
-    def _build_model(self, configs: Configurations) -> Model:
-        input_series = Input(shape=self.features.input_shape[0])
-        input_values = Input(shape=self.features.input_shape[1])
-        inputs = [input_series, input_values]
+    # noinspection SpellCheckingInspection
+    def _build_model(self, configs: Configurations | Dict) -> Model:
+        # Loosely based on towardsdatascience guide: CNN+LSTM for Forecasting
+        # https://towardsdatascience.com/get-started-with-using-cnn-lstm-for-forecasting-6f0f4dde5826
 
-        tensors = input_series
-        if configs.has_section('Conv1D'):
-            tensors = self._build_conv(tensors, **configs['Conv1D'])
+        def has_configs(section: str) -> bool:
+            if section in configs:
+                if 'enabled' in configs[section]:
+                    return to_bool(configs[section]['enabled'])
+                return True
+            return False
 
-        if configs.has_section('LSTM'):
-            tensors = self._build_lstm(tensors, **configs['LSTM'])
+        def get_configs(section: str) -> dict:
+            if section in configs:
+                section = dict(configs[section])
+                section.pop("enabled", None)
+                return section
+            return {}
 
-        tensors = Concatenate()([Flatten()(tensors),
-                                 Flatten()(input_values)])
+        target_count = len(self.features.target_keys)
 
-        tensors = self._build_dense(tensors, **configs['Dense'])
+        inputs = []
+        input_targets = []
+        for i in range(target_count):
+            input_shape = self.features.input_shape[i]
+            input_target = Input(shape=input_shape)
+            input_targets.append(input_target)
+            inputs.append(input_target)
 
-        outputs = self._build_output(tensors, self.features.target_shape)
-        model = Model(inputs=inputs, outputs=outputs, name='TH-E-Forecast')
+        input_series = Input(shape=self.features.input_shape[target_count])
+        inputs.append(input_series)
+
+        tensors = []
+        if has_configs('Conv1D'):
+            inputs_cnn = []
+            for input_target in input_targets:
+                inputs_cnn.append(Concatenate()([Reshape((1, *input_target.shape[1:], 1))(input_target),
+                                                 Reshape((1, *input_series.shape[1:]))(input_series)]))
+            inputs_cnn = Concatenate(axis=1)(inputs_cnn) if target_count > 1 else inputs_cnn[0]
+            tensors_cnn = self._build_cnn(inputs_cnn, **get_configs('Conv1D'))
+            tensors.append(Flatten(tensors_cnn))
+
+            if has_configs('LSTM'):
+                tensors_lstm = self._build_lstm(tensors_cnn, **get_configs('LSTM'))
+                tensors.append(tensors_lstm)
+
+        if has_configs('N-BEATS'):
+            for input_target in input_targets:
+                beats_shape = (*input_target.shape[1:], self.features.target_shape[0])
+                tensors_beats = self._build_nbeats(input_target, *beats_shape, **get_configs('N-BEATS'))
+                tensors.append(tensors_beats)
+
+        input_values = Input(shape=self.features.input_shape[target_count+1])
+        inputs.append(input_values)
+        tensors.append(input_values)
+        tensors = Concatenate()(tensors)
+
+        tensors = self._build_dense(tensors, **get_configs('Dense'))
+
+        outputs = self._build_output(tensors, self.features.target_shape, **get_configs('Output'))
+        model = Model(inputs=inputs, outputs=outputs, name='th-e-forecast')
 
         # TODO: implement date based backups and naming scheme
         return model
 
     @staticmethod
-    def _build_conv(x,
-                    filters: int | str | List[int] = 32,
-                    layers: int = 3,
-                    padding: str = 'causal',
-                    activation: str = 'relu',
-                    kernel_size: int = 2,
-                    pool_size: int = 0,
-                    **kwargs):
+    def _build_cnn(x,
+                   flatten: bool = True,
+                   filters: int | str | List[int] = 64,
+                   layers: int = 3,
+                   padding: str = 'causal',
+                   activation: str = 'relu',
+                   kernel_size: int = 3,
+                   pool_size: int = 0,
+                   **kwargs):
 
         if isinstance(filters, str):
             if filters.isdigit():
@@ -165,21 +216,26 @@ class TensorForecast(Forecast):
         # TODO: Handle dilation in configuration
         length = len(filters)
         for i in range(length):
+            cnn_args = deepcopy(kwargs)
             if i == 0:
-                kwargs['dilation_rate'] = 1
+                cnn_args['dilation_rate'] = 1
+                cnn_args['batch_input_shape'] = tuple(x.shape)
             else:
-                kwargs['dilation_rate'] = 2**i
+                cnn_args['dilation_rate'] = 2**i
 
-            x = Conv1D(filters[i], int(kernel_size), **kwargs)(x)
+            x = TimeDistributed(Conv1D(filters[i], int(kernel_size), **cnn_args))(x)
 
         if pool_size > 0:
-            x = MaxPooling1D(pool_size)(x)
+            x = TimeDistributed(MaxPooling1D(pool_size))(x)
+
+        if flatten:
+            x = TimeDistributed(Flatten())(x)
 
         return x
 
     @staticmethod
     def _build_lstm(x,
-                    units: int | str | List[int] = 32,
+                    units: int | str | List[int] = 64,
                     layers: int = 1,
                     activation: str = 'relu',
                     **kwargs):
@@ -192,15 +248,30 @@ class TensorForecast(Forecast):
             units = [units] * int(layers)
 
         kwargs['activation'] = activation
+        # kwargs['stateful'] = True
 
         length = len(units)
         for i in range(length):
+            lstm_args = deepcopy(kwargs)
             if i < length-1:
-                kwargs['return_sequences'] = True
+                lstm_args['return_sequences'] = True
 
-            x = LSTM(units[i], **kwargs)(x)
+            x = LSTM(units[i], **lstm_args)(x)
 
         return x
+
+    # noinspection SpellCheckingInspection
+    @staticmethod
+    def _build_nbeats(x,
+                      steps: int,
+                      horizon: int,
+                      model: str = 'generic',
+                      **kwargs):
+        nbeats = NBeatsModel(model_type=model,
+                             lookback=int(steps/horizon),
+                             horizon=horizon, **kwargs)
+        nbeats.build_layer()
+        return nbeats.model_layer(x)
 
     @staticmethod
     def _build_dense(x,
@@ -233,22 +304,12 @@ class TensorForecast(Forecast):
     @staticmethod
     def _build_output(x,
                       shape: tuple,
-                      activation: str = 'relu',
-                      leaky_alpha: float = 1e-6,
+                      leaky_alpha: float = 1e-3,
                       **kwargs):
-        if isinstance(leaky_alpha, str):
-            leaky_alpha = float(leaky_alpha)
 
-        kwargs['activation'] = activation
+        x = LeakyReLU(alpha=to_float(leaky_alpha))(x)
+        outputs = [Dense(shape[0], **kwargs)(x)]
 
-        outputs = []
-        for _ in range(shape[1]):
-            output = Dense(shape[0], **kwargs)(x)
-
-            if activation == 'relu':
-                output = LeakyReLU(alpha=leaky_alpha)(output)
-
-            outputs.append(output)
         return outputs
 
     def _load_model(self, from_json: bool = False) -> Model:
@@ -323,13 +384,16 @@ class TensorForecast(Forecast):
             input = self.features.input(features, date)
             input = self.features.scale(input)
             target = self._predict_step(input, date)
-            target = self.features.scale(pd.DataFrame(target, columns=self.features.target_keys), invert=True)
-            targets.loc[date_step, self.features.target_keys] = target.values
+
+            # Do not normalize targets!
+            # target = self.features.scale(pd.DataFrame(target, columns=self.features.target_keys), invert=True)
+
+            targets.loc[date_step, self.features.target_keys] = target  # .values
 
             # Add predicted output to features of next iteration
             features.loc[(features.index >= date_step) &
                          (features.index < date_step + resolution_min.time_step),
-                         self.features.target_keys] = target.values
+                         self.features.target_keys] = target  # .values
 
             date = date_step
 
@@ -379,62 +443,57 @@ class TensorForecast(Forecast):
         kwargs = {
             'verbose': LOG_VERBOSE
         }
-        input_series = []
-        input_values = []
-        target_values = []
+        inputs = [[] for _ in range(len(self.features.input_shape))]
+        targets = []
         if not self._early_stopping or \
                 (validation_features is not None and not validation_features.empty):
 
             data = self._parse_features(training_features)
             random.shuffle(data)
             for i in range(len(data)):
-                input_series.append(data[i]['input'][0])
-                input_values.append(data[i]['input'][1])
-                target_values.append(data[i]['target'])
+                for s in range(len(data[i]['input'])):
+                    inputs[s].append(data[i]['input'][s])
+                targets.append(data[i]['target'])
 
             if validation_features is not None and not validation_features.empty:
                 validation_data = self._parse_features(validation_features)
-                validation_input_series = []
-                validation_input_values = []
-                validation_target_values = []
+                validation_inputs = [[] for _ in range(len(inputs))]
+                validation_targets = []
 
                 random.shuffle(validation_data)
                 for i in range(len(validation_data)):
-                    validation_input_series.append(validation_data[i]['input'][0])
-                    validation_input_values.append(validation_data[i]['input'][1])
-                    validation_target_values.append(validation_data[i]['target'])
+                    for s in range(len(validation_data[i]['input'])):
+                        validation_inputs[s].append(validation_data[i]['input'][s])
+                    validation_targets.append(validation_data[i]['target'])
 
-                kwargs['validation_data'] = ([np.array(validation_input_series, dtype=float),
-                                              np.array(validation_input_values, dtype=float)],
-                                             np.array(validation_target_values, dtype=float))
+                validation_inputs = [np.array(validation_input, dtype=float) for validation_input in validation_inputs]
+                validation_targets = np.array(validation_targets, dtype=float)
+                kwargs['validation_data'] = (validation_inputs, validation_targets)
         else:
+            validation_inputs = [[] for _ in range(len(inputs))]
+            validation_targets = []
+
             data = self._parse_batches(training_features, threading)
-
-            validation_input_series = []
-            validation_input_values = []
-            validation_target_values = []
-
             for d in data:
                 split = len(d) - int(len(d)/self._early_stopping_split)
                 random.shuffle(d)
 
                 for i in range(len(d)):
                     if i <= split:
-                        input_series.append(d[i]['input'][0])
-                        input_values.append(d[i]['input'][1])
-                        target_values.append(d[i]['target'])
+                        for s in range(len(d[i]['input'])):
+                            inputs[s].append(d[i]['input'][s])
+                        targets.append(d[i]['target'])
                     else:
-                        validation_input_series.append(d[i]['input'][0])
-                        validation_input_values.append(d[i]['input'][1])
-                        validation_target_values.append(d[i]['target'])
+                        for s in range(len(d[i]['input'])):
+                            validation_inputs[s].append(d[i]['input'][s])
+                        validation_targets.append(d[i]['target'])
 
-            kwargs['validation_data'] = ([np.array(validation_input_series, dtype=float),
-                                          np.array(validation_input_values, dtype=float)],
-                                         np.array(validation_target_values, dtype=float))
+            validation_inputs = [np.array(validation_input, dtype=float) for validation_input in validation_inputs]
+            validation_targets = np.array(validation_targets, dtype=float)
+            kwargs['validation_data'] = (validation_inputs, validation_targets)
 
-        result = self.model.fit([np.array(input_series, dtype=float),
-                                 np.array(input_values, dtype=float)],
-                                np.array(target_values, dtype=float),
+        result = self.model.fit([np.array(input, dtype=float) for input in inputs],
+                                np.array(targets, dtype=float),
                                 callbacks=self.callbacks,
                                 batch_size=self.batch,
                                 epochs=self.epochs,
@@ -455,11 +514,19 @@ class TensorForecast(Forecast):
     def _parse_input(self,
                      data: pd.Dataframe,
                      date: pd.Timestamp | dt.datetime,
-                     shape: List | Tuple | int) -> List[np.ndarray, np.ndarray]:
-        input_series = data.loc[data.index <= date, self.features.target_keys + self.features.input_series_keys]
-        input_values = data.loc[data.index > date, self.features.input_value_keys]
-        return [np.squeeze(input_series.values).reshape(shape[0]),
-                np.squeeze(input_values.values).reshape(shape[1])]
+                     shape: List | Tuple | int) -> List[np.ndarray]:
+
+        def squeeze(input_data: pd.DataFrame, input_shape: Tuple) -> np.ndarray:
+            return np.squeeze(input_data.values).reshape(input_shape)
+
+        inputs = []
+        input_count = 0
+        for target in self.features.target_keys:
+            inputs.append(squeeze(data.loc[data.index <= date, target], shape[input_count]))
+            input_count += 1
+        inputs.append(squeeze(data.loc[data.index <= date, self.features.input_series_keys], shape[input_count]))
+        inputs.append(squeeze(data.loc[data.index > date, self.features.input_value_keys], shape[input_count+1]))
+        return inputs
 
     def _parse_target(self,
                       data: pd.Dataframe,
@@ -480,7 +547,8 @@ class TensorForecast(Forecast):
                 input = self.features.scale(input)
 
                 target = self.features.target(features, date)
-                target = self.features.scale(target)
+                # Do not normalize targets!
+                # target = self.features.scale(target)
 
                 # If no exception was raised, add the validated data to the set
                 data.append({
