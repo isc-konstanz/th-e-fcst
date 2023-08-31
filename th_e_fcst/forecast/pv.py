@@ -27,7 +27,7 @@ class PVForecast(Forecast):
         start = to_date(start, timezone=self.system.location.timezone, format=format)
         end = to_date(end, timezone=self.system.location.timezone, format=format)
 
-        if data is None:
+        if data is None or data.index[0] > start or data.index[-1] < end:
             data = self.system.weather.get(start, end)
             data = self.system._validate_input(data)
             data = self._validate_resolution(data)

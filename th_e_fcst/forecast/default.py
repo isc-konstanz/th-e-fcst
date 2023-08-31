@@ -43,11 +43,12 @@ class DefaultForecast(DatabaseForecast, PVForecast):
         forecast = self._predict_persistance(start, end, **kwargs)
 
         if self.system.contains_type(Photovoltaic.TYPE):
-            if data is None:
+            if data is None or data.index[0] > start or data.index[-1] < end:
                 data = self.system.weather.get(start, end)
                 data = self.system._validate_input(data)
                 data = self._validate_resolution(data)
             forecast_pv = self._predict_solar_yield(data)
+            forecast = forecast.drop(labels=forecast_pv.columns, axis='columns', errors='ignore')
             forecast = pd.concat([forecast, forecast_pv], axis='columns')
         return forecast
 
@@ -74,6 +75,7 @@ class DefaultForecast(DatabaseForecast, PVForecast):
                 continue
 
             week_data = self.database.read(start=week_start, end=week_end, **kwargs)
+            week_data = self._validate_resolution(week_data)
             week_timezone = week_data.index.tzinfo
             week_data.index = (week_data.index.tz_convert(tz.utc) + week_offset).tz_convert(week_timezone)
 

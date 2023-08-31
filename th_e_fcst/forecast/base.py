@@ -85,8 +85,9 @@ class Forecast(ABC, Configurable):
         forecast = self.predict(start, end, data=data, *args, **kwargs)
 
         if data is not None and not data.empty:
+            data = data.drop(labels=data.columns, axis='columns', errors='ignore')
             forecast = pd.concat([forecast, data], axis='columns')
-        return self._get_range(forecast, start, end)
+        return self._get_range(forecast, start, end).dropna(how='all', axis='columns')
 
     @property
     def resolutions(self) -> Resolutions:
@@ -112,7 +113,7 @@ class Forecast(ABC, Configurable):
                 data.interpolate(method='linear', inplace=True)
                 # data.interpolate(method='akima', inplace=True)
             return data.loc[horizon_index, :]
-        return data
+        return horizon.resample(data)
 
     def _get_range(self,
                    forecast: pd.DataFrame,
