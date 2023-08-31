@@ -30,8 +30,8 @@ URL = 'http://gitlab.isc-konstanz.de/systems/th-e-fcst'
 
 INSTALL_REQUIRES = [
     'holidays',
-    'keras <= 2.10',
-    'tensorflow <= 2.10',
+    'keras < 2.11',
+    'tensorflow < 2.11',
     'pvsys @ git+https://github.com/isc-konstanz/pvsys.git@v0.2.8'
 ]
 
