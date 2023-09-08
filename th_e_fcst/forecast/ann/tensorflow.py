@@ -6,7 +6,7 @@
     
 """
 from __future__ import annotations
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Optional
 
 import os
 import json
@@ -14,6 +14,7 @@ import random
 import numpy as np
 import pandas as pd
 import datetime as dt
+import multiprocessing as process
 import logging
 
 from glob import glob
@@ -538,7 +539,8 @@ class TensorForecast(Forecast):
 
     def _parse_features(self,
                         features: pd.DataFrame,
-                        dates: List[pd.Timestamp] = None) -> List[Dict[str, np.ndarray]]:
+                        dates: List[pd.Timestamp] = None, **kwargs) -> List[Dict[str, np.ndarray]]:
+        progress = Progress.instance(**kwargs)
         data = []
         if dates is None:
             dates = self._parse_dates(features)
@@ -556,6 +558,9 @@ class TensorForecast(Forecast):
                     'input': self._parse_input(input, date, self.features.input_shape),
                     'target': self._parse_target(target, date, self.features.target_shape[1])
                 })
+                if progress:
+                    progress.update()
+
             except (KeyError, ValueError) as e:
                 logger.warning("Skipping %s: %s", date, str(e))
 
@@ -597,9 +602,14 @@ class TensorForecast(Forecast):
             return features[batch_dates[0] - self.features.resolutions[0].time_prior:
                             batch_dates[-1] + self.features.resolutions[-1].time_step]
 
+        total = sum([len(d) for d in batches.values()])
         if threading:
+            progress = process.Value('i', 0)
+
             futures = {}
-            with ProcessPoolExecutor(max(os.cpu_count() - 1, 1)) as executor:
+            with ProcessPoolExecutor(max(os.cpu_count() - 1, 1),
+                                     initializer=Progress.instance,
+                                     initargs=('Parsing training features', total, progress)) as executor:
                 for batch_index, batch_dates in batches.items():
                     future = executor.submit(self._parse_features, extract_features(batch_dates), batch_dates)
                     futures[future] = batch_index
@@ -609,7 +619,8 @@ class TensorForecast(Forecast):
                     batch_append(batch_index, future.result())
         else:
             for batch_index, batch_dates in batches.items():
-                batch_append(batch_index, self._parse_features(extract_features(batch_dates), batch_dates))
+                batch_append(batch_index, self._parse_features(extract_features(batch_dates), batch_dates,
+                                                               desc='Parsing training features', total=total))
 
         return list(data.values())
 
@@ -619,4 +630,56 @@ class TensorForecast(Forecast):
         while date <= features.index[-1]:
             dates.append(date)
             date += dt.timedelta(minutes=self.features.resolutions[-1].minutes)
+
         return dates
+
+
+class Progress:
+
+    _instance = None
+
+    @staticmethod
+    def instance(*args, **kwargs) -> Optional[Progress]:
+        if Progress._instance is None:
+            try:
+                Progress._instance = Progress(*args, **kwargs)
+
+            except ImportError as e:
+                logger.debug("Unable to import tqdm progress library: %s", e)
+                return None
+
+        return Progress._instance
+
+    @staticmethod
+    def close() -> None:
+        Progress.instance()._bar.close()
+
+    @staticmethod
+    def reset() -> None:
+        Progress._instance = None
+
+    def __init__(self, desc: str = None, total: int = None, value: process.Value | int = 0) -> None:
+        from tqdm import tqdm
+
+        kwargs = {}
+        if value is not None and type(value).__name__ == 'Synchronized' and value.value > 0:
+            kwargs['initial'] = value.value
+
+        self._value = value
+        self._bar = tqdm(desc=desc, total=total, **kwargs)
+
+    def update(self):
+        if self._value is not None:
+            if type(self._value).__name__ == 'Synchronized':
+                with self._value.get_lock():
+                    self._value.value += 1
+                    self._update(self._value.value)
+            else:
+                self._value += 1
+                self._update(self._value)
+        else:
+            self._bar.update()
+
+    def _update(self, value):
+        self._bar.update(value - self._bar.n)
+
