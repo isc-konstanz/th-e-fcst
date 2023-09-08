@@ -163,11 +163,12 @@ class TensorForecast(Forecast):
                                                  Reshape((1, *input_series.shape[1:]))(input_series)]))
             inputs_cnn = Concatenate(axis=1)(inputs_cnn) if target_count > 1 else inputs_cnn[0]
             tensors_cnn = self._build_cnn(inputs_cnn, **get_configs('Conv1D'))
-            tensors.append(Flatten(tensors_cnn))
 
             if has_configs('LSTM'):
                 tensors_lstm = self._build_lstm(tensors_cnn, **get_configs('LSTM'))
                 tensors.append(tensors_lstm)
+            else:
+                tensors.append(Flatten()(tensors_cnn))
 
         if has_configs('N-BEATS'):
             for input_target in input_targets:
