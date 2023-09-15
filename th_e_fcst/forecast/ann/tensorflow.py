@@ -36,8 +36,6 @@ from . import Features
 
 logger = logging.getLogger(__name__)
 
-LOG_VERBOSE = 0
-
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 
@@ -443,7 +441,7 @@ class TensorForecast(Forecast):
              validation_features: pd.DataFrame = None,
              threading: bool = False) -> History:
         kwargs = {
-            'verbose': LOG_VERBOSE
+            'verbose': False
         }
         inputs = [[] for _ in range(len(self.features.input_shape))]
         targets = []
@@ -494,9 +492,20 @@ class TensorForecast(Forecast):
             validation_targets = np.array(validation_targets, dtype=float)
             kwargs['validation_data'] = (validation_inputs, validation_targets)
 
+        callbacks = deepcopy(self.callbacks)
+        try:
+            from tqdm.keras import TqdmCallback
+
+            # noinspection PyTypeChecker
+            callbacks.append(TqdmCallback(epochs=self.epochs, data_size=len(targets), batch_size=self.batch,
+                                          verbose=False))
+
+        except ImportError as e:
+            logger.debug("Unable to import tqdm progress library: %s", e)
+
         result = self.model.fit([np.array(input, dtype=float) for input in inputs],
                                 np.array(targets, dtype=float),
-                                callbacks=self.callbacks,
+                                callbacks=callbacks,
                                 batch_size=self.batch,
                                 epochs=self.epochs,
                                 **kwargs)
@@ -634,6 +643,7 @@ class TensorForecast(Forecast):
         return dates
 
 
+# noinspection PyUnresolvedReferences
 class Progress:
 
     _instance = None
@@ -682,4 +692,3 @@ class Progress:
 
     def _update(self, value):
         self._bar.update(value - self._bar.n)
-
