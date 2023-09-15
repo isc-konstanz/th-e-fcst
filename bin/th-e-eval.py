@@ -97,7 +97,7 @@ def train(system, results, verbose=False, **kwargs):
         io.write_csv(system, features, features_path)
         io.print_histograms(features, path=system.forecast.dir)
 
-    system.forecast._train(features, threading=settings.getboolean('General', 'threading', fallback=True))
+    system.forecast._fit(features, threading=settings.getboolean('General', 'threading', fallback=True))
 
     results.durations.stop('Training')
     logger.debug("Training of neural network for system {} complete after {:.2f} minutes"
@@ -162,7 +162,7 @@ def predict(system, results, verbose=False, **kwargs):
     predict_range = pd.date_range(start, end, tz=timezone, freq=f'{interval}min')
     if interval > 60:
         predict_range = predict_range.round(f'{interval}min')
-    for date in tqdm(predict_range, desc=system.name):
+    for date in tqdm(predict_range, desc='Predicting validation data'):
         date_path = date.strftime('%Y-%m-%d/%H-%M-%S')
         if date_path in results:
             try:
@@ -208,7 +208,7 @@ def predict(system, results, verbose=False, **kwargs):
                     training_features = deepcopy(features[training_last - resolution_max.time_prior:training_date])
                     validation_features = deepcopy(features[training_last - dt.timedelta(days=7):training_last])
 
-                    system.forecast._train(training_features, validation_features)
+                    system.forecast._fit(training_features, validation_features)
 
                 training_last = training_date
                 training_date = next_training(date, training_interval)
@@ -256,7 +256,7 @@ def _launch_tensorboard(systems, **kwargs) -> Optional[TensorBoard]:
         logger_werkzeug.disabled = True
 
         tensorboard = TensorBoard()
-        tensorboard.configure(argv=[None, '--logdir', settings.dirs.data])
+        tensorboard.configure(logdir=settings.dirs.data)
         tensorboard_url = tensorboard.launch()
         logger.info("Started TensorBoard at {}".format(tensorboard_url))
 

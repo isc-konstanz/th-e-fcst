@@ -21,19 +21,19 @@ class Forecast(ABC, Configurable):
     @classmethod
     def read(cls, system: System, conf_file: str = 'forecast.cfg') -> Forecast:
         configs = Configurations.from_configs(system.configs, conf_file)
-        model = configs.get('General', 'model', fallback='default').lower()
+        model = configs.get('General', 'model', fallback='persistence').lower()
         if model in ['ann', 'neuralnetwork']:
             from .ann import TensorForecast
             return TensorForecast(system, configs)
+        if model == ['prst', 'persistence']:
+            from .prst import PersistenceForecast
+            return PersistenceForecast(system, configs)
         if model in ['pv', 'solar']:
             from .pv import PVForecast
             return PVForecast(system, configs)
         if model == 'database':
             from .db import DatabaseForecast
             return DatabaseForecast(system, configs)
-        if model == 'default':
-            from .default import DefaultForecast
-            return DefaultForecast(system, configs)
 
         raise TypeError('Invalid forecast model: {}'.format(model))
 
@@ -47,7 +47,7 @@ class Forecast(ABC, Configurable):
         self._resolutions = Resolutions.read(configs)
 
     def __activate__(self, system: System) -> None:
-        self._active = True
+        pass
 
     def __call__(self,
                  start: pd.Timestamp | dt.datetime = pd.Timestamp.now(),
@@ -99,6 +99,7 @@ class Forecast(ABC, Configurable):
 
     def activate(self) -> None:
         self.__activate__(self.system)
+        self._active = True
 
     def _validate_resolution(self, data: pd.DataFrame) -> pd.DataFrame:
         horizon = self.resolutions.get_horizon(how='min')
@@ -115,6 +116,7 @@ class Forecast(ABC, Configurable):
             return data.loc[horizon_index, :]
         return horizon.resample(data)
 
+    # noinspection PyMethodMayBeStatic
     def _get_range(self,
                    forecast: pd.DataFrame,
                    start:    pd.Timestamp | dt.datetime,
@@ -124,6 +126,10 @@ class Forecast(ABC, Configurable):
         if end is None or end > forecast.index[-1]:
             end = forecast.index[-1]
         return forecast[(forecast.index >= start) & (forecast.index <= end)]
+
+    @abstractmethod
+    def fit(self, *args, **kwargs) -> None:
+        pass
 
     @abstractmethod
     def predict(self, *args, **kwargs) -> pd.DataFrame:

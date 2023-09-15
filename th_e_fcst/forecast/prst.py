@@ -20,7 +20,7 @@ from .db import DatabaseForecast
 from .pv import PVForecast
 
 
-class DefaultForecast(DatabaseForecast, PVForecast):
+class PersistenceForecast(DatabaseForecast, PVForecast):
 
     def __configure__(self, configs: Configurations) -> None:
         super().__configure__(configs)
@@ -40,7 +40,7 @@ class DefaultForecast(DatabaseForecast, PVForecast):
         start = to_date(start, timezone=self.system.location.timezone, format=format)
         end = to_date(end, timezone=self.system.location.timezone, format=format)
 
-        forecast = self._predict_persistance(start, end, **kwargs)
+        forecast = self._predict_persistence(start, end, **kwargs)
 
         if self.system.contains_type(Photovoltaic.TYPE):
             if data is None or data.index[0] > start or data.index[-1] < end:
@@ -53,7 +53,7 @@ class DefaultForecast(DatabaseForecast, PVForecast):
         return forecast
 
     # noinspection SpellCheckingInspection
-    def _predict_persistance(self,
+    def _predict_persistence(self,
                              start: pd.Timestamp | dt.datetime,
                              end: pd.Timestamp | dt.datetime,
                              **kwargs) -> pd.DataFrame:

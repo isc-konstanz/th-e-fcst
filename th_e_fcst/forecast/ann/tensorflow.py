@@ -78,7 +78,7 @@ class TensorForecast(Forecast):
             self.callbacks.append(TensorBoard(log_dir=self.dir, histogram_freq=1))
 
         # TODO: implement date based backups and naming scheme
-        if self.is_trained():
+        if self.is_fitted:
             self.model = self._load_model()
         else:
             self.model = self._build_model(self.configs)
@@ -290,8 +290,7 @@ class TensorForecast(Forecast):
         if isinstance(units, int):
             units = [units] * int(layers)
 
-        if isinstance(dropout, str):
-            dropout = float(dropout)
+        dropout = to_float(dropout)
 
         kwargs['activation'] = activation
 
@@ -343,7 +342,6 @@ class TensorForecast(Forecast):
 
     @property
     def active(self) -> bool:
-        return self.is_trained()
 
     def predict(self,
                 data: pd.DataFrame,
@@ -414,8 +412,10 @@ class TensorForecast(Forecast):
         target = np.squeeze(target).reshape(self.features.target_shape)
 
         return target
+        return False if not self.is_fitted else super().active
 
-    def is_trained(self) -> bool:
+    @property
+    def is_fitted(self) -> bool:
         if not os.path.isdir(self.dir):
             os.makedirs(self.dir, exist_ok=True)
             return False
@@ -434,14 +434,14 @@ class TensorForecast(Forecast):
 
         return False
 
-    def train(self, data: pd.DataFrame) -> History:
+    def fit(self, data: pd.DataFrame) -> History:
         features = self.features.validate(data)
-        return self._train(features)
+        return self._fit(features)
 
-    def _train(self,
-               training_features: pd.DataFrame,
-               validation_features: pd.DataFrame = None,
-               threading: bool = False) -> History:
+    def _fit(self,
+             training_features: pd.DataFrame,
+             validation_features: pd.DataFrame = None,
+             threading: bool = False) -> History:
         kwargs = {
             'verbose': LOG_VERBOSE
         }
